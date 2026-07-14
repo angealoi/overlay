@@ -285,11 +285,12 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// 현재 맵의 파싱된 CS 값 반환 (mod 미적용).
+        /// Auto 모드에서 실제 적용되는 CS (HR/EZ 반영) 반환.
+        /// ControlPanel CS Auto 버튼 채움값.
         /// </summary>
-        public float GetMapCS()
+        public float GetAutoCS()
         {
-            return difficultyController.GetMapCS(currentBeatmap);
+            return difficultyController.GetAutoCS(currentBeatmap);
         }
 
         /// <summary>

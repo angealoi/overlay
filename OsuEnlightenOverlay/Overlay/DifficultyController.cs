@@ -128,12 +128,18 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// 현재 맵의 파싱된 CS 값 반환 (mod 미적용).
+        /// Auto 모드에서 실제 적용되는 CS (= Compute()의 autoCs, HR/EZ 반영).
+        /// ControlPanel CS Auto 버튼 채움값. 맵 미로드 시 4.0 기본값.
+        ///
+        /// nomod 원본 CS를 채우면 안 된다: 채움이 nud.ValueChanged를 타고
+        /// settings.CsValue를 오염시키고, Manual 전환 시 overdrive 클램프
+        /// Math.Max(CsValue, autoCs)가 그 nomod 값을 통과시켜 EZ가 무시된다.
+        /// (HR은 클램프가 큰 쪽을 골라 우연히 가려짐 — EZ에서만 드러남)
         /// </summary>
-        public float GetMapCS(BeatmapData beatmap)
+        public float GetAutoCS(BeatmapData beatmap)
         {
-            if (beatmap == null) return 4.0f;
-            return (float)beatmap.CircleSize;
+            if (beatmap == null || reader == null) return 4.0f;
+            return GetLiveCS(beatmap);
         }
 
         /// <summary>
