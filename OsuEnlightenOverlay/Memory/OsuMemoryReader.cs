@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 
 namespace OsuEnlightenOverlay.Memory
 {
@@ -25,7 +24,6 @@ namespace OsuEnlightenOverlay.Memory
         IntPtr playModeSlot = IntPtr.Zero;
         List<IntPtr> cursorSlots = new List<IntPtr>();
         IntPtr cursorPositionSlot = IntPtr.Zero; // CursorPosition static slot (autopilot 커서)
-        IntPtr cursorSource = IntPtr.Zero;
 
         public OsuMemoryReader()
         {
@@ -101,7 +99,6 @@ namespace OsuEnlightenOverlay.Memory
         // 재사용 버퍼 — 매 프레임 new 할당 방지 (GC 스톨 방지)
         List<HitObjectJudgement> reusedJudgements = new List<HitObjectJudgement>(64);
         byte[] reusedHoBatch = new byte[0x118]; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120 포함)
-        HitObjectJudgement[] reusedJudgementPool = new HitObjectJudgement[64];
 
         public bool IsOpen { get { return pm.IsOpen; } }
         public int ProcessId { get { return pm.ProcessId; } }
