@@ -23,7 +23,9 @@ namespace OsuEnlightenOverlay.Memory
         IntPtr beatmapStaticAddr = IntPtr.Zero;
         IntPtr playModeSlot = IntPtr.Zero;
         List<IntPtr> cursorSlots = new List<IntPtr>();
+        HashSet<long> cursorWriteSlots = new HashSet<long>(); // 연속 3개 그룹 = 커서 쓰기 함수 출력
         IntPtr cursorPositionSlot = IntPtr.Zero; // CursorPosition static slot (autopilot 커서)
+        bool cursorSlotIsProvisional = false;    // 폴백으로 고른 상태 — 제대로 식별되면 승격
 
         public OsuMemoryReader()
         {
@@ -174,6 +176,11 @@ namespace OsuEnlightenOverlay.Memory
             return AobScanner.ResolveSlot(pm, sig);
         }
 
+        /// <summary>
+        /// 커서 관련 static slot AOB 스캔 — 비용이 크므로 기동 시 1회만.
+        /// 실제 CursorPosition slot 선택은 IdentifyCursorPositionSlot이 담당하며,
+        /// 성공할 때까지 매 프레임 재시도한다 (아래 주석 참고).
+        /// </summary>
         void ScanCursorSlots()
         {
             byte[] pattern;
@@ -189,36 +196,46 @@ namespace OsuEnlightenOverlay.Memory
                     cursorSlots.Add(slot);
             }
 
-            // CursorPosition slot 식별:
             // 커서 쓰기 함수의 3개 slot은 항상 연속된 4바이트 간격(slot, slot+4, slot+8)을 가짐.
             // 이 3개 그룹을 찾아서 제외하고, 남은 slot 중에서 CursorPosition을 식별.
             //
             // CursorPosition은 InputManager의 value type static Vector2이고,
             // 커서 쓰기 함수의 ref type static 포인터들과 다른 packed static 영역에 있음.
             // 따라서 3개 연속 그룹에 속하지 않는 slot들이 CursorPosition 후보.
-
             var slotSet = new HashSet<long>();
             foreach (IntPtr s in cursorSlots)
                 slotSet.Add(s.ToInt64());
 
-            // 3개 연속 그룹(slot, slot+4, slot+8) 찾기
-            var consecutiveGroups = new HashSet<long>();
+            cursorWriteSlots.Clear();
             foreach (long s in slotSet)
             {
                 if (slotSet.Contains(s + 4) && slotSet.Contains(s + 8))
                 {
                     // 이 3개는 커서 쓰기 함수의 출력 slot
-                    consecutiveGroups.Add(s);
-                    consecutiveGroups.Add(s + 4);
-                    consecutiveGroups.Add(s + 8);
+                    cursorWriteSlots.Add(s);
+                    cursorWriteSlots.Add(s + 4);
+                    cursorWriteSlots.Add(s + 8);
                 }
             }
 
-            // 연속 그룹에 속하지 않는 slot = CursorPosition 후보
-            // 그 중에서 (0,0)이나 (1,1)이 아닌 유효한 값을 가진 slot을 CursorPosition으로 선택
+            IdentifyCursorPositionSlot();
+        }
+
+        /// <summary>
+        /// cursorSlots 중 CursorPosition을 식별 — 값이 유효한 첫 후보를 선택.
+        ///
+        /// 반드시 성공할 때까지 재시도해야 한다. 기동 시점에 osu!가 메뉴에 있으면
+        /// CursorPosition이 아직 갱신되지 않아 (0,0)으로 읽히고, TryReadCursor가 이를
+        /// 거부해 정답 슬롯이 후보에서 탈락한다. 1회성 식별이면 그대로 폴백
+        /// (cursorSlots[1])이 영구 고정되는데, 이 인덱스는 JIT 코드 배치 순서에
+        /// 의존하므로 osu! 세션마다 다른 슬롯을 가리킬 수 있다 — 잘못 걸리면
+        /// 커서가 (0,0)에 영구히 박힌다.
+        /// </summary>
+        void IdentifyCursorPositionSlot()
+        {
             foreach (IntPtr slot in cursorSlots)
             {
-                if (consecutiveGroups.Contains(slot.ToInt64()))
+                if (cursorWriteSlots.Contains(slot.ToInt64()))
                     continue; // 커서 쓰기 함수 출력 — skip
 
                 IntPtr source;
@@ -229,13 +246,18 @@ namespace OsuEnlightenOverlay.Memory
                 if (TryReadCursor(source, out x, out y))
                 {
                     cursorPositionSlot = slot;
-                    break; // 첫 번째 유효한 후보 사용
+                    cursorSlotIsProvisional = false; // 확정
+                    return;
                 }
             }
 
-            // 폴백: heuristic 실패 시 slot[1] 사용 (이전 검증 결과)
+            // 폴백: heuristic 실패 시 slot[1] 사용 (이전 검증 결과).
+            // provisional로 표시해 이후 프레임에서 제대로 식별되면 승격되도록 한다.
             if (cursorPositionSlot == IntPtr.Zero && cursorSlots.Count >= 2)
+            {
                 cursorPositionSlot = cursorSlots[1];
+                cursorSlotIsProvisional = true;
+            }
         }
 
         public void RefreshLiveValues()
@@ -284,6 +306,12 @@ namespace OsuEnlightenOverlay.Memory
 
         void RefreshCursor()
         {
+            // 슬롯이 미식별이거나 폴백(추정)이면 재식별 시도.
+            // 기동 시 osu!가 메뉴에 있으면 CursorPosition이 (0,0)이라 식별이 실패하는데,
+            // Play에 진입해 커서가 살아나면 여기서 정답 슬롯으로 확정/승격된다.
+            if (cursorPositionSlot == IntPtr.Zero || cursorSlotIsProvisional)
+                IdentifyCursorPositionSlot();
+
             // CursorPosition static slot만 사용 (autopilot/auto mod 인게임 커서)
             if (cursorPositionSlot == IntPtr.Zero)
             {
