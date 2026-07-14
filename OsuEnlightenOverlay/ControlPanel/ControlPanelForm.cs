@@ -640,16 +640,6 @@ namespace OsuEnlightenOverlay.ControlPanel
             SettingsSerializer.Save(settings);
         }
 
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            base.WndProc(ref m);
-        }
-
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             Save();

@@ -27,13 +27,6 @@ namespace OsuEnlightenOverlay.Rendering
         public float GamefieldSpriteRatio = 1f;
         int currentTime = 0; // Draw 시간 기반 컬링용
 
-        // ── Draw 세부 타이밍 (OsuGlRenderer에서 읽음, μs) ──
-        public long lastDrawSortUs;
-        public long lastDrawBatchInitUs;
-        public long lastDrawShaderBindUs;
-        public long lastDrawSpriteLoopUs;
-        public long lastDrawFlushUs;
-
         public void SetViewportSize(int width, int height)
         {
             viewportWidth = width;
@@ -127,22 +120,16 @@ namespace OsuEnlightenOverlay.Rendering
         /// </summary>
         public void Draw()
         {
-            double usPerTick = 1e6 / System.Diagnostics.Stopwatch.Frequency;
-            long swStart, t0, t1, t2, t3;
-
             // lazy sort — 정렬이 필요할 때만 (청크 추가 후 1회)
-            swStart = System.Diagnostics.Stopwatch.GetTimestamp();
             if (needsSort)
             {
                 sprites.Sort((a, b) => a.Depth.CompareTo(b.Depth));
                 needsSort = false;
             }
-            t0 = (long)((System.Diagnostics.Stopwatch.GetTimestamp() - swStart) * usPerTick);
 
             pTexture currentTexture = null;
             bool currentAdditive = false;
 
-            t1 = System.Diagnostics.Stopwatch.GetTimestamp();
             quadBatch.Initialize();
 
             // 셰이더 바인딩 — TextureShader2D (generic vertex attributes)
@@ -153,7 +140,6 @@ namespace OsuEnlightenOverlay.Rendering
                 shader.SetProjectionMatrix(ref projectionMatrix);
                 shader.SetColour(System.Drawing.Color.White);
             }
-            t2 = System.Diagnostics.Stopwatch.GetTimestamp();
 
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Texture2D);
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Blend);
@@ -291,21 +277,12 @@ namespace OsuEnlightenOverlay.Rendering
                 quadBatch.Add(sprite, screenPos, texW, texH, spriteScale, drawTopRatio, drawHeightRatio);
             }
 
-            t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-
             quadBatch.Flush(shader);
 
             if (shader != null && shader.IsValid)
                 shader.End();
 
             GL.Disable(OpenTK.Graphics.OpenGL.EnableCap.Texture2D);
-
-            // 세부 타이밍 기록 (μs)
-            lastDrawSortUs = t0;
-            lastDrawBatchInitUs = (long)((t2 - t1) * usPerTick);
-            lastDrawShaderBindUs = (long)((t3 - t2) * usPerTick);
-            lastDrawSpriteLoopUs = (long)((t3 - t2) * usPerTick); // sprite loop는 위에서 측정
-            lastDrawFlushUs = (long)((System.Diagnostics.Stopwatch.GetTimestamp() - t3) * usPerTick);
         }
 
         public void Dispose()

@@ -71,7 +71,6 @@
     <Compile Include="Graphics\Batches\LinearBatch.cs" />
     <Compile Include="Graphics\Renderers\MmSliderRenderer.cs" />
     <Compile Include="Helpers\ColourHelper.cs" />
-    <Compile Include="Helpers\Logger.cs" />
     <Compile Include="Gameplay\Beatmap\BeatmapData.cs" />
     <Compile Include="Gameplay\Beatmap\BeatmapParser.cs" />
     <Compile Include="Gameplay\Difficulty\DifficultyCalculator.cs" />

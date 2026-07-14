@@ -60,10 +60,6 @@ namespace OsuEnlightenOverlay.Memory
         IntPtr bindableLetterboxPositionX = IntPtr.Zero;
         IntPtr bindableLetterboxPositionY = IntPtr.Zero;
 
-        // 캐시: HOM 주소와 hitObjects items 배열 주소 (매 프레임 재스캔 방지)
-        IntPtr cachedHom = IntPtr.Zero;
-        IntPtr cachedItemsArr = IntPtr.Zero;
-
         public int TimeMs { get; private set; }
         public int AudioState { get; private set; }
         public int Mode { get; private set; }
@@ -128,9 +124,14 @@ namespace OsuEnlightenOverlay.Memory
         /// <summary>모니터 실제 네이티브 해상도 높이 (Win32 API)</summary>
         public int DesktopHeight { get; private set; }
 
+        // ── RefreshScore 배치 읽기 범위 ──
+        // MaxCombo(0x68)부터 CurrentCombo(0x94, ushort)까지를 한 번에 덮음.
+        const int ScoreBatchBase = Offsets.Score_MaxCombo;
+        const int ScoreBatchSize = Offsets.Score_CurrentCombo + sizeof(ushort) - ScoreBatchBase;
+
         // 재사용 버퍼 — 매 프레임 new 할당 방지 (GC 스톨 방지)
         List<HitObjectJudgement> reusedJudgements = new List<HitObjectJudgement>(64);
-        byte[] reusedScoreBatch = new byte[0x30];
+        byte[] reusedScoreBatch = new byte[ScoreBatchSize];
         byte[] reusedHoBatch = new byte[0x118]; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120 포함)
         byte[] buf120; // HitErrors 배치 읽기용 (30 int = 120바이트)
         HitObjectJudgement[] reusedJudgementPool = new HitObjectJudgement[64];
@@ -461,18 +462,18 @@ namespace OsuEnlightenOverlay.Memory
             if (!pm.ReadPointer(gameplayBase + Offsets.GameplayBase_ScoreBase, out scoreBase) || scoreBase == IntPtr.Zero)
                 return;
 
-            // 배치 읽기 — scoreBase + 0x68 ~ 0x96 (0x30바이트) 한 번에 읽기
-            // MaxCombo(0x68), TotalScore(0x78), Count100(0x88) ~ CurrentCombo(0x94)
+            // 배치 읽기 — MaxCombo(0x68) ~ CurrentCombo(0x94)를 한 번의 ReadProcessMemory로.
+            // 버퍼 내 위치는 Offsets 상수에서 컴파일 타임에 산출 (진실의 원천 = Offsets).
             byte[] scoreBatch = reusedScoreBatch;
-            if (!pm.ReadBatch(scoreBase + 0x68, scoreBatch, 0x30)) return;
+            if (!pm.ReadBytes(scoreBase + ScoreBatchBase, scoreBatch, ScoreBatchSize)) return;
 
-            int maxCombo = ProcessMemory.GetInt32(scoreBatch, 0x00);  // 0x68 - 0x68 = 0
-            int totalScore = ProcessMemory.GetInt32(scoreBatch, 0x10); // 0x78 - 0x68 = 0x10
-            ushort c100 = ProcessMemory.GetUInt16(scoreBatch, 0x20);   // 0x88 - 0x68 = 0x20
-            ushort c300 = ProcessMemory.GetUInt16(scoreBatch, 0x22);   // 0x8A - 0x68 = 0x22
-            ushort c50 = ProcessMemory.GetUInt16(scoreBatch, 0x24);    // 0x8C - 0x68 = 0x24
-            ushort cMiss = ProcessMemory.GetUInt16(scoreBatch, 0x2A);  // 0x92 - 0x68 = 0x2A
-            ushort curCombo = ProcessMemory.GetUInt16(scoreBatch, 0x2C); // 0x94 - 0x68 = 0x2C
+            int maxCombo = ProcessMemory.GetInt32(scoreBatch, Offsets.Score_MaxCombo - ScoreBatchBase);
+            int totalScore = ProcessMemory.GetInt32(scoreBatch, Offsets.Score_TotalScore - ScoreBatchBase);
+            ushort c100 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count100 - ScoreBatchBase);
+            ushort c300 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count300 - ScoreBatchBase);
+            ushort c50 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count50 - ScoreBatchBase);
+            ushort cMiss = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_CountMiss - ScoreBatchBase);
+            ushort curCombo = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_CurrentCombo - ScoreBatchBase);
 
             if (c300 >= 65000 || c100 >= 65000 || c50 >= 65000 || cMiss >= 65000)
                 return;
@@ -514,7 +515,7 @@ namespace OsuEnlightenOverlay.Memory
                     return;
 
                 double acc;
-                if (pm.ReadDouble(accObj + 0x0C, out acc))
+                if (pm.ReadDouble(accObj + Offsets.Accuracy_Value, out acc))
                     Accuracy = acc;
             }
             catch { }
@@ -531,7 +532,7 @@ namespace OsuEnlightenOverlay.Memory
             try
             {
                 IntPtr listObj;
-                if (!pm.ReadPointer(scoreBase + 0x38, out listObj) || listObj == IntPtr.Zero)
+                if (!pm.ReadPointer(scoreBase + Offsets.Score_HitErrors, out listObj) || listObj == IntPtr.Zero)
                     return;
 
                 IntPtr itemsArr;
@@ -553,7 +554,7 @@ namespace OsuEnlightenOverlay.Memory
                     int byteCount = count * 4;
                     byte[] buf = buf120 ?? (buf120 = new byte[120]);
                     if (byteCount > buf.Length) byteCount = buf.Length;
-                    if (pm.ReadBatch(itemsArr + Offsets.Array_Data + start * 4, buf, byteCount))
+                    if (pm.ReadBytes(itemsArr + Offsets.Array_Data + start * 4, buf, byteCount))
                     {
                         int numInts = byteCount / 4;
                         for (int i = 0; i < numInts; i++)
@@ -567,9 +568,6 @@ namespace OsuEnlightenOverlay.Memory
             }
             catch { }
         }
-
-        /// <summary>HOM 캐시가 설정되었는지 여부 (매 프레임 호출 가능)</summary>
-        public bool HasHomCache { get { return cachedHom != IntPtr.Zero && cachedItemsArr != IntPtr.Zero; } }
 
         // ── HitObject 리스트 읽기 ──
         // Ruleset → HOM → hitObjects List → items 배열 → 각 HitObject
@@ -762,6 +760,34 @@ namespace OsuEnlightenOverlay.Memory
 
         }
 
+        // BindableInt 유효 범위 — 벗어나면 Dictionary rehash 등으로 포인터가 낡은 것으로 간주.
+        const double DimensionMin = 1, DimensionMax = 9999;      // 해상도 픽셀
+        const double LetterboxMin = -200, LetterboxMax = 200;    // 레터박스 위치 (-100~100 + 여유)
+
+        /// <summary>
+        /// BindableInt(+0x04 = double) 읽기.
+        /// 값이 [min,max] 밖이거나 NaN/Inf면 bindable 포인터를 무효화해
+        /// 다음 스캔에서 재해석하도록 하고 false 반환 (기존 값 유지).
+        /// </summary>
+        bool TryReadBindableInt(ref IntPtr bindable, double min, double max, out int value)
+        {
+            value = 0;
+            if (bindable == IntPtr.Zero) return false;
+
+            double val;
+            if (!pm.ReadDouble(bindable + Offsets.BindableInt_Value, out val))
+                return false;
+
+            if (double.IsNaN(val) || double.IsInfinity(val) || val < min || val > max)
+            {
+                bindable = IntPtr.Zero; // 무효 → 재스캔 트리거
+                return false;
+            }
+
+            value = (int)val;
+            return true;
+        }
+
         /// <summary>
         /// 매 프레임 Resolution 관련 live 값 갱신.
         /// WindowManager.Width/Height + Config Dictionary에서 FS/LB/W/H.
@@ -810,83 +836,14 @@ namespace OsuEnlightenOverlay.Memory
                     IsLetterboxing = val != 0;
             }
 
-            // ConfigManager.sWidth (BindableInt, +0x04 = double)
-            if (bindableWidth != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableWidth + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
-                        bindableWidth = IntPtr.Zero; // 무효 → 재스캔 트리거
-                    else
-                        ConfigWidth = (int)val;
-                }
-            }
-
-            // ConfigManager.sHeight (BindableInt, +0x04 = double)
-            if (bindableHeight != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableHeight + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
-                        bindableHeight = IntPtr.Zero;
-                    else
-                        ConfigHeight = (int)val;
-                }
-            }
-
-            // ConfigManager.sWidthFullscreen (BindableInt, +0x04 = double)
-            if (bindableWidthFullscreen != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableWidthFullscreen + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
-                        bindableWidthFullscreen = IntPtr.Zero;
-                    else
-                        ConfigWidthFullscreen = (int)val;
-                }
-            }
-
-            // ConfigManager.sHeightFullscreen (BindableInt, +0x04 = double)
-            if (bindableHeightFullscreen != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableHeightFullscreen + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
-                        bindableHeightFullscreen = IntPtr.Zero;
-                    else
-                        ConfigHeightFullscreen = (int)val;
-                }
-            }
-
-            // ConfigManager.sLetterboxPositionX (BindableInt, +0x04 = double)
-            if (bindableLetterboxPositionX != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableLetterboxPositionX + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val < -200 || val > 200)
-                        bindableLetterboxPositionX = IntPtr.Zero;
-                    else
-                        LetterboxPositionX = (int)val;
-                }
-            }
-
-            // ConfigManager.sLetterboxPositionY (BindableInt, +0x04 = double)
-            if (bindableLetterboxPositionY != IntPtr.Zero)
-            {
-                double val;
-                if (pm.ReadDouble(bindableLetterboxPositionY + Offsets.BindableInt_Value, out val))
-                {
-                    if (double.IsNaN(val) || double.IsInfinity(val) || val < -200 || val > 200)
-                        bindableLetterboxPositionY = IntPtr.Zero;
-                    else
-                        LetterboxPositionY = (int)val;
-                }
-            }
+            // ConfigManager 해상도 설정 (BindableInt) — 유효 범위 밖이면 포인터 무효화 → 재스캔
+            int v;
+            if (TryReadBindableInt(ref bindableWidth, DimensionMin, DimensionMax, out v)) ConfigWidth = v;
+            if (TryReadBindableInt(ref bindableHeight, DimensionMin, DimensionMax, out v)) ConfigHeight = v;
+            if (TryReadBindableInt(ref bindableWidthFullscreen, DimensionMin, DimensionMax, out v)) ConfigWidthFullscreen = v;
+            if (TryReadBindableInt(ref bindableHeightFullscreen, DimensionMin, DimensionMax, out v)) ConfigHeightFullscreen = v;
+            if (TryReadBindableInt(ref bindableLetterboxPositionX, LetterboxMin, LetterboxMax, out v)) LetterboxPositionX = v;
+            if (TryReadBindableInt(ref bindableLetterboxPositionY, LetterboxMin, LetterboxMax, out v)) LetterboxPositionY = v;
 
             // 파생 값 계산
             if (WindowHeight > 0)
@@ -936,26 +893,17 @@ namespace OsuEnlightenOverlay.Memory
                 IsNativeResolution = false;
         }
 
-        // .osu 파일 경로 얻기
-        string GetOsuFilePath()
-        {
-            if (beatmapStaticAddr == IntPtr.Zero) return null;
-            IntPtr beatmapObj;
-            if (!pm.ReadPointer(beatmapStaticAddr, out beatmapObj) || beatmapObj == IntPtr.Zero) return null;
-            return GetOsuFilePathFromBeatmap(beatmapObj);
-        }
-
         string GetOsuFilePathFromBeatmap(IntPtr beatmapObj)
         {
             if (beatmapObj == IntPtr.Zero) return null;
 
             IntPtr folderPtr, filenamePtr;
-            if (!pm.ReadPointer(beatmapObj + 0x78, out folderPtr)) return null;
-            if (!pm.ReadPointer(beatmapObj + 0x90, out filenamePtr)) return null;
+            if (!pm.ReadPointer(beatmapObj + Offsets.Beatmap_Folder, out folderPtr)) return null;
+            if (!pm.ReadPointer(beatmapObj + Offsets.Beatmap_OsuFilename, out filenamePtr)) return null;
             if (folderPtr == IntPtr.Zero || filenamePtr == IntPtr.Zero) return null;
 
-            string folder = ReadSharpString(folderPtr);
-            string filename = ReadSharpString(filenamePtr);
+            string folder = pm.ReadSharpString(folderPtr);
+            string filename = pm.ReadSharpString(filenamePtr);
             if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(filename)) return null;
 
             string osuDir = OsuInstallDir;
@@ -963,17 +911,6 @@ namespace OsuEnlightenOverlay.Memory
 
             string path = System.IO.Path.Combine(osuDir, "Songs", folder, filename);
             return System.IO.File.Exists(path) ? path : null;
-        }
-
-        string ReadSharpString(IntPtr strPtr)
-        {
-            if (strPtr == IntPtr.Zero) return null;
-            int length;
-            if (!pm.ReadInt32(strPtr + 0x04, out length)) return null;
-            if (length <= 0 || length > 1024) return null;
-            byte[] buf = new byte[length * 2];
-            if (!pm.ReadBytes(strPtr + 0x08, buf, length * 2)) return null;
-            return System.Text.Encoding.Unicode.GetString(buf);
         }
 
         // .osu 파일 파싱 — [HitObjects] 섹션만 (검증용)
@@ -1289,7 +1226,7 @@ namespace OsuEnlightenOverlay.Memory
                 j.StartTime = startTimeVal;
 
                 // Type을 먼저 읽기 — 0x0C바이트 (StartTime+EndTime+Type)
-                if (!pm.ReadBatch(hoPtr + 0x10, hoBatch, 0x0C)) continue;
+                if (!pm.ReadBytes(hoPtr + 0x10, hoBatch, 0x0C)) continue;
 
                 j.EndTime = ProcessMemory.GetInt32(hoBatch, 0x04); // hoPtr+0x14
                 j.Type = ProcessMemory.GetInt32(hoBatch, 0x08);     // hoPtr+0x18
@@ -1308,7 +1245,7 @@ namespace OsuEnlightenOverlay.Memory
                 else
                     readSize = 0x78;  // 원 — HitValue/ScoreValue/IsHit만
 
-                if (!pm.ReadBatch(hoPtr + 0x10, hoBatch, readSize)) continue;
+                if (!pm.ReadBytes(hoPtr + 0x10, hoBatch, readSize)) continue;
 
                 j.HitValue = ProcessMemory.GetInt32(hoBatch, 0x4C); // hoPtr+0x5C
                 j.ScoreValue = ProcessMemory.GetInt32(hoBatch, 0x70); // hoPtr+0x80

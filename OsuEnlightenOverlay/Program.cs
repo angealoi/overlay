@@ -3,7 +3,6 @@ using System.Windows.Forms;
 using OsuEnlightenOverlay.Memory;
 using OsuEnlightenOverlay.Overlay;
 using OsuEnlightenOverlay.ControlPanel;
-using OsuEnlightenOverlay.Helpers;
 
 namespace OsuEnlightenOverlay
 {
@@ -15,10 +14,7 @@ namespace OsuEnlightenOverlay
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // 로그 파일 초기화 — 이후 모든 Console.WriteLine 은 파일에도 기록
-            Logger.Init();
-
-            Console.WriteLine("=== osu! Enlighten Overlay — Phase 2: 오버레이 창 ===");
+            Console.WriteLine("=== osu! Enlighten Overlay ===");
             Console.WriteLine();
 
             // 1. 메모리 리더 초기화
@@ -68,7 +64,6 @@ namespace OsuEnlightenOverlay
             Application.ApplicationExit += delegate
             {
                 reader.Dispose();
-                Logger.Shutdown();
             };
 
             // 컨트롤 패널을 메인 폼으로 실행
