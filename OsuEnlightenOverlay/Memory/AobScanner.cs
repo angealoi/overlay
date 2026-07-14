@@ -79,6 +79,27 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
+        /// 시그니처를 스캔해 static field slot 주소로 해석.
+        /// 매치 위치 + OperandSkip에 있는 4바이트 absolute address를 읽고 PostAdd를 더한다.
+        /// 실패 시 IntPtr.Zero.
+        /// </summary>
+        public static IntPtr ResolveSlot(ProcessMemory pm, AobSignature sig)
+        {
+            byte[] pattern;
+            string mask;
+            ParsePattern(sig.Pattern, out pattern, out mask);
+            IntPtr match = Scan(pm, pattern, mask);
+            if (match == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            IntPtr slot;
+            if (!pm.ReadPointer(match + sig.OperandSkip, out slot))
+                return IntPtr.Zero;
+
+            return slot + sig.PostAdd;
+        }
+
+        /// <summary>
         /// 패턴 문자열("5E 5F 5D C3 A1 ?? ?? ?? ?? 89 ?? 04")을 바이트 배열과 마스크로 변환.
         /// </summary>
         public static void ParsePattern(string patternString, out byte[] pattern, out string mask)

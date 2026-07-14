@@ -48,6 +48,7 @@
     <Compile Include="Memory\AobScanner.cs" />
     <Compile Include="Memory\Signatures.cs" />
     <Compile Include="Memory\Offsets.cs" />
+    <Compile Include="Memory\ResolutionReader.cs" />
     <Compile Include="Memory\OsuMemoryReader.cs" />
     <Compile Include="Overlay\OverlayForm.cs" />
     <Compile Include="Overlay\WindowInterop.cs" />
