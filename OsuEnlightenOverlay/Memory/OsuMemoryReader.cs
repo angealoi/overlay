@@ -1,0 +1,1363 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace OsuEnlightenOverlay.Memory
+{
+    /// <summary>
+    /// osu! stable 메모리 리더 — SIG.MD 기반.
+    /// AOB 스캔으로 static field slot을 해석하고, 매 프레임 live 값을 읽음.
+    /// </summary>
+    public class OsuMemoryReader : IDisposable
+    {
+        // Win32 API — 모니터 네이티브 해상도 가져오기
+        [DllImport("user32.dll")]
+        static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO info);
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MONITORINFO
+        {
+            public int Size;
+            public RECT Monitor;
+            public RECT Work;
+            public uint Flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct RECT
+        {
+            public int Left, Top, Right, Bottom;
+        }
+
+        const uint MONITOR_DEFAULTTONEAREST = 2;
+
+        ProcessMemory pm = new ProcessMemory();
+
+        IntPtr timeSlot = IntPtr.Zero;
+        IntPtr modeSlot = IntPtr.Zero;
+        IntPtr modsSlot = IntPtr.Zero;
+        IntPtr rulesetSlot = IntPtr.Zero;
+        IntPtr beatmapStaticAddr = IntPtr.Zero;
+        IntPtr playModeSlot = IntPtr.Zero;
+        List<IntPtr> cursorSlots = new List<IntPtr>();
+        IntPtr cursorPositionSlot = IntPtr.Zero; // CursorPosition static slot (autopilot 커서)
+        IntPtr cursorSource = IntPtr.Zero;
+
+        // Render at Native Resolution 관련 static slots
+        IntPtr windowManagerSlot = IntPtr.Zero;
+        IntPtr configDictSlot = IntPtr.Zero;  // ConfigManager Dictionary 포인터
+
+        // Config Dictionary에서 찾은 Bindable 객체 포인터들 (최초 1회 스캔 후 캐싱)
+        IntPtr bindableFullscreen = IntPtr.Zero;
+        IntPtr bindableLetterboxing = IntPtr.Zero;
+        IntPtr bindableWidth = IntPtr.Zero;
+        IntPtr bindableHeight = IntPtr.Zero;
+        IntPtr bindableWidthFullscreen = IntPtr.Zero;
+        IntPtr bindableHeightFullscreen = IntPtr.Zero;
+        IntPtr bindableLetterboxPositionX = IntPtr.Zero;
+        IntPtr bindableLetterboxPositionY = IntPtr.Zero;
+
+        // 캐시: HOM 주소와 hitObjects items 배열 주소 (매 프레임 재스캔 방지)
+        IntPtr cachedHom = IntPtr.Zero;
+        IntPtr cachedItemsArr = IntPtr.Zero;
+
+        public int TimeMs { get; private set; }
+        public int AudioState { get; private set; }
+        public int Mode { get; private set; }
+        public uint MenuMods { get; private set; }
+        public float CursorX { get; private set; }
+        public float CursorY { get; private set; }
+        public float BeatmapAR { get; private set; }
+        public float BeatmapCS { get; private set; }
+        public float BeatmapHP { get; private set; }
+        public float BeatmapOD { get; private set; }
+        public string BeatmapFolder { get; private set; }
+        public string BeatmapOsuFilename { get; private set; }
+        public string BeatmapDifficultyName { get; private set; }
+        public int PlayMode { get; private set; }
+
+        public bool ScoreLive { get; private set; }
+        public int TotalScore { get; private set; }
+        public int MaxCombo { get; private set; }
+        public int CurrentCombo { get; private set; }
+        public ushort Count300 { get; private set; }
+        public ushort Count100 { get; private set; }
+        public ushort Count50 { get; private set; }
+        public ushort CountMiss { get; private set; }
+
+        // HUD용 추가 상태
+        public double Accuracy { get; private set; }
+        public List<int> HitErrors { get; private set; } = new List<int>();
+
+        // ── Render at Native Resolution 관련 ──
+        /// <summary>실제 렌더링 너비 (WindowManager.Width)</summary>
+        public int WindowWidth { get; private set; }
+        /// <summary>실제 렌더링 높이 (WindowManager.Height, MenuHeight 제외 전)</summary>
+        public int WindowHeight { get; private set; }
+        /// <summary>스프라이트 기준 해상도 (보통 768)</summary>
+        public int SpriteRes { get; private set; }
+        /// <summary>설정된 너비 (ConfigManager.sWidth, 창 모드)</summary>
+        public int ConfigWidth { get; private set; }
+        /// <summary>풀스크린 여부</summary>
+        public bool IsFullscreen { get; private set; }
+        /// <summary>레터박싱 여부 (osu! UI: "Render at native resolution")</summary>
+        public bool IsLetterboxing { get; private set; }
+        /// <summary>레터박스 수평 위치 (-100~100, 0=중앙)</summary>
+        public int LetterboxPositionX { get; private set; }
+        /// <summary>레터박스 수직 위치 (-100~100, 0=중앙)</summary>
+        public int LetterboxPositionY { get; private set; }
+        /// <summary>네이티브 해상도로 렌더링 중인지 (WindowManager == InitialDesktopResolution)</summary>
+        public bool IsNativeResolution { get; private set; }
+        /// <summary>화면 비율 (Height / 480)</summary>
+        public float Ratio { get; private set; }
+        /// <summary>와이드스크린 오프셋 (NonWidescreenOffsetX)</summary>
+        public int NonWidescreenOffsetX { get; private set; }
+        /// <summary>GameField ScaleFactor</summary>
+        public float GameFieldScale { get; private set; }
+        /// <summary>설정된 전체화면 너비 (ConfigManager.sWidthFullscreen)</summary>
+        public int ConfigWidthFullscreen { get; private set; }
+        /// <summary>설정된 전체화면 높이 (ConfigManager.sHeightFullscreen)</summary>
+        public int ConfigHeightFullscreen { get; private set; }
+        /// <summary>설정된 창 모드 높이 (ConfigManager.sHeight)</summary>
+        public int ConfigHeight { get; private set; }
+        /// <summary>모니터 실제 네이티브 해상도 너비 (Win32 API)</summary>
+        public int DesktopWidth { get; private set; }
+        /// <summary>모니터 실제 네이티브 해상도 높이 (Win32 API)</summary>
+        public int DesktopHeight { get; private set; }
+
+        // 재사용 버퍼 — 매 프레임 new 할당 방지 (GC 스톨 방지)
+        List<HitObjectJudgement> reusedJudgements = new List<HitObjectJudgement>(64);
+        byte[] reusedScoreBatch = new byte[0x30];
+        byte[] reusedHoBatch = new byte[0x118]; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120 포함)
+        byte[] buf120; // HitErrors 배치 읽기용 (30 int = 120바이트)
+        HitObjectJudgement[] reusedJudgementPool = new HitObjectJudgement[64];
+
+        public bool IsOpen { get { return pm.IsOpen; } }
+        public int ProcessId { get { return pm.ProcessId; } }
+
+        /// <summary>
+        /// 현재 플레이 중인 맵의 .osu 파일 전체 경로.
+        /// osu! 설치 폴더/Songs/{BeatmapFolder}/{BeatmapOsuFilename}
+        /// </summary>
+        public string CurrentBeatmapPath
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(BeatmapFolder) || string.IsNullOrEmpty(BeatmapOsuFilename))
+                    return null;
+
+                // osu! 설치 경로 — 프로세스 실행 파일 경로에서 추출
+                string osuDir = OsuInstallDir;
+                if (osuDir == null) return null;
+
+                string path = System.IO.Path.Combine(osuDir, "Songs", BeatmapFolder, BeatmapOsuFilename);
+                if (System.IO.File.Exists(path))
+                    return path;
+
+                return null;
+            }
+        }
+
+        string cachedOsuInstallDir;
+
+        /// <summary>
+        /// osu! 설치 디렉토리 — 캐싱됨 (최초 1회만 조회).
+        /// </summary>
+        public string OsuInstallDir
+        {
+            get
+            {
+                if (cachedOsuInstallDir != null)
+                    return cachedOsuInstallDir;
+                try
+                {
+                    var procs = System.Diagnostics.Process.GetProcessById(ProcessId);
+                    string exePath = procs.MainModule.FileName;
+                    procs.Dispose();
+                    cachedOsuInstallDir = System.IO.Path.GetDirectoryName(exePath);
+                    return cachedOsuInstallDir;
+                }
+                catch
+                {
+                    // 폴백: 기본 경로
+                    if (System.IO.Directory.Exists(@"C:\osu!"))
+                        return @"C:\osu!";
+                    return null;
+                }
+            }
+        }
+
+        public bool Initialize()
+        {
+            if (!pm.OpenOsu())
+                return false;
+            return ScanStaticSlots();
+        }
+
+        bool ScanStaticSlots()
+        {
+            timeSlot = ScanSlot(Signatures.AudioEngineTime);
+            if (timeSlot == IntPtr.Zero)
+                return false;
+
+            modeSlot = ScanSlot(Signatures.GameBaseMode);
+            if (modeSlot == IntPtr.Zero)
+                return false;
+
+            modsSlot = ScanSlot(Signatures.MenuMods);
+            if (modsSlot == IntPtr.Zero)
+                return false;
+
+            beatmapStaticAddr = ScanSlot(Signatures.CurrentBeatmap);
+            if (beatmapStaticAddr == IntPtr.Zero)
+                return false;
+
+            playModeSlot = ScanSlot(Signatures.PlayMode);
+            rulesetSlot = ScanSlot(Signatures.Ruleset);
+            ScanCursorSlots();
+            ScanPlayerInstanceSlot();
+            ScanResolutionSlots();
+
+            return timeSlot != IntPtr.Zero;
+        }
+
+        IntPtr ScanSlot(AobSignature sig)
+        {
+            byte[] pattern;
+            string mask;
+            AobScanner.ParsePattern(sig.Pattern, out pattern, out mask);
+            IntPtr match = AobScanner.Scan(pm, pattern, mask);
+            if (match == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            IntPtr operandAddr = match + sig.OperandSkip;
+            IntPtr slot;
+            if (!pm.ReadPointer(operandAddr, out slot))
+                return IntPtr.Zero;
+
+            return slot + sig.PostAdd;
+        }
+
+        void ScanCursorSlots()
+        {
+            byte[] pattern;
+            string mask;
+            AobScanner.ParsePattern(Signatures.CursorXY.Pattern, out pattern, out mask);
+            List<IntPtr> matches = AobScanner.ScanAll(pm, pattern, mask);
+
+            foreach (IntPtr match in matches)
+            {
+                IntPtr operandAddr = match + Signatures.CursorXY.OperandSkip;
+                IntPtr slot;
+                if (pm.ReadPointer(operandAddr, out slot))
+                    cursorSlots.Add(slot);
+            }
+
+            // CursorPosition slot 식별:
+            // 커서 쓰기 함수의 3개 slot은 항상 연속된 4바이트 간격(slot, slot+4, slot+8)을 가짐.
+            // 이 3개 그룹을 찾아서 제외하고, 남은 slot 중에서 CursorPosition을 식별.
+            //
+            // CursorPosition은 InputManager의 value type static Vector2이고,
+            // 커서 쓰기 함수의 ref type static 포인터들과 다른 packed static 영역에 있음.
+            // 따라서 3개 연속 그룹에 속하지 않는 slot들이 CursorPosition 후보.
+
+            var slotSet = new HashSet<long>();
+            foreach (IntPtr s in cursorSlots)
+                slotSet.Add(s.ToInt64());
+
+            // 3개 연속 그룹(slot, slot+4, slot+8) 찾기
+            var consecutiveGroups = new HashSet<long>();
+            foreach (long s in slotSet)
+            {
+                if (slotSet.Contains(s + 4) && slotSet.Contains(s + 8))
+                {
+                    // 이 3개는 커서 쓰기 함수의 출력 slot
+                    consecutiveGroups.Add(s);
+                    consecutiveGroups.Add(s + 4);
+                    consecutiveGroups.Add(s + 8);
+                }
+            }
+
+            // 연속 그룹에 속하지 않는 slot = CursorPosition 후보
+            // 그 중에서 (0,0)이나 (1,1)이 아닌 유효한 값을 가진 slot을 CursorPosition으로 선택
+            foreach (IntPtr slot in cursorSlots)
+            {
+                if (consecutiveGroups.Contains(slot.ToInt64()))
+                    continue; // 커서 쓰기 함수 출력 — skip
+
+                IntPtr source;
+                if (!pm.ReadPointer(slot, out source) || source == IntPtr.Zero)
+                    continue;
+
+                float x, y;
+                if (TryReadCursor(source, out x, out y))
+                {
+                    cursorPositionSlot = slot;
+                    break; // 첫 번째 유효한 후보 사용
+                }
+            }
+
+            // 폴백: heuristic 실패 시 slot[1] 사용 (이전 검증 결과)
+            if (cursorPositionSlot == IntPtr.Zero && cursorSlots.Count >= 2)
+                cursorPositionSlot = cursorSlots[1];
+        }
+
+        public void RefreshLiveValues()
+        {
+            if (!IsOpen) return;
+
+            int timeVal;
+            if (pm.ReadInt32(timeSlot, out timeVal))
+                TimeMs = timeVal;
+
+            int audioStateVal;
+            if (pm.ReadInt32(timeSlot + Offsets.AudioState_FromTimeSlot, out audioStateVal))
+                AudioState = audioStateVal;
+
+            int modeVal;
+            if (pm.ReadInt32(modeSlot, out modeVal))
+                Mode = modeVal;
+
+            uint modsVal;
+            if (pm.ReadUInt32(modsSlot, out modsVal))
+                MenuMods = modsVal;
+
+            // Mode: 0=Menu, 1=Edit, 2=Play, 3=Exit, 4=SelectEdit, 5=SelectPlay, 7=Rank
+            // Play(2)와 SelectPlay(5)에서만 커서/비트맵/해상도 스캔
+            bool needScan = Mode == Offsets.Mode_Play || Mode == Offsets.Mode_SelectPlay;
+
+            if (needScan)
+            {
+                RefreshCursor();
+                RefreshBeatmap();
+                RefreshResolution();
+            }
+
+            if (playModeSlot != IntPtr.Zero)
+            {
+                int playModeVal;
+                if (pm.ReadInt32(playModeSlot, out playModeVal))
+                    PlayMode = playModeVal;
+            }
+
+            if (Mode == Offsets.Mode_Play && rulesetSlot != IntPtr.Zero)
+                RefreshScore();
+            else
+                ScoreLive = false;
+        }
+
+        void RefreshCursor()
+        {
+            // CursorPosition static slot만 사용 (autopilot/auto mod 인게임 커서)
+            if (cursorPositionSlot == IntPtr.Zero)
+            {
+                CursorX = 0;
+                CursorY = 0;
+                return;
+            }
+
+            IntPtr source;
+            if (!pm.ReadPointer(cursorPositionSlot, out source) || source == IntPtr.Zero)
+            {
+                CursorX = 0;
+                CursorY = 0;
+                return;
+            }
+
+            float x, y;
+            if (TryReadCursor(source, out x, out y))
+            {
+                CursorX = x;
+                CursorY = y;
+            }
+        }
+
+        bool TryReadCursor(IntPtr source, out float x, out float y)
+        {
+            x = 0; y = 0;
+            if (!pm.ReadFloat(source + Offsets.Cursor_X, out x)) return false;
+            if (!pm.ReadFloat(source + Offsets.Cursor_Y, out y)) return false;
+
+            if (float.IsNaN(x) || float.IsNaN(y)) return false;
+            if (float.IsInfinity(x) || float.IsInfinity(y)) return false;
+            if (Math.Abs(x) > 32768 || Math.Abs(y) > 32768) return false;
+            if (x == 0 && y == 0) return false;
+            if (x == 1.0f && y == 1.0f) return false;
+
+            return true;
+        }
+
+        IntPtr lastBeatmapPtr = IntPtr.Zero;
+        IntPtr lastFolderPtr = IntPtr.Zero;
+        IntPtr lastFilenamePtr = IntPtr.Zero;
+        IntPtr lastDiffNamePtr = IntPtr.Zero;
+
+        void RefreshBeatmap()
+        {
+            if (beatmapStaticAddr == IntPtr.Zero) return;
+
+            IntPtr beatmapPtr;
+            if (!pm.ReadPointer(beatmapStaticAddr, out beatmapPtr) || beatmapPtr == IntPtr.Zero)
+            {
+                lastBeatmapPtr = IntPtr.Zero;
+                return;
+            }
+
+            // 비트맵 포인터가 같으면 AR/CS/HP/OD 및 문자열 재읽기 스킵
+            // (고정값 — 곡 선택 시에만 바뀜)
+            if (beatmapPtr == lastBeatmapPtr)
+                return;
+            lastBeatmapPtr = beatmapPtr;
+
+            // 맵이 바뀌었을 때만 AR/CS/HP/OD 읽기
+            float ar, cs, hp, od;
+            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_AR, out ar);
+            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_CS, out cs);
+            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_HP, out hp);
+            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_OD, out od);
+            BeatmapAR = ar;
+            BeatmapCS = cs;
+            BeatmapHP = hp;
+            BeatmapOD = od;
+
+            IntPtr folderPtr;
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_Folder, out folderPtr) && folderPtr != lastFolderPtr)
+            {
+                BeatmapFolder = pm.ReadSharpString(folderPtr);
+                lastFolderPtr = folderPtr;
+            }
+
+            IntPtr filenamePtr;
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_OsuFilename, out filenamePtr) && filenamePtr != lastFilenamePtr)
+            {
+                BeatmapOsuFilename = pm.ReadSharpString(filenamePtr);
+                lastFilenamePtr = filenamePtr;
+            }
+
+            IntPtr diffNamePtr;
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_DifficultyName, out diffNamePtr) && diffNamePtr != lastDiffNamePtr)
+            {
+                BeatmapDifficultyName = pm.ReadSharpString(diffNamePtr);
+                lastDiffNamePtr = diffNamePtr;
+            }
+        }
+
+        void RefreshScore()
+        {
+            ScoreLive = false;
+
+            IntPtr rulesetObj;
+            if (!pm.ReadPointer(rulesetSlot, out rulesetObj) || rulesetObj == IntPtr.Zero)
+                return;
+
+            IntPtr gameplayBase;
+            if (!pm.ReadPointer(rulesetObj + Offsets.Ruleset_GameplayBase, out gameplayBase) || gameplayBase == IntPtr.Zero)
+                return;
+
+            IntPtr scoreBase;
+            if (!pm.ReadPointer(gameplayBase + Offsets.GameplayBase_ScoreBase, out scoreBase) || scoreBase == IntPtr.Zero)
+                return;
+
+            // 배치 읽기 — scoreBase + 0x68 ~ 0x96 (0x30바이트) 한 번에 읽기
+            // MaxCombo(0x68), TotalScore(0x78), Count100(0x88) ~ CurrentCombo(0x94)
+            byte[] scoreBatch = reusedScoreBatch;
+            if (!pm.ReadBatch(scoreBase + 0x68, scoreBatch, 0x30)) return;
+
+            int maxCombo = ProcessMemory.GetInt32(scoreBatch, 0x00);  // 0x68 - 0x68 = 0
+            int totalScore = ProcessMemory.GetInt32(scoreBatch, 0x10); // 0x78 - 0x68 = 0x10
+            ushort c100 = ProcessMemory.GetUInt16(scoreBatch, 0x20);   // 0x88 - 0x68 = 0x20
+            ushort c300 = ProcessMemory.GetUInt16(scoreBatch, 0x22);   // 0x8A - 0x68 = 0x22
+            ushort c50 = ProcessMemory.GetUInt16(scoreBatch, 0x24);    // 0x8C - 0x68 = 0x24
+            ushort cMiss = ProcessMemory.GetUInt16(scoreBatch, 0x2A);  // 0x92 - 0x68 = 0x2A
+            ushort curCombo = ProcessMemory.GetUInt16(scoreBatch, 0x2C); // 0x94 - 0x68 = 0x2C
+
+            if (c300 >= 65000 || c100 >= 65000 || c50 >= 65000 || cMiss >= 65000)
+                return;
+
+            TotalScore = totalScore;
+            MaxCombo = maxCombo;
+            CurrentCombo = curCombo;
+            Count300 = c300;
+            Count100 = c100;
+            Count50 = c50;
+            CountMiss = cMiss;
+            ScoreLive = true;
+
+            // Accuracy 읽기 — gameplayBase + 0x48 → accuracyObj + 0x0C → double
+            RefreshAccuracy(gameplayBase);
+
+            // Hit Errors 읽기 — scoreBase + 0x38 → List<int>
+            RefreshHitErrors(scoreBase);
+        }
+
+        public bool IsHD { get { return (MenuMods & Offsets.Mod_HD) != 0; } }
+        public bool IsHR { get { return (MenuMods & Offsets.Mod_HR) != 0; } }
+        public bool IsFL { get { return (MenuMods & Offsets.Mod_FL) != 0; } }
+        public bool IsDT { get { return (MenuMods & Offsets.Mod_DT) != 0; } }
+        public bool IsHT { get { return (MenuMods & Offsets.Mod_HT) != 0; } }
+        public bool IsNC { get { return (MenuMods & Offsets.Mod_NC) != 0; } }
+        public bool IsEZ { get { return (MenuMods & Offsets.Mod_EZ) != 0; } }
+
+        /// <summary>
+        /// Accuracy 읽기 — gameplayBase + 0x48 → accuracyObj + 0x0C → double.
+        /// NEWNEWOVERLAY osu_reader.cpp RefreshScore 포팅.
+        /// </summary>
+        void RefreshAccuracy(IntPtr gameplayBase)
+        {
+            try
+            {
+                IntPtr accObj;
+                if (!pm.ReadPointer(gameplayBase + Offsets.GameplayBase_Accuracy, out accObj) || accObj == IntPtr.Zero)
+                    return;
+
+                double acc;
+                if (pm.ReadDouble(accObj + 0x0C, out acc))
+                    Accuracy = acc;
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Hit Errors 읽기 — scoreBase + 0x38 → List<int> → items 배열 순회.
+        /// 최근 30개만 유지, ±10000ms 범위 외 값 거부.
+        /// NEWNEWOVERLAY osu_reader.cpp 포팅.
+        /// </summary>
+        void RefreshHitErrors(IntPtr scoreBase)
+        {
+            HitErrors.Clear();
+            try
+            {
+                IntPtr listObj;
+                if (!pm.ReadPointer(scoreBase + 0x38, out listObj) || listObj == IntPtr.Zero)
+                    return;
+
+                IntPtr itemsArr;
+                if (!pm.ReadPointer(listObj + Offsets.List_Items, out itemsArr) || itemsArr == IntPtr.Zero)
+                    return;
+
+                int size;
+                if (!pm.ReadInt32(listObj + Offsets.List_Size, out size) || size <= 0)
+                    return;
+
+                // 최근 30개만
+                int start = Math.Max(0, size - 30);
+                int count = size - start;
+
+                // 배치 읽기 — 30개 int = 120바이트를 한 번의 ReadProcessMemory로 읽기
+                // (개별 ReadInt32 30번 → 1번으로 감소, syscall 오버헤드 제거)
+                if (count > 0 && itemsArr != IntPtr.Zero)
+                {
+                    int byteCount = count * 4;
+                    byte[] buf = buf120 ?? (buf120 = new byte[120]);
+                    if (byteCount > buf.Length) byteCount = buf.Length;
+                    if (pm.ReadBatch(itemsArr + Offsets.Array_Data + start * 4, buf, byteCount))
+                    {
+                        int numInts = byteCount / 4;
+                        for (int i = 0; i < numInts; i++)
+                        {
+                            int error = ProcessMemory.GetInt32(buf, i * 4);
+                            if (Math.Abs(error) <= 10000)
+                                HitErrors.Add(error);
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>HOM 캐시가 설정되었는지 여부 (매 프레임 호출 가능)</summary>
+        public bool HasHomCache { get { return cachedHom != IntPtr.Zero && cachedItemsArr != IntPtr.Zero; } }
+
+        // ── HitObject 리스트 읽기 ──
+        // Ruleset → HOM → hitObjects List → items 배열 → 각 HitObject
+
+        /// <summary>
+        /// HitObject 판정 데이터 — 메모리에서 읽은 값.
+        /// </summary>
+        public struct HitObjectJudgement
+        {
+            public int StartTime;
+            public int EndTime;
+            public int Type;
+            public int ScoreValue;  // 300/100/50/0
+            public byte IsHit;      // 1=판정됨
+            public int HitValue;    // IncreaseScoreType
+            public float FloatRotationCount; // 스피너 회전 (float, +0x10C)
+            public int ScoringRotationCount;  // 스피너 회전 (int, +0xF4)
+            public int RotationRequirement;    // 스피너 요구 회전수 (int, +0xF8)
+            public int SpinningState;         // 스피너 상태 (0=NotStarted, 1=Started, 2=Passed)
+            public byte IsTracking;           // 슬라이더 tracking 중 (0=아님, 1=tracking)
+            public byte StartIsHit;          // 슬라이더 시작원 IsHit (SliderStartCircle+0x84)
+        }
+
+        // ── HOM 스캔 (Player.Instance + .osu 파일 검증 방식) ──
+        // Player.Instance static → +오프셋 → HOM → +오프셋 → hitObjects List
+        // 오프셋은 첫 스캔 시 자동 감지, 이후 고정 오프셋으로 매 프레임 빠르게 읽기
+
+        /// <summary>
+        /// 32-bit CLR 힙 포인터처럼 보이는지 검사.
+        /// </summary>
+        bool LooksLikeHeapPtr(uint v)
+        {
+            if (v == 0) return false;
+            if (v == 0xFFFFFFFF) return false;
+            if ((v & 3) != 0) return false;
+            return v >= 0x01000000 && v < 0x80000000;
+        }
+
+        IntPtr playerInstanceSlot = IntPtr.Zero;
+
+        // 발견된 고정 오프셋 (첫 스캔 시 자동 감지)
+        int foundPlayerHomOff = -1;
+        int foundHomListOff = -1;
+
+        // HitObject StartTime/EndTime 배열 캐시 (맵 로드 시 1회). StartTime/EndTime은 GC-불변이므로 안전.
+        // 포인터(cachedHoPtrs)는 GC compaction으로 이동하므로 캐싱하지 않고 매 프레임 재읽기.
+        // EndTime도 캐싱 — 스피너처럼 긴 지속시간 객체는 StartTime이 과거여도 진행 중일 수 있어
+        // 시간 창이 StartTime이 아닌 EndTime 기준으로 판단해야 함.
+        int[] cachedHoStartTimes = null;
+        int[] cachedHoEndTimes = null;
+        int cachedHoCount = 0;
+        int cachedMaxDuration = 0; // 캐싱된 객체 중 최대 지속시간 (EndTime - StartTime)
+        // 맵 로드 시 오프셋 + StartTime 캐싱 완료 여부 (포인터는 매 프레임 읽음)
+        bool hoCacheReady = false;
+        IntPtr lastBeatmapObj = IntPtr.Zero;
+
+        // .osu 파일 파싱 결과 (검증용)
+        class OsuHitObject
+        {
+            public int StartTime;
+            public int Type;
+            public int RepeatCount = 1; // 슬라이더만 사용 (기본 1)
+        }
+        List<OsuHitObject> parsedHitObjects = new List<OsuHitObject>();
+        string parsedOsuPath = null;
+
+        // OverlayForm 주입 .osu StartTime 목록 (HOM 교차검증용).
+        // reader 자체 파싱(ParseOsuFile)보다 신뢰성 높음 — OverlayForm이 이미 파싱한 결과 재사용.
+        // mapKey 변경 시 foundPlayerHomOff를 -1로 무효화하여 오프셋 재감지 트리거.
+        List<int> parsedStartTimes = new List<int>();
+        List<int> parsedTypes = new List<int>(); // OverlayForm 주입 .osu Type 목록 (type & 0xF)
+        string parsedOsuKey = null;
+
+        /// <summary>
+        /// OverlayForm이 맵 파싱 후 호출 — .osu 교차검증용 StartTime + Type 목록 주입.
+        /// reader 자체 파식(ParseOsuFile)보다 신뢰성 높음 (OverlayForm이 이미 파싱한 결과 재사용).
+        /// mapKey가 바뀌면 (맵 전환) 감지된 HOM 오프셋을 무효화하여 재감지 트리거.
+        /// </summary>
+        public void SetParsedStartTimes(List<int> startTimes, List<int> types, string mapKey)
+        {
+            parsedStartTimes = startTimes ?? new List<int>();
+            parsedTypes = types ?? new List<int>();
+            if (mapKey != parsedOsuKey)
+            {
+                parsedOsuKey = mapKey;
+                foundPlayerHomOff = -1; // 맵 변경 → 오프셋 재감지
+                foundHomListOff = -1;
+            }
+        }
+
+        // Player.Instance 시그니처 스캔
+        void ScanPlayerInstanceSlot()
+        {
+            byte[] pattern;
+            string mask;
+            AobScanner.ParsePattern(Signatures.PlayerInstance.Pattern, out pattern, out mask);
+            IntPtr match = AobScanner.Scan(pm, pattern, mask);
+            if (match != IntPtr.Zero)
+                pm.ReadPointer(match + Signatures.PlayerInstance.OperandSkip, out playerInstanceSlot);
+        }
+
+        /// <summary>
+        /// Render at Native Resolution 관련 static slot 스캔.
+        /// WindowManager + ConfigManager Dictionary (tosu 방식).
+        /// </summary>
+        void ScanResolutionSlots()
+        {
+            // WindowManager static slot
+            windowManagerSlot = ScanSlot(Signatures.WindowManager);
+
+            // ConfigManager Dictionary 포인터 (tosu configurationAddr 패턴)
+            configDictSlot = ScanSlot(Signatures.ConfigDictionary);
+        }
+
+        /// <summary>
+        /// ConfigManager Dictionary에서 키 이름으로 Bindable 객체를 찾아 캐싱.
+        /// 값이 무효하면 재스캔 (Dictionary rehash 대응).
+        /// tosu의 configOffsets + configValue 방식과 동일.
+        /// </summary>
+        void ScanConfigDictionary()
+        {
+            if (configDictSlot == IntPtr.Zero) return;
+
+            // tosu 방식: configurationAddr 패턴의 OperandSkip(+6)은
+            //   8B 0D [imm32]  → mov ecx, [static_slot]
+            // ScanSlot은 [match+6]의 4바이트 = static_slot 주소를 반환.
+            //   readPointer(static_slot) = Dictionary 객체 포인터.
+            IntPtr dictObj;
+            if (!pm.ReadPointer(configDictSlot, out dictObj) || dictObj == IntPtr.Zero)
+            {
+                return;
+            }
+
+            // Dictionary.entries = [dictObj + 0x08]
+            IntPtr entries;
+            if (!pm.ReadPointer(dictObj + Offsets.Dict_Entries, out entries) || entries == IntPtr.Zero)
+                return;
+
+            // Dictionary.count = [dictObj + 0x1C]
+            // osu! ConfigManager는 ~234개 entry를 가짐 (tosu configList의 ~40개보다 훨씬 많음)
+            int count;
+            if (!pm.ReadInt32(dictObj + Offsets.Dict_Count, out count) || count <= 0 || count > 500)
+                return;
+
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr entry = entries + 0x08 + Offsets.Dict_EntryStride * i;
+
+                IntPtr keyPtr;
+                if (!pm.ReadPointer(entry + Offsets.Dict_EntryKey, out keyPtr) || keyPtr == IntPtr.Zero)
+                    continue;
+
+                string key = pm.ReadSharpString(keyPtr);
+                if (string.IsNullOrEmpty(key))
+                    continue;
+
+                IntPtr bindable;
+                if (!pm.ReadPointer(entry + Offsets.Dict_EntryValue, out bindable) || bindable == IntPtr.Zero)
+                    continue;
+
+                switch (key)
+                {
+                    case "Fullscreen":
+                        bindableFullscreen = bindable;
+                        break;
+                    case "Letterboxing":
+                        bindableLetterboxing = bindable;
+                        break;
+                    case "Width":
+                        bindableWidth = bindable;
+                        break;
+                    case "Height":
+                        bindableHeight = bindable;
+                        break;
+                    case "WidthFullscreen":
+                        bindableWidthFullscreen = bindable;
+                        break;
+                    case "HeightFullscreen":
+                        bindableHeightFullscreen = bindable;
+                        break;
+                    case "LetterboxPositionX":
+                        bindableLetterboxPositionX = bindable;
+                        break;
+                    case "LetterboxPositionY":
+                        bindableLetterboxPositionY = bindable;
+                        break;
+                }
+            }
+
+
+        }
+
+        /// <summary>
+        /// 매 프레임 Resolution 관련 live 값 갱신.
+        /// WindowManager.Width/Height + Config Dictionary에서 FS/LB/W/H.
+        /// </summary>
+        void RefreshResolution()
+        {
+            // WindowManager 객체에서 Width/Height/SpriteRes 읽기
+            if (windowManagerSlot != IntPtr.Zero)
+            {
+                IntPtr wmObj;
+                if (pm.ReadPointer(windowManagerSlot, out wmObj) && wmObj != IntPtr.Zero)
+                {
+                    int w, h, sr;
+                    if (pm.ReadInt32(wmObj + Offsets.WindowManager_Width, out w))
+                        WindowWidth = w;
+                    if (pm.ReadInt32(wmObj + Offsets.WindowManager_Height, out h))
+                        WindowHeight = h;
+                    if (pm.ReadInt32(wmObj + Offsets.WindowManager_SpriteRes, out sr))
+                        SpriteRes = sr;
+                }
+            }
+
+            // Config Dictionary 스캔 — Play 모드에서는 해상도 변경 불가하므로 스킵
+            // osu!에서 해상도 변경은 메뉴/송셀렉트에서만 가능
+            // Mode: 0=Menu, 1=Edit, 2=Play, 5=SelectPlay
+            bool needRescan = (Mode != Offsets.Mode_Play) &&
+                              (bindableFullscreen == IntPtr.Zero ||
+                               bindableWidth == IntPtr.Zero ||
+                               bindableWidthFullscreen == IntPtr.Zero);
+            if (needRescan)
+                ScanConfigDictionary();
+
+            // ConfigManager.sFullscreen (BindableBool, +0x0C = byte)
+            if (bindableFullscreen != IntPtr.Zero)
+            {
+                byte val;
+                if (pm.ReadByte(bindableFullscreen + Offsets.BindableBool_Value, out val))
+                    IsFullscreen = val != 0;
+            }
+
+            // ConfigManager.sLetterboxing (BindableBool, +0x0C = byte)
+            if (bindableLetterboxing != IntPtr.Zero)
+            {
+                byte val;
+                if (pm.ReadByte(bindableLetterboxing + Offsets.BindableBool_Value, out val))
+                    IsLetterboxing = val != 0;
+            }
+
+            // ConfigManager.sWidth (BindableInt, +0x04 = double)
+            if (bindableWidth != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableWidth + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
+                        bindableWidth = IntPtr.Zero; // 무효 → 재스캔 트리거
+                    else
+                        ConfigWidth = (int)val;
+                }
+            }
+
+            // ConfigManager.sHeight (BindableInt, +0x04 = double)
+            if (bindableHeight != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableHeight + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
+                        bindableHeight = IntPtr.Zero;
+                    else
+                        ConfigHeight = (int)val;
+                }
+            }
+
+            // ConfigManager.sWidthFullscreen (BindableInt, +0x04 = double)
+            if (bindableWidthFullscreen != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableWidthFullscreen + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
+                        bindableWidthFullscreen = IntPtr.Zero;
+                    else
+                        ConfigWidthFullscreen = (int)val;
+                }
+            }
+
+            // ConfigManager.sHeightFullscreen (BindableInt, +0x04 = double)
+            if (bindableHeightFullscreen != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableHeightFullscreen + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val <= 0 || val > 9999)
+                        bindableHeightFullscreen = IntPtr.Zero;
+                    else
+                        ConfigHeightFullscreen = (int)val;
+                }
+            }
+
+            // ConfigManager.sLetterboxPositionX (BindableInt, +0x04 = double)
+            if (bindableLetterboxPositionX != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableLetterboxPositionX + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val < -200 || val > 200)
+                        bindableLetterboxPositionX = IntPtr.Zero;
+                    else
+                        LetterboxPositionX = (int)val;
+                }
+            }
+
+            // ConfigManager.sLetterboxPositionY (BindableInt, +0x04 = double)
+            if (bindableLetterboxPositionY != IntPtr.Zero)
+            {
+                double val;
+                if (pm.ReadDouble(bindableLetterboxPositionY + Offsets.BindableInt_Value, out val))
+                {
+                    if (double.IsNaN(val) || double.IsInfinity(val) || val < -200 || val > 200)
+                        bindableLetterboxPositionY = IntPtr.Zero;
+                    else
+                        LetterboxPositionY = (int)val;
+                }
+            }
+
+            // 파생 값 계산
+            if (WindowHeight > 0)
+            {
+                Ratio = (float)WindowHeight / Offsets.WindowManager_DefaultHeight;
+                NonWidescreenOffsetX = Math.Max(0, (int)((WindowWidth - (WindowHeight * 4f / 3f)) / 2));
+
+                if (SpriteRes > 0)
+                    GameFieldScale = (float)WindowHeight / SpriteRes;
+            }
+
+            // 모니터 실제 네이티브 해상도 (Win32 API, osu! 창이 있는 모니터)
+            // 최초 1회 또는 창이 없을 때만 갱신
+            if (DesktopWidth == 0 && pm.ProcessId > 0)
+            {
+                try
+                {
+                    var proc = System.Diagnostics.Process.GetProcessById(pm.ProcessId);
+                    IntPtr hwnd = proc.MainWindowHandle;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        IntPtr hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        MONITORINFO mi = new MONITORINFO();
+                        mi.Size = Marshal.SizeOf(typeof(MONITORINFO));
+                        if (GetMonitorInfo(hMon, ref mi))
+                        {
+                            DesktopWidth = mi.Monitor.Right - mi.Monitor.Left;
+                            DesktopHeight = mi.Monitor.Bottom - mi.Monitor.Top;
+                        }
+                    }
+                    proc.Dispose();
+                }
+                catch { }
+            }
+
+            // Native resolution 판별:
+            // 1. 풀스크린 + 레터박싱 OFF → 전체화면 네이티브 해상도로 렌더링
+            // 2. 레터박싱 ON → 항상 모니터 네이티브 해상도로 렌더링 (중앙에 작게 표시)
+            // 3. 창 모드 + WM 해상도 == 데스크탑 해상도 → borderless 네이티브
+            if (IsFullscreen && !IsLetterboxing)
+                IsNativeResolution = true;
+            else if (IsLetterboxing)
+                IsNativeResolution = true;  // 레터박싱 = 네이티브 해상도로 렌더링
+            else if (!IsFullscreen && DesktopWidth > 0 && DesktopHeight > 0)
+                IsNativeResolution = (WindowWidth == DesktopWidth && WindowHeight == DesktopHeight);
+            else
+                IsNativeResolution = false;
+        }
+
+        // .osu 파일 경로 얻기
+        string GetOsuFilePath()
+        {
+            if (beatmapStaticAddr == IntPtr.Zero) return null;
+            IntPtr beatmapObj;
+            if (!pm.ReadPointer(beatmapStaticAddr, out beatmapObj) || beatmapObj == IntPtr.Zero) return null;
+            return GetOsuFilePathFromBeatmap(beatmapObj);
+        }
+
+        string GetOsuFilePathFromBeatmap(IntPtr beatmapObj)
+        {
+            if (beatmapObj == IntPtr.Zero) return null;
+
+            IntPtr folderPtr, filenamePtr;
+            if (!pm.ReadPointer(beatmapObj + 0x78, out folderPtr)) return null;
+            if (!pm.ReadPointer(beatmapObj + 0x90, out filenamePtr)) return null;
+            if (folderPtr == IntPtr.Zero || filenamePtr == IntPtr.Zero) return null;
+
+            string folder = ReadSharpString(folderPtr);
+            string filename = ReadSharpString(filenamePtr);
+            if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(filename)) return null;
+
+            string osuDir = OsuInstallDir;
+            if (osuDir == null) return null;
+
+            string path = System.IO.Path.Combine(osuDir, "Songs", folder, filename);
+            return System.IO.File.Exists(path) ? path : null;
+        }
+
+        string ReadSharpString(IntPtr strPtr)
+        {
+            if (strPtr == IntPtr.Zero) return null;
+            int length;
+            if (!pm.ReadInt32(strPtr + 0x04, out length)) return null;
+            if (length <= 0 || length > 1024) return null;
+            byte[] buf = new byte[length * 2];
+            if (!pm.ReadBytes(strPtr + 0x08, buf, length * 2)) return null;
+            return System.Text.Encoding.Unicode.GetString(buf);
+        }
+
+        // .osu 파일 파싱 — [HitObjects] 섹션만 (검증용)
+        void ParseOsuFile(string path)
+        {
+            parsedHitObjects.Clear();
+            parsedOsuPath = path;
+
+            try
+            {
+                string[] lines = System.IO.File.ReadAllLines(path);
+                bool inHitObjects = false;
+
+                foreach (string line in lines)
+                {
+                    if (line.StartsWith("[HitObjects]", StringComparison.OrdinalIgnoreCase))
+                    {
+                        inHitObjects = true;
+                        continue;
+                    }
+                    if (line.StartsWith("[", StringComparison.Ordinal) && inHitObjects)
+                        break;
+
+                    if (!inHitObjects || string.IsNullOrWhiteSpace(line)) continue;
+
+                    string[] parts = line.Split(',');
+                    if (parts.Length < 4) continue;
+
+                    int time, type;
+                    if (!int.TryParse(parts[2], out time)) continue;
+                    if (!int.TryParse(parts[3], out type)) continue;
+
+                    int ty = type & 0xF;
+                    int repeatCount = 1;
+                    // 슬라이더(type&0xF==2)면 repeatCount 파싱: parts[6]이 slides
+                    // 슬라이더 줄: x,y,time,type,sound,curve|...,slides,length,...
+                    if (ty == 2 && parts.Length > 6)
+                    {
+                        int slides;
+                        if (int.TryParse(parts[6], out slides) && slides >= 1)
+                            repeatCount = slides;
+                    }
+
+                    parsedHitObjects.Add(new OsuHitObject { StartTime = time, Type = ty, RepeatCount = repeatCount });
+                }
+            }
+            catch { }
+        }
+
+        // .osu 파싱 결과로부터 예상 HOM count 계산
+        // circle: 1개, slider: 1 + repeatCount개, spinner: 1개
+        int CalcExpectedHomCount()
+        {
+            if (parsedHitObjects.Count == 0) return 0;
+            int total = 0;
+            foreach (var ho in parsedHitObjects)
+            {
+                if (ho.Type == 2) // slider
+                    total += 1 + ho.RepeatCount;
+                else // circle, spinner
+                    total += 1;
+            }
+            return total;
+        }
+
+        // HOM 오프셋 자동 감지 (Player.Instance → HOM → hitObjects List)
+        bool DetectHomOffsets(IntPtr playerObj)
+        {
+            if (playerObj == IntPtr.Zero) return false;
+
+            // .osu 검증 데이터 — parsedStartTimes(OverlayForm 주입) 우선, parsedHitObjects(자체 파싱) 폴백
+            int osuCount = parsedStartTimes.Count > 0 ? parsedStartTimes.Count : parsedHitObjects.Count;
+            int osuSt0 = parsedStartTimes.Count > 0 ? parsedStartTimes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].StartTime : -1);
+            int osuTy0 = parsedTypes.Count > 0 ? parsedTypes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].Type : -1);
+
+            for (int off = 0x04; off <= 0x1FC; off += 4)
+            {
+                IntPtr homCand;
+                if (!pm.ReadPointer(playerObj + off, out homCand)) continue;
+                if (!LooksLikeHeapPtr((uint)homCand.ToInt32())) continue;
+
+                for (int listOff = 0x04; listOff <= 0xA0; listOff += 4)
+                {
+                    IntPtr listCand;
+                    if (!pm.ReadPointer(homCand + listOff, out listCand)) continue;
+                    if (!LooksLikeHeapPtr((uint)listCand.ToInt32())) continue;
+
+                    IntPtr items;
+                    if (!pm.ReadPointer(listCand + 0x04, out items)) continue;
+                    if (!LooksLikeHeapPtr((uint)items.ToInt32())) continue;
+
+                    int count;
+                    if (!pm.ReadInt32(listCand + 0x10, out count)) continue;
+                    if (count < 1) continue;
+
+                    // count 검증: .osu 객체 수와 ±2 허용 (내부 객체 1~2개 차이 가능)
+                    if (Math.Abs(count - osuCount) > 2)
+                        continue;
+
+                    // 첫 HitObject 검증 — StartTime + Type 일치
+                    IntPtr ho0;
+                    if (!pm.ReadPointer(items + 0x08, out ho0)) continue;
+                    if (!LooksLikeHeapPtr((uint)ho0.ToInt32())) continue;
+
+                    int st0, et0, ty0;
+                    if (!pm.ReadInt32(ho0 + 0x10, out st0)) continue;
+                    if (!pm.ReadInt32(ho0 + 0x14, out et0)) continue;
+                    if (!pm.ReadInt32(ho0 + 0x18, out ty0)) continue;
+
+                    if (st0 < 0 || st0 > 3600000) continue;
+                    if (et0 < st0 || et0 > 3600000) continue;
+                    if (ty0 == 0) continue;
+                    if (osuSt0 >= 0 && st0 != osuSt0) continue;
+                    // Type 검증 — NewCombo(4) 비트 제외하고 circle/slider/spinner 비트만 비교
+                    // osu!가 HOM에 객체를 넣을 때 NewCombo 비트를 추가할 수 있음
+                    if (osuTy0 >= 0 && (ty0 & 0x0B) != (osuTy0 & 0x0B)) continue;
+
+                    // count + 첫 객체 StartTime + Type 일치 → HOM 확정
+                    foundPlayerHomOff = off;
+                    foundHomListOff = listOff;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// HitObject 리스트에서 판정 데이터 읽기.
+        /// 맵 로드 시 1회: HOM → List → 포인터 + StartTime 캐싱.
+        /// 매 프레임: 캐싱된 포인터에서 시간 범위 내 객체만 IsHit/ScoreValue 읽기.
+        /// </summary>
+        public List<HitObjectJudgement> ReadHitObjectJudgements(int maxCount, int timeRangeMs = 0)
+        {
+            // 재사용 리스트 — Clear만 하고 새 할당 없음
+            reusedJudgements.Clear();
+            List<HitObjectJudgement> result = reusedJudgements;
+
+            // 맵 변경 감지 — Beatmap 객체 주소만 비교 (매 프레임 ReadPointer 1번)
+            IntPtr beatmapObj;
+            if (!pm.ReadPointer(beatmapStaticAddr, out beatmapObj) || beatmapObj == IntPtr.Zero)
+                return result;
+
+            // Beatmap 객체 주소가 바뀌면 맵 전환 — StartTime 캐시/오프셋 무효화
+            if (beatmapObj != lastBeatmapObj)
+            {
+                lastBeatmapObj = beatmapObj;
+                hoCacheReady = false;
+                cachedHoStartTimes = null;
+                cachedHoCount = 0;
+                foundPlayerHomOff = -1;
+                foundHomListOff = -1;
+
+                // .osu 파일 파싱 (맵 변경 시 1회) — 주입된 parsedStartTimes의 보조 폴백
+                string osuPath = GetOsuFilePathFromBeatmap(beatmapObj);
+                if (osuPath != null && osuPath != parsedOsuPath)
+                    ParseOsuFile(osuPath);
+            }
+
+            // === 단일 흐름: 매 프레임 동일 경로. GC compaction 후에도 자가 복구. ===
+            // 핵심: foundPlayerHomOff < 0 일 때마다 DetectHomOffsets 재시도 (hoCacheReady와 무관).
+
+            if (playerInstanceSlot == IntPtr.Zero) return result;
+
+            IntPtr playerObj;
+            if (!pm.ReadPointer(playerInstanceSlot, out playerObj) || !LooksLikeHeapPtr((uint)playerObj.ToInt32()))
+                return result;
+
+            // 오프셋 미감지 시 매 프레임 재시도 (초기 진입 / GC 후 무효화 / 일시적 실패 후 자가 복구)
+            if (foundPlayerHomOff < 0)
+            {
+                if (!DetectHomOffsets(playerObj))
+                    return result; // 다음 프레임 다시 시도
+            }
+
+            // 매 프레임 오프셋 체인 재읽기 — CLR이 GC 시 참조를 갱신하므로 항상 fresh 주소 획득.
+            // 일시적 실패 시 오프셋을 무효화하고 다음 프레임 DetectHomOffsets로 자가 복구.
+            IntPtr hom;
+            if (!pm.ReadPointer(playerObj + foundPlayerHomOff, out hom) || !LooksLikeHeapPtr((uint)hom.ToInt32()))
+            {
+                foundPlayerHomOff = -1;
+                return result;
+            }
+
+            IntPtr listObj;
+            if (!pm.ReadPointer(hom + foundHomListOff, out listObj) || !LooksLikeHeapPtr((uint)listObj.ToInt32()))
+            {
+                foundPlayerHomOff = -1;
+                return result;
+            }
+
+            IntPtr itemsArr;
+            if (!pm.ReadPointer(listObj + 0x04, out itemsArr) || !LooksLikeHeapPtr((uint)itemsArr.ToInt32()))
+            {
+                foundPlayerHomOff = -1;
+                return result;
+            }
+
+            int hitCount;
+            if (!pm.ReadInt32(listObj + 0x10, out hitCount) || hitCount <= 0)
+            {
+                foundPlayerHomOff = -1;
+                return result;
+            }
+            // .osu 객체 수와 ±2 허용 (내부 객체 1~2개 차이 가능)
+            int osuCount = parsedStartTimes.Count > 0 ? parsedStartTimes.Count : parsedHitObjects.Count;
+            if (osuCount > 0 && Math.Abs(hitCount - osuCount) > 2)
+            {
+                foundPlayerHomOff = -1;
+                return result;
+            }
+
+            // StartTime 배열 캐싱 — 맵 로드/재감지 후 1회만 (StartTime은 GC-불변).
+            // 포인터는 매 프레임 itemsArr에서 재읽으므로 캐싱하지 않음.
+            // 주의: 맵 전체(hitCount)를 캐싱해야 시간이 흘러도 이진 탐색 창이 비지 않음.
+            //       (이전에 Math.Min(hitCount, maxCount)로 500개만 캐싱 → 콤보 진행 시 창이 비어 끊김)
+            if (!hoCacheReady)
+            {
+                cachedHoStartTimes = new int[hitCount];
+                cachedHoEndTimes = new int[hitCount];
+                cachedHoCount = 0;
+                int maxDuration = 0;
+
+                for (int i = 0; i < hitCount; i++)
+                {
+                    IntPtr hoPtr;
+                    if (!pm.ReadPointer(itemsArr + 0x08 + i * 4, out hoPtr)) break;
+                    if (hoPtr != IntPtr.Zero && LooksLikeHeapPtr((uint)hoPtr.ToInt32()))
+                    {
+                        int st;
+                        pm.ReadInt32(hoPtr + Offsets.HitObject_StartTime, out st);
+                        cachedHoStartTimes[i] = st;
+                        int et;
+                        pm.ReadInt32(hoPtr + Offsets.HitObject_EndTime, out et);
+                        cachedHoEndTimes[i] = et;
+                        int dur = et - st;
+                        if (dur > maxDuration) maxDuration = dur;
+                    }
+                    else
+                    {
+                        cachedHoStartTimes[i] = -1;
+                        cachedHoEndTimes[i] = -1;
+                    }
+                    cachedHoCount++;
+                }
+                cachedMaxDuration = maxDuration;
+
+                hoCacheReady = true;
+            }
+
+            // 이진 탐색으로 시간 창 [idxStart, idxEnd) 산출 (cachedHoStartTimes 사용 — GC-불변)
+            int idxStart = 0, idxEnd = cachedHoCount;
+            if (timeRangeMs > 0)
+            {
+                // 비대칭 시간 범위 — 과거는 timeRangeMs, 미래는 500ms만
+                int timeMin = TimeMs - timeRangeMs;
+                int timeMax = TimeMs + 500;
+
+                // 긴 객체(스피너/슬라이더) 예외: StartTime이 과거여도 EndTime이 현재 이후면 진행 중.
+                // cachedMaxDuration(맵에서 가장 긴 객체 지속시간)만큼 과거까지 검색해서
+                // 진행 중인 긴 객체가 빠지지 않도록 함.
+                // 실제 포함 여부는 루프에서 cachedHoEndTimes[i] >= timeMin으로 최종 판단.
+                int searchMin = timeMin - cachedMaxDuration;
+
+                int lo = 0, hi = cachedHoCount;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi) >> 1;
+                    if (cachedHoStartTimes[mid] < searchMin)
+                        lo = mid + 1;
+                    else
+                        hi = mid;
+                }
+                idxStart = Math.Max(0, lo - 5);
+
+                lo = 0; hi = cachedHoCount;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi) >> 1;
+                    if (cachedHoStartTimes[mid] <= timeMax)
+                        lo = mid + 1;
+                    else
+                        hi = mid;
+                }
+                idxEnd = Math.Min(cachedHoCount, lo + 5);
+            }
+
+            // 배치 읽기 버퍼 — 재사용 (매 프레임 new 방지)
+            byte[] hoBatch = reusedHoBatch;
+
+            // 시간 창 내 객체만 — 매 프레임 itemsArr에서 포인터 재읽기 (GC-안전)
+            // cachedHoEndTimes로 이미 끝난 객체를 스킵하여 ReadProcessMemory 호출 최소화.
+            int timeMinFilter = (timeRangeMs > 0) ? (TimeMs - timeRangeMs) : int.MinValue;
+            int readCount = 0;
+            for (int i = idxStart; i < idxEnd; i++)
+            {
+                int startTimeVal = cachedHoStartTimes[i];
+                if (startTimeVal < 0) continue;
+
+                // EndTime이 timeMin 이전이면 이미 끝난 객체 — ReadProcessMemory 스킵
+                if (cachedHoEndTimes[i] < timeMinFilter) continue;
+
+                // maxCount 안전장치 — 실제 읽는 객체 수 제한
+                if (readCount >= maxCount) break;
+                readCount++;
+
+                // 매 프레임 fresh 포인터 — CLR이 GC 시 배열 내부 참조를 갱신하므로 항상 최신 위치
+                IntPtr hoPtr;
+                if (!pm.ReadPointer(itemsArr + 0x08 + i * 4, out hoPtr)) continue;
+                if (hoPtr == IntPtr.Zero) continue;
+                if (!LooksLikeHeapPtr((uint)hoPtr.ToInt32())) continue;
+
+                HitObjectJudgement j = new HitObjectJudgement(); // struct — 스택 할당, GC 없음
+                j.StartTime = startTimeVal;
+
+                // Type을 먼저 읽기 — 0x0C바이트 (StartTime+EndTime+Type)
+                if (!pm.ReadBatch(hoPtr + 0x10, hoBatch, 0x0C)) continue;
+
+                j.EndTime = ProcessMemory.GetInt32(hoBatch, 0x04); // hoPtr+0x14
+                j.Type = ProcessMemory.GetInt32(hoBatch, 0x08);     // hoPtr+0x18
+
+                if (j.EndTime < j.StartTime || j.EndTime > 3600000) continue;
+                if (j.Type == 0) continue;
+
+                // 타입별 필요한 만큼만 추가 읽기
+                bool isSlider = (j.Type & 2) != 0;
+                bool isSpinner = (j.Type & 8) != 0;
+                int readSize;
+                if (isSpinner)
+                    readSize = 0x100; // hoPtr+0x10 ~ hoPtr+0x110 (FloatRotationCount 0x10C까지)
+                else if (isSlider)
+                    readSize = 0x118; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120까지)
+                else
+                    readSize = 0x78;  // 원 — HitValue/ScoreValue/IsHit만
+
+                if (!pm.ReadBatch(hoPtr + 0x10, hoBatch, readSize)) continue;
+
+                j.HitValue = ProcessMemory.GetInt32(hoBatch, 0x4C); // hoPtr+0x5C
+                j.ScoreValue = ProcessMemory.GetInt32(hoBatch, 0x70); // hoPtr+0x80
+                j.IsHit = ProcessMemory.GetByte(hoBatch, 0x74);     // hoPtr+0x84
+
+                if (isSlider)
+                {
+                    // 슬라이더 — IsTracking(0x120)과 SliderStartCircle(0xD0) 모두 배치 범위 내
+                    j.IsTracking = ProcessMemory.GetByte(hoBatch, 0x110); // hoPtr+0x120 - 0x10 = 0x110
+                    IntPtr sliderStart = ProcessMemory.GetPointer(hoBatch, 0xC0); // hoPtr+0xD0 - 0x10 = 0xC0
+                    if (sliderStart != IntPtr.Zero && LooksLikeHeapPtr((uint)sliderStart.ToInt32()))
+                    {
+                        byte startIsHit;
+                        if (pm.ReadByte(sliderStart + Offsets.HitObject_IsHit, out startIsHit))
+                            j.StartIsHit = startIsHit;
+                    }
+                }
+
+                if (isSpinner)
+                {
+                    // 스피너 — 모든 필드가 배치 범위 내
+                    j.FloatRotationCount = ProcessMemory.GetFloat(hoBatch, 0xFC);  // hoPtr+0x10C - 0x10 = 0xFC
+                    j.ScoringRotationCount = ProcessMemory.GetInt32(hoBatch, 0xE4); // hoPtr+0xF4 - 0x10 = 0xE4
+                    j.RotationRequirement = ProcessMemory.GetInt32(hoBatch, 0xE8);  // hoPtr+0xF8 - 0x10 = 0xE8
+                    j.SpinningState = ProcessMemory.GetInt32(hoBatch, 0xF8);        // hoPtr+0x108 - 0x10 = 0xF8
+                }
+
+                result.Add(j);
+            }
+
+            return result;
+        }
+
+        public void Dispose()
+        {
+            if (pm != null)
+                pm.Dispose();
+        }
+
+        /// <summary>
+        /// hoCache 무효화 — retry 후 stale 포인터 방지.
+        /// ReadHitObjectJudgements가 다음 호출 시 HitObject 배열 재스캔.
+        /// </summary>
+        public void InvalidateHoCache()
+        {
+            hoCacheReady = false;
+            cachedHoStartTimes = null;
+            cachedHoCount = 0;
+            lastBeatmapObj = IntPtr.Zero;
+        }
+    }
+}
