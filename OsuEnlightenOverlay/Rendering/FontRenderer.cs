@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
-using System.Runtime.InteropServices;
 using OpenTK.Graphics.OpenGL;
 using OsuEnlightenOverlay.Rendering.Textures;
 using OsuEnlightenOverlay.Skinning;
