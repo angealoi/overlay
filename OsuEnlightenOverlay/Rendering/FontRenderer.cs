@@ -24,16 +24,22 @@ namespace OsuEnlightenOverlay.Rendering
         // 텍스트 캐시 — 같은 텍스트+폰트+크기면 텍스처 재사용
         Dictionary<string, pTexture> textCache = new Dictionary<string, pTexture>();
 
+        // 매니페스트 리소스 이름 접두사 = RootNamespace + csproj의 EmbeddedResource 경로.
+        //   <EmbeddedResource Include="resource\fonts\*.ttf" />
+        //     -> "OsuEnlightenOverlay.resource.fonts.*.ttf"
+        // csproj에서 폰트 경로를 옮기면 이 값도 함께 바꿔야 한다.
+        const string FontResourcePrefix = "OsuEnlightenOverlay.resource.fonts.";
+
         public FontRenderer(TextureManager tm)
         {
             this.textureManager = tm;
             fontCollection = new PrivateFontCollection();
 
             // 임베디드 리소스에서 폰트 로드 — 항상 사용 가능
-            LoadEmbeddedFont("OsuEnlightenOverlay.roboto-mono-v23-latin-600.ttf");
-            LoadEmbeddedFont("OsuEnlightenOverlay.roboto-mono-v23-latin-700.ttf");
-            LoadEmbeddedFont("OsuEnlightenOverlay.montserrat-v26-latin-600.ttf");
-            LoadEmbeddedFont("OsuEnlightenOverlay.montserrat-v26-latin-700.ttf");
+            LoadEmbeddedFont(FontResourcePrefix + "roboto-mono-v23-latin-600.ttf");
+            LoadEmbeddedFont(FontResourcePrefix + "roboto-mono-v23-latin-700.ttf");
+            LoadEmbeddedFont(FontResourcePrefix + "montserrat-v26-latin-600.ttf");
+            LoadEmbeddedFont(FontResourcePrefix + "montserrat-v26-latin-700.ttf");
 
             // 로드된 폰트 패밀리 이름 출력
             Console.WriteLine("[Font] Loaded " + fontCollection.Families.Length + " font families:");
@@ -48,21 +54,29 @@ namespace OsuEnlightenOverlay.Rendering
                 System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
                 using (System.IO.Stream stream = asm.GetManifestResourceStream(resourceName))
                 {
-                    if (stream != null)
+                    // 리소스 이름이 csproj 경로와 어긋나면 stream이 null이 된다.
+                    // 조용히 넘기면 HUD가 폴백 폰트로 렌더링되며 원인을 추적할 수 없으므로 알린다.
+                    if (stream == null)
                     {
-                        // PrivateFontCollection.AddFontFile은 파일 경로만 받으므로
-                        // 임시 파일로 복사 후 로드 — 파일은 유지 (GDI+가 파일을 참조함)
-                        string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                            "oeo_" + System.IO.Path.GetFileName(resourceName));
-                        using (var fs = new System.IO.FileStream(tempPath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
-                        {
-                            stream.CopyTo(fs);
-                        }
-                        fontCollection.AddFontFile(tempPath);
+                        Console.WriteLine("[Font] MISSING resource: " + resourceName);
+                        return;
                     }
+
+                    // PrivateFontCollection.AddFontFile은 파일 경로만 받으므로
+                    // 임시 파일로 복사 후 로드 — 파일은 유지 (GDI+가 파일을 참조함)
+                    string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                        "oeo_" + System.IO.Path.GetFileName(resourceName));
+                    using (var fs = new System.IO.FileStream(tempPath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                    {
+                        stream.CopyTo(fs);
+                    }
+                    fontCollection.AddFontFile(tempPath);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[Font] FAIL " + resourceName + ": " + ex.Message);
+            }
         }
 
         /// <summary>
