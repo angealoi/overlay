@@ -196,12 +196,18 @@ namespace OsuEnlightenOverlay.Memory
                     cursorSlots.Add(slot);
             }
 
-            // 커서 쓰기 함수의 3개 slot은 항상 연속된 4바이트 간격(slot, slot+4, slot+8)을 가짐.
-            // 이 3개 그룹을 찾아서 제외하고, 남은 slot 중에서 CursorPosition을 식별.
+            // 커서 쓰기 함수의 출력 slot들은 4바이트 간격으로 뭉쳐 있다(slot, slot+4, slot+8).
+            // CursorPosition은 InputManager의 value type static Vector2로 다른 packed static
+            // 영역에 홀로 떨어져 있다. 따라서 "이웃이 있는 slot = 쓰기 함수 출력"으로 본다.
             //
-            // CursorPosition은 InputManager의 value type static Vector2이고,
-            // 커서 쓰기 함수의 ref type static 포인터들과 다른 packed static 영역에 있음.
-            // 따라서 3개 연속 그룹에 속하지 않는 slot들이 CursorPosition 후보.
+            // 이전에는 삼중쌍(s, s+4, s+8)이 모두 잡혀야 그룹으로 인정했는데, AOB 스캔이
+            // 7개 중 6개만 찾으면(JIT 타이밍으로 한 코드 사이트가 아직 컴파일 전) 삼중쌍이
+            // 깨져 그룹 탐지가 통째로 실패하고, 쓰기 slot이 후보로 새어 들어와 먼저 선택됐다.
+            // 그러면 오버레이 커서가 인게임 커서 대신 물리 마우스를 따라간다
+            // (쓰기 slot은 정수 좌표, CursorPosition은 보간된 소수 좌표).
+            //
+            // ±4/±8 이내 이웃 유무로 판정하면 삼중쌍이 깨져도 안전하다.
+            // 실측 2개 세션(6개/7개 매치) 모두에서 정답 slot만 후보로 남는 것을 확인.
             var slotSet = new HashSet<long>();
             foreach (IntPtr s in cursorSlots)
                 slotSet.Add(s.ToInt64());
@@ -209,16 +215,46 @@ namespace OsuEnlightenOverlay.Memory
             cursorWriteSlots.Clear();
             foreach (long s in slotSet)
             {
-                if (slotSet.Contains(s + 4) && slotSet.Contains(s + 8))
-                {
-                    // 이 3개는 커서 쓰기 함수의 출력 slot
+                if (slotSet.Contains(s - 8) || slotSet.Contains(s - 4) ||
+                    slotSet.Contains(s + 4) || slotSet.Contains(s + 8))
                     cursorWriteSlots.Add(s);
-                    cursorWriteSlots.Add(s + 4);
-                    cursorWriteSlots.Add(s + 8);
-                }
             }
 
             IdentifyCursorPositionSlot();
+        }
+
+        // 커서 슬롯 재스캔 제한 — AOB 스캔은 전체 메모리를 훑어 수백 ms가 든다.
+        // 렌더 스레드에서 도므로 무제한 재시도하면 계속 끊긴다.
+        const long CursorRescanIntervalTicks = 2 * TimeSpan.TicksPerSecond;
+        const int CursorRescanMaxAttempts = 10;
+        long cursorRescanLastTicks;
+        int cursorRescanAttempts;
+
+        /// <summary>
+        /// 커서 AOB 재스캔 — 슬롯 목록 자체에 CursorPosition이 없을 때만.
+        /// 시간(2초)·횟수(10회) 제한. 확정되면 더 이상 호출되지 않는다.
+        /// </summary>
+        void TryRescanCursorSlots()
+        {
+            if (cursorRescanAttempts >= CursorRescanMaxAttempts) return;
+
+            long now = DateTime.UtcNow.Ticks;
+            if (now - cursorRescanLastTicks < CursorRescanIntervalTicks) return;
+            cursorRescanLastTicks = now;
+            cursorRescanAttempts++;
+
+            int before = cursorSlots.Count;
+            // 이전 스캔 결과를 완전히 버린다 — 폴백으로 잡아둔 주소가 새 목록에
+            // 없을 수 있으므로 남겨두면 안 된다.
+            cursorSlots.Clear();
+            cursorWriteSlots.Clear();
+            cursorPositionSlot = IntPtr.Zero;
+            cursorSlotIsProvisional = false;
+            ScanCursorSlots(); // 내부에서 IdentifyCursorPositionSlot까지 수행
+
+            Console.WriteLine("[Cursor] 재스캔 " + cursorRescanAttempts + "/" + CursorRescanMaxAttempts
+                + ": slots " + before + " -> " + cursorSlots.Count
+                + (cursorSlotIsProvisional ? " (아직 미확정)" : " (확정)"));
         }
 
         /// <summary>
@@ -251,12 +287,21 @@ namespace OsuEnlightenOverlay.Memory
                 }
             }
 
-            // 폴백: heuristic 실패 시 slot[1] 사용 (이전 검증 결과).
-            // provisional로 표시해 이후 프레임에서 제대로 식별되면 승격되도록 한다.
-            if (cursorPositionSlot == IntPtr.Zero && cursorSlots.Count >= 2)
+            // 폴백: 아직 값이 유효하지 않아 식별에 실패한 경우, 쓰기 그룹을 제외한
+            // 첫 후보를 임시로 쓴다. provisional로 표시해 유효 값이 들어오는 즉시 승격된다.
+            //
+            // 예전에는 인덱스로 slot[1]을 집었는데, 그 인덱스는 AOB 스캔이 훑는 JIT 코드
+            // 배치 순서에 의존한다 — 실측에서 slot[1]이 쓰기 슬롯인 세션이 있었다.
+            if (cursorPositionSlot == IntPtr.Zero)
             {
-                cursorPositionSlot = cursorSlots[1];
-                cursorSlotIsProvisional = true;
+                foreach (IntPtr slot in cursorSlots)
+                {
+                    if (cursorWriteSlots.Contains(slot.ToInt64()))
+                        continue;
+                    cursorPositionSlot = slot;
+                    cursorSlotIsProvisional = true;
+                    break;
+                }
             }
         }
 
@@ -310,7 +355,21 @@ namespace OsuEnlightenOverlay.Memory
             // 기동 시 osu!가 메뉴에 있으면 CursorPosition이 (0,0)이라 식별이 실패하는데,
             // Play에 진입해 커서가 살아나면 여기서 정답 슬롯으로 확정/승격된다.
             if (cursorPositionSlot == IntPtr.Zero || cursorSlotIsProvisional)
+            {
+                // 1단계: 이미 찾아둔 슬롯들로 재식별 (싸다).
                 IdentifyCursorPositionSlot();
+
+                // 2단계: 그래도 확정 못 하면 CursorPosition 코드 사이트가 스캔 당시
+                // 아직 JIT되지 않아 슬롯 목록에 아예 없는 경우다 — AOB 재스캔.
+                //
+                // 실측: 같은 osu!라도 세션에 따라 매치가 5~7개로 다르고, 5개인 세션엔
+                // 정답 슬롯(0x...5010)이 통째로 빠져 있었다. 스캔이 기동 시 1회뿐이라
+                // 그 세션은 영영 커서를 못 읽고 (0,0)에 박혔다.
+                //
+                // AOB 스캔은 전체 메모리를 훑어 비싸므로 시간·횟수를 제한한다.
+                if (cursorPositionSlot == IntPtr.Zero || cursorSlotIsProvisional)
+                    TryRescanCursorSlots();
+            }
 
             // CursorPosition static slot만 사용 (autopilot/auto mod 인게임 커서)
             if (cursorPositionSlot == IntPtr.Zero)
@@ -336,6 +395,16 @@ namespace OsuEnlightenOverlay.Memory
             }
         }
 
+        /// <summary>float이 정규(normal) 값인지 — 0은 허용, 비정규(subnormal)는 거부.</summary>
+        static bool IsNormalOrZero(float v)
+        {
+            if (v == 0) return true;
+            return Math.Abs(v) >= MinNormalFloat;
+        }
+
+        // float의 최소 정규값. 이보다 작은 0이 아닌 값은 비정규(subnormal)다.
+        const float MinNormalFloat = 1.17549435E-38f;
+
         bool TryReadCursor(IntPtr source, out float x, out float y)
         {
             x = 0; y = 0;
@@ -347,6 +416,18 @@ namespace OsuEnlightenOverlay.Memory
             if (Math.Abs(x) > 32768 || Math.Abs(y) > 32768) return false;
             if (x == 0 && y == 0) return false;
             if (x == 1.0f && y == 1.0f) return false;
+
+            // 비정규(subnormal) 거부 — 실제 좌표는 항상 정규 float이다.
+            //
+            // 커서 쓰기 함수의 슬롯은 좌표를 int로 담고 있어서, float으로 읽으면
+            // 작은 정수의 비트 패턴이 그대로 비정규값으로 보인다:
+            //   int 890 -> 0x0000037A -> float 1.247156E-42
+            //   int 655 -> 0x0000028F -> float 9.178505E-43
+            // 이 값들은 0이 아니므로 위의 (x==0 && y==0) 검사를 통과해버렸고,
+            // 그 결과 엉뚱한 슬롯이 CursorPosition으로 확정되어 커서가 (0,0)에
+            // 박혔다. 정상 좌표(431 -> 0x43D78000)는 항상 정규값이므로 이 검사로
+            // 두 경우를 확실히 가를 수 있다.
+            if (!IsNormalOrZero(x) || !IsNormalOrZero(y)) return false;
 
             return true;
         }
