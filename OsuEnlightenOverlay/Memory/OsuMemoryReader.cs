@@ -333,7 +333,7 @@ namespace OsuEnlightenOverlay.Memory
             {
                 RefreshCursor();
                 RefreshBeatmap();
-                resolution.Refresh(Mode);
+                resolution.Refresh();
             }
 
             if (playModeSlot != IntPtr.Zero)

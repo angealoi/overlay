@@ -808,6 +808,7 @@ namespace OsuEnlightenOverlay.Overlay
             frameCount++;
         }
 
+        string lastGeoState = ""; // [Sync] 로그 — 지오메트리 변화 감지용
         int frameCount = 0;
         int lastFrameTime = -1; // Retry 감지용
         int syncCounter = 0; // SyncToOsu 빈도 제어
@@ -876,7 +877,7 @@ namespace OsuEnlightenOverlay.Overlay
             else
             {
                 // 렌터박싱 OFF: GameField = 클라이언트 영역
-                // 단, WindowManager 해상도가 클라이언트와 다르면(스케일됨) WM 기준 사용
+                // 단, 렌더 해상도가 클라이언트와 다르면(스케일됨) 그쪽 기준 사용
                 if (reader.WindowWidth > 0 && reader.WindowHeight > 0 &&
                     (reader.WindowWidth != clientW || reader.WindowHeight != clientH))
                 {
@@ -885,14 +886,17 @@ namespace OsuEnlightenOverlay.Overlay
                 }
             }
 
-            // 디버그: osu! 창 크기 (최초 1회)
-            if (lastBeatmapFolder == null || lastBeatmapFolder.Length == 0)
+            // 지오메트리가 바뀔 때만 한 줄 남긴다 — 해상도/레터박스 변경 시에만 찍히므로
+            // 조용하고, 오버레이가 게임 필드에서 어긋났을 때 원인을 좁히는 데 이게 유일한 단서다.
+            string geoState = $"{clientW}x{clientH}|{overlayX},{overlayY}|{overlayW}x{overlayH}|{gameFieldW}x{gameFieldH}";
+            if (geoState != lastGeoState)
             {
-                Console.WriteLine($"[Sync] osu! client={clientW}x{clientH}" +
-                    $" overlay={overlayW}x{overlayH}" +
-                    $" gameField={gameFieldW}x{gameFieldH}" +
-                    $" letterbox={reader.IsLetterboxing}");
-                lastBeatmapFolder = " ";
+                lastGeoState = geoState;
+                Console.WriteLine($"[Sync] client=({clientX},{clientY}) {clientW}x{clientH}"
+                    + $" desktop={reader.DesktopWidth}x{reader.DesktopHeight}"
+                    + $" | LB={reader.IsLetterboxing} render={reader.WindowWidth}x{reader.WindowHeight}"
+                    + $" pos=({reader.LetterboxPositionX},{reader.LetterboxPositionY})"
+                    + $" | overlay=({overlayX},{overlayY}) {overlayW}x{overlayH}");
             }
 
             // 오버레이 창을 게임 필드 영역에 정확히 맞춤

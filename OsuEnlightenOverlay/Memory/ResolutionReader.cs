@@ -4,17 +4,39 @@ using System.Runtime.InteropServices;
 namespace OsuEnlightenOverlay.Memory
 {
     /// <summary>
-    /// 레터박싱(Render at Native Resolution) 관련 값 읽기 — 오버레이를 osu!의 실제
-    /// 게임 필드 영역에 정확히 맞추기 위해 필요한 값만 읽는다.
+    /// 레터박싱(osu! UI: "Render at native resolution") 관련 값 읽기 — 오버레이를
+    /// osu!의 실제 게임 필드 영역에 맞추기 위해 필요한 값만 읽는다.
     ///
-    /// 세 출처를 합친다:
-    ///   WindowManager 객체        = 실제 렌더링 해상도 (Width/Height)
-    ///   ConfigManager Dictionary  = Letterboxing, LetterboxPositionX/Y
+    /// osu!의 세 가지 표시 모드:
+    ///   LB OFF + Fullscreen OFF → 창모드. 게임 필드 = 클라이언트 영역
+    ///   LB OFF + Fullscreen ON  → exclusive fullscreen. 게임 필드 = 클라이언트 영역
+    ///   LB ON                   → borderless fullscreen(데스크톱 해상도)으로 열고 그 안에
+    ///                             선택 해상도로 렌더, 나머지는 여백. LetterboxPositionX/Y
+    ///                             (-100~100, +가 오른쪽/아래)로 그 영역을 움직인다.
+    ///                             → 이 경우에만 위치 계산이 필요하다.
+    ///
+    /// 두 출처를 합친다:
+    ///   ConfigManager Dictionary  = Letterboxing, LetterboxPositionX/Y, Fullscreen,
+    ///                               Width/Height, WidthFullscreen/HeightFullscreen
     ///   Win32 MonitorFromWindow   = 모니터 네이티브 해상도
     ///
-    /// osu!에서 해상도 변경은 메뉴/송셀렉트에서만 가능하므로 Play 중에는 Dictionary를
-    /// 재스캔하지 않는다. 캐싱한 Bindable 포인터가 GC 압축으로 낡으면 값이 유효 범위를
-    /// 벗어나므로, 그때 포인터를 무효화해 다음 비-Play 프레임에 재스캔한다.
+    /// ── WindowManager 객체를 쓰지 않는 이유 ──
+    /// 렌더 해상도는 WindowManager 객체에도 있고 그쪽이 더 직접적이다. 하지만 그 static
+    /// 슬롯을 찾는 AOB 패턴은 SetScreenSize() 내부 코드이고, 이 메서드는 사용자가 해상도를
+    /// "바꿀 때"만 호출된다. 즉 그냥 켜기만 한 osu!에서는 JIT되지 않아 패턴이 메모리에
+    /// 아예 존재하지 않는다. 실측: 옵션을 건드리지 않은 10개 세션에서 85/85 스캔 실패 →
+    /// WindowWidth=0 → OverlayForm의 letterbox 분기가 통째로 죽어 오버레이가 게임 필드
+    /// 대신 화면 전체를 덮었다. 반면 Config Dictionary는 96/96 성공했고, 아래 Fullscreen
+    /// 분기와 함께 읽으면 WindowManager와 값이 정확히 일치한다(실측: 창모드 1280x960,
+    /// 전체화면 1280x1024 양쪽 다 일치).
+    ///
+    /// ── Bindable 포인터를 캐싱하지 않는 이유 ──
+    /// GC 압축이 Bindable 객체를 옮기면 캐싱한 포인터가 낡는다. 실측: 객체가 통째로 0이
+    /// 되면서 LetterboxPositionX/Y가 1로, Letterboxing이 False로 뒤집혔다. 해제된 블록
+    /// 헤더를 double로 읽으면 정확히 1.0이 나오는데, 이 값은 정수이고 유효 범위 안이라
+    /// 값 기반 검사(범위/정수)를 전부 통과한다 — 값만 보고는 낡음을 막을 수 없다.
+    /// 그래서 entry 인덱스만 캐싱하고 값은 매 프레임 static 슬롯부터 다시 타고 내려가
+    /// 읽는다. 모든 hop이 GC 루트에서 시작하므로 압축과 구조적으로 무관해진다.
     /// </summary>
     internal class ResolutionReader
     {
@@ -44,23 +66,36 @@ namespace OsuEnlightenOverlay.Memory
 
         readonly ProcessMemory pm;
 
-        IntPtr windowManagerSlot = IntPtr.Zero;
-        IntPtr configDictSlot = IntPtr.Zero;  // ConfigManager Dictionary 포인터
+        IntPtr configDictSlot = IntPtr.Zero;  // ConfigManager Dictionary static slot
 
-        // Config Dictionary에서 찾은 Bindable 객체 포인터들 (최초 1회 스캔 후 캐싱)
-        IntPtr bindableLetterboxing = IntPtr.Zero;
-        IntPtr bindableLetterboxPositionX = IntPtr.Zero;
-        IntPtr bindableLetterboxPositionY = IntPtr.Zero;
+        /// <summary>추적하는 Config 키 하나 — entry 인덱스만 들고 있다(포인터 아님).</summary>
+        class ConfigKey
+        {
+            public readonly string Name;
+            public int Index = -1;
+            public ConfigKey(string name) { Name = name; }
+        }
 
-        /// <summary>실제 렌더링 너비 (WindowManager.Width)</summary>
+        readonly ConfigKey keyLetterboxing = new ConfigKey("Letterboxing");
+        readonly ConfigKey keyLbPosX       = new ConfigKey("LetterboxPositionX");
+        readonly ConfigKey keyLbPosY       = new ConfigKey("LetterboxPositionY");
+        readonly ConfigKey keyFullscreen   = new ConfigKey("Fullscreen");
+        readonly ConfigKey keyWidth        = new ConfigKey("Width");
+        readonly ConfigKey keyHeight       = new ConfigKey("Height");
+        readonly ConfigKey keyWidthFs      = new ConfigKey("WidthFullscreen");
+        readonly ConfigKey keyHeightFs     = new ConfigKey("HeightFullscreen");
+
+        readonly ConfigKey[] allKeys;
+
+        /// <summary>실제 렌더링 너비 (Fullscreen 여부에 따라 선택된 Config 해상도)</summary>
         public int WindowWidth { get; private set; }
-        /// <summary>실제 렌더링 높이 (WindowManager.Height, MenuHeight 제외 전)</summary>
+        /// <summary>실제 렌더링 높이</summary>
         public int WindowHeight { get; private set; }
         /// <summary>레터박싱 여부 (osu! UI: "Render at native resolution")</summary>
         public bool IsLetterboxing { get; private set; }
-        /// <summary>레터박스 수평 위치 (-100~100, 0=중앙)</summary>
+        /// <summary>레터박스 수평 위치 (-100~100, +가 오른쪽)</summary>
         public int LetterboxPositionX { get; private set; }
-        /// <summary>레터박스 수직 위치 (-100~100, 0=중앙)</summary>
+        /// <summary>레터박스 수직 위치 (-100~100, +가 아래)</summary>
         public int LetterboxPositionY { get; private set; }
         /// <summary>모니터 실제 네이티브 해상도 너비 (Win32 API)</summary>
         public int DesktopWidth { get; private set; }
@@ -70,155 +105,206 @@ namespace OsuEnlightenOverlay.Memory
         public ResolutionReader(ProcessMemory pm)
         {
             this.pm = pm;
+            allKeys = new[]
+            {
+                keyLetterboxing, keyLbPosX, keyLbPosY, keyFullscreen,
+                keyWidth, keyHeight, keyWidthFs, keyHeightFs
+            };
         }
 
-        /// <summary>
-        /// Render at Native Resolution 관련 static slot 스캔.
-        /// WindowManager + ConfigManager Dictionary (tosu 방식).
-        /// </summary>
+        /// <summary>ConfigManager Dictionary static slot 스캔 (tosu configurationAddr 방식).</summary>
         public void ScanSlots()
         {
-            // WindowManager static slot
-            windowManagerSlot = AobScanner.ResolveSlot(pm, Signatures.WindowManager);
-
-            // ConfigManager Dictionary 포인터 (tosu configurationAddr 패턴)
             configDictSlot = AobScanner.ResolveSlot(pm, Signatures.ConfigDictionary);
         }
 
+        // ────────────────────── Dictionary 접근 (캐싱 없음) ──────────────────────
+
         /// <summary>
-        /// ConfigManager Dictionary에서 키 이름으로 Bindable 객체를 찾아 캐싱.
-        /// 값이 무효하면 재스캔 (Dictionary rehash 대응).
-        /// tosu의 configOffsets + configValue 방식과 동일.
+        /// Dictionary.entries 배열 주소를 static 루트부터 새로 해석한다.
+        /// 매 프레임 호출된다 — 캐싱하지 않는 것이 요점이다(GC 압축 면역).
+        /// </summary>
+        IntPtr ResolveEntries()
+        {
+            if (configDictSlot == IntPtr.Zero) return IntPtr.Zero;
+
+            IntPtr dictObj;
+            if (!pm.ReadPointer(configDictSlot, out dictObj) || dictObj == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            IntPtr entries;
+            if (!pm.ReadPointer(dictObj + Offsets.Dict_Entries, out entries))
+                return IntPtr.Zero;
+
+            return entries;
+        }
+
+        IntPtr EntryAt(IntPtr entries, int index)
+        {
+            return entries + 0x08 + Offsets.Dict_EntryStride * index;
+        }
+
+        bool TryResolveBindable(IntPtr entries, ConfigKey key, out IntPtr bindable)
+        {
+            bindable = IntPtr.Zero;
+            if (entries == IntPtr.Zero || key.Index < 0) return false;
+            return pm.ReadPointer(EntryAt(entries, key.Index) + Offsets.Dict_EntryValue, out bindable)
+                && bindable != IntPtr.Zero;
+        }
+
+        /// <summary>BindableInt 읽기 — int를 double로 담으므로 +0x04에서 double로 읽는다.</summary>
+        bool TryReadInt(IntPtr entries, ConfigKey key, out int value)
+        {
+            value = 0;
+            IntPtr obj;
+            if (!TryResolveBindable(entries, key, out obj)) return false;
+
+            double d;
+            if (!pm.ReadDouble(obj + Offsets.BindableInt_Value, out d)) return false;
+            if (double.IsNaN(d) || double.IsInfinity(d) || d < int.MinValue || d > int.MaxValue)
+                return false;
+
+            value = (int)d;
+            return true;
+        }
+
+        /// <summary>
+        /// BindableBool 읽기 — +0x0C가 현재값. (+0x0D는 기본값이라 건드리지 않는다:
+        /// 실측 Fullscreen이 0C=0/0D=1, Letterboxing이 0C=1/0D=0으로 osu! 기본값과 맞았다.)
+        /// </summary>
+        bool TryReadBool(IntPtr entries, ConfigKey key, out bool value)
+        {
+            value = false;
+            IntPtr obj;
+            if (!TryResolveBindable(entries, key, out obj)) return false;
+
+            byte v;
+            if (!pm.ReadByte(obj + Offsets.BindableBool_Value, out v)) return false;
+            value = v != 0;
+            return true;
+        }
+
+        // ────────────────────── 인덱스 스캔 / 검증 ──────────────────────
+
+        long lastScanTicks;
+        long lastVerifyTicks;
+
+        /// <summary>
+        /// Dictionary를 순회하며 관심 키의 entry 인덱스를 찾는다.
+        /// osu! ConfigManager는 시작 시 채워지고 이후 키가 추가되지 않으므로 인덱스는
+        /// 안정적이다 — 그래서 매 프레임이 아니라 필요할 때만 돈다.
         /// </summary>
         void ScanConfigDictionary()
         {
             if (configDictSlot == IntPtr.Zero) return;
 
-            // tosu 방식: configurationAddr 패턴의 OperandSkip(+6)은
-            //   8B 0D [imm32]  → mov ecx, [static_slot]
-            // ResolveSlot은 [match+6]의 4바이트 = static_slot 주소를 반환.
-            //   readPointer(static_slot) = Dictionary 객체 포인터.
             IntPtr dictObj;
-            if (!pm.ReadPointer(configDictSlot, out dictObj) || dictObj == IntPtr.Zero)
-                return;
+            if (!pm.ReadPointer(configDictSlot, out dictObj) || dictObj == IntPtr.Zero) return;
 
-            // Dictionary.entries = [dictObj + 0x08]
             IntPtr entries;
-            if (!pm.ReadPointer(dictObj + Offsets.Dict_Entries, out entries) || entries == IntPtr.Zero)
-                return;
+            if (!pm.ReadPointer(dictObj + Offsets.Dict_Entries, out entries) || entries == IntPtr.Zero) return;
 
-            // Dictionary.count = [dictObj + 0x1C]
-            // osu! ConfigManager는 ~234개 entry를 가짐 (tosu configList의 ~40개보다 훨씬 많음)
+            // osu! ConfigManager는 ~234개 entry를 가짐
             int count;
-            if (!pm.ReadInt32(dictObj + Offsets.Dict_Count, out count) || count <= 0 || count > 500)
-                return;
+            if (!pm.ReadInt32(dictObj + Offsets.Dict_Count, out count) || count <= 0 || count > 500) return;
 
-            for (int i = 0; i < count; i++)
+            foreach (ConfigKey k in allKeys) k.Index = -1;
+
+            int found = 0;
+            for (int i = 0; i < count && found < allKeys.Length; i++)
             {
-                IntPtr entry = entries + 0x08 + Offsets.Dict_EntryStride * i;
-
                 IntPtr keyPtr;
-                if (!pm.ReadPointer(entry + Offsets.Dict_EntryKey, out keyPtr) || keyPtr == IntPtr.Zero)
+                if (!pm.ReadPointer(EntryAt(entries, i) + Offsets.Dict_EntryKey, out keyPtr) || keyPtr == IntPtr.Zero)
                     continue;
 
-                string key = pm.ReadSharpString(keyPtr);
-                if (string.IsNullOrEmpty(key))
-                    continue;
+                string name = pm.ReadSharpString(keyPtr);
+                if (string.IsNullOrEmpty(name)) continue;
 
-                IntPtr bindable;
-                if (!pm.ReadPointer(entry + Offsets.Dict_EntryValue, out bindable) || bindable == IntPtr.Zero)
-                    continue;
-
-                switch (key)
+                foreach (ConfigKey k in allKeys)
                 {
-                    case "Letterboxing":
-                        bindableLetterboxing = bindable;
-                        break;
-                    case "LetterboxPositionX":
-                        bindableLetterboxPositionX = bindable;
-                        break;
-                    case "LetterboxPositionY":
-                        bindableLetterboxPositionY = bindable;
-                        break;
+                    if (k.Index >= 0 || k.Name != name) continue;
+                    k.Index = i;
+                    found++;
+                    break;
                 }
             }
+
+            if (found != allKeys.Length)
+                Console.WriteLine("[Resolution] Config 키 " + found + "/" + allKeys.Length + "개만 발견 (count=" + count + ")");
         }
 
-        // BindableInt 유효 범위 — 벗어나면 GC 압축 등으로 포인터가 낡은 것으로 간주.
-        const double LetterboxMin = -200, LetterboxMax = 200;    // 레터박스 위치 (-100~100 + 여유)
-
         /// <summary>
-        /// BindableInt(+0x04 = double) 읽기.
-        /// 값이 [min,max] 밖이거나 NaN/Inf면 bindable 포인터를 무효화해
-        /// 다음 스캔에서 재해석하도록 하고 false 반환 (기존 값 유지).
+        /// 캐싱한 인덱스가 여전히 그 키를 가리키는지 확인한다. Dictionary가 재해시되면
+        /// 인덱스가 밀릴 수 있다 — 실측된 적은 없지만 확인이 싸므로 1초에 한 번 한다.
         /// </summary>
-        bool TryReadBindableInt(ref IntPtr bindable, double min, double max, out int value)
+        bool VerifyIndices(IntPtr entries)
         {
-            value = 0;
-            if (bindable == IntPtr.Zero) return false;
+            if (entries == IntPtr.Zero) return false;
 
-            double val;
-            if (!pm.ReadDouble(bindable + Offsets.BindableInt_Value, out val))
-                return false;
-
-            if (double.IsNaN(val) || double.IsInfinity(val) || val < min || val > max)
+            foreach (ConfigKey k in allKeys)
             {
-                bindable = IntPtr.Zero; // 무효 → 재스캔 트리거
-                return false;
-            }
+                if (k.Index < 0) return false;
 
-            value = (int)val;
+                IntPtr keyPtr;
+                if (!pm.ReadPointer(EntryAt(entries, k.Index) + Offsets.Dict_EntryKey, out keyPtr)
+                    || keyPtr == IntPtr.Zero)
+                    return false;
+
+                if (pm.ReadSharpString(keyPtr) != k.Name) return false;
+            }
             return true;
         }
 
-        /// <summary>
-        /// 매 프레임 Resolution 관련 live 값 갱신.
-        /// WindowManager.Width/Height + Config Dictionary에서 FS/LB/W/H.
-        /// </summary>
-        /// <param name="mode">현재 OsuModes — Play 중에는 Dictionary 재스캔을 건너뛴다.</param>
-        public void Refresh(int mode)
+        // ────────────────────── 매 프레임 갱신 ──────────────────────
+
+        /// <summary>매 프레임 Resolution 관련 live 값 갱신.</summary>
+        public void Refresh()
         {
-            // WindowManager 객체에서 Width/Height 읽기
-            if (windowManagerSlot != IntPtr.Zero)
+            IntPtr entries = ResolveEntries();
+
+            bool needScan = false;
+            foreach (ConfigKey k in allKeys)
+                if (k.Index < 0) { needScan = true; break; }
+
+            if (!needScan && DateTime.UtcNow.Ticks - lastVerifyTicks > TimeSpan.TicksPerSecond)
             {
-                IntPtr wmObj;
-                if (pm.ReadPointer(windowManagerSlot, out wmObj) && wmObj != IntPtr.Zero)
+                lastVerifyTicks = DateTime.UtcNow.Ticks;
+                needScan = !VerifyIndices(entries);
+            }
+
+            // 스캔은 234개 entry의 문자열을 읽으므로 매 프레임 돌면 안 된다 —
+            // 실패해도 1초에 한 번만 재시도한다.
+            if (needScan && DateTime.UtcNow.Ticks - lastScanTicks > TimeSpan.TicksPerSecond)
+            {
+                lastScanTicks = DateTime.UtcNow.Ticks;
+                ScanConfigDictionary();
+                entries = ResolveEntries();
+            }
+
+            bool b;
+            if (TryReadBool(entries, keyLetterboxing, out b)) IsLetterboxing = b;
+
+            int v;
+            if (TryReadInt(entries, keyLbPosX, out v)) LetterboxPositionX = v;
+            if (TryReadInt(entries, keyLbPosY, out v)) LetterboxPositionY = v;
+
+            // 렌더 해상도: 전체화면이면 *Fullscreen 키, 아니면 창모드 키를 쓴다.
+            //
+            // 이 분기가 없으면 전체화면에서 틀린다. 실측(1.log 02:25:13): 전체화면
+            // 1280x1024인 순간에도 Width/Height는 창모드 값 1440x1080을 그대로 들고
+            // 있었다. Fullscreen을 보고 골라야 WindowManager 값과 일치한다.
+            bool fullscreen;
+            if (TryReadBool(entries, keyFullscreen, out fullscreen))
+            {
+                int w, h;
+                if (TryReadInt(entries, fullscreen ? keyWidthFs : keyWidth, out w) &&
+                    TryReadInt(entries, fullscreen ? keyHeightFs : keyHeight, out h) &&
+                    w > 0 && h > 0)
                 {
-                    int w, h;
-                    if (pm.ReadInt32(wmObj + Offsets.WindowManager_Width, out w))
-                        WindowWidth = w;
-                    if (pm.ReadInt32(wmObj + Offsets.WindowManager_Height, out h))
-                        WindowHeight = h;
+                    WindowWidth = w;
+                    WindowHeight = h;
                 }
             }
-
-            // Config Dictionary 스캔 — Play 모드에서는 해상도 변경 불가하므로 스킵
-            // osu!에서 해상도 변경은 메뉴/송셀렉트에서만 가능
-            // Mode: 0=Menu, 1=Edit, 2=Play, 5=SelectPlay
-            //
-            // 재스캔 센티널: 캐싱한 Bindable 포인터는 GC 압축으로 낡을 수 있다.
-            // 낡은 포인터를 읽으면 쓰레기 값이 나오고, TryReadBindableInt가 범위 밖으로
-            // 판정해 포인터를 무효화(Zero)하면 여기서 재스캔이 걸린다.
-            // LetterboxPosition의 유효 범위(-200~200)는 좁아서 쓰레기 값 검출에 유리하다.
-            bool needRescan = (mode != Offsets.Mode_Play) &&
-                              (bindableLetterboxing == IntPtr.Zero ||
-                               bindableLetterboxPositionX == IntPtr.Zero ||
-                               bindableLetterboxPositionY == IntPtr.Zero);
-            if (needRescan)
-                ScanConfigDictionary();
-
-            // ConfigManager.sLetterboxing (BindableBool, +0x0C = byte)
-            if (bindableLetterboxing != IntPtr.Zero)
-            {
-                byte val;
-                if (pm.ReadByte(bindableLetterboxing + Offsets.BindableBool_Value, out val))
-                    IsLetterboxing = val != 0;
-            }
-
-            // 레터박스 위치 (BindableInt) — 유효 범위 밖이면 포인터 무효화 → 재스캔
-            int v;
-            if (TryReadBindableInt(ref bindableLetterboxPositionX, LetterboxMin, LetterboxMax, out v)) LetterboxPositionX = v;
-            if (TryReadBindableInt(ref bindableLetterboxPositionY, LetterboxMin, LetterboxMax, out v)) LetterboxPositionY = v;
 
             RefreshDesktopResolution();
         }

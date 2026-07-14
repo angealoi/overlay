@@ -118,16 +118,11 @@ namespace OsuEnlightenOverlay.Memory
         public const int AudioState_Seeking = 2;
 
         // ── Render at Native Resolution 관련 ──
-        // WindowManager 객체 필드 오프셋 (int 필드)
-        public const int WindowManager_Width     = 0x04;  // int (실제 렌더링 너비)
-        public const int WindowManager_Height    = 0x08;  // int (실제 렌더링 높이)
-        public const int WindowManager_SpriteRes = 0x0C;  // int (기준 해상도, 보통 768)
-
         // BindableInt 필드 오프셋 (double Value)
-        public const int BindableInt_Value = 0x04;  // double (설정값)
+        public const int BindableInt_Value = 0x04;  // double (설정값 — int를 double로 담는다)
 
         // BindableBool 필드 오프셋 (byte Value)
-        public const int BindableBool_Value = 0x0C;  // byte (0=false, 1=true)
+        public const int BindableBool_Value = 0x0C;  // byte (0=false, 1=true). +0x0D는 기본값.
 
         // ── ConfigManager Dictionary (tosu 방식) ──
         // Dictionary<string, Bindable> 구조
@@ -137,10 +132,6 @@ namespace OsuEnlightenOverlay.Memory
         public const int Dict_EntryKey   = 0x00;   // string ptr
         public const int Dict_EntryValue = 0x04;   // Bindable 객체 ptr
 
-        // WindowManager 기본 상수
-        public const int WindowManager_DefaultWidth  = 640;
-        public const int WindowManager_DefaultHeight = 480;
-        public const int WindowManager_DefaultSpriteRes = 768;
         public const int GameField_DefaultWidth  = 512;
         public const int GameField_DefaultHeight = 384;
     }

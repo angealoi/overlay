@@ -135,22 +135,14 @@ namespace OsuEnlightenOverlay.Memory
         };
 
         // ── Render at Native Resolution 관련 ──
-        // SetScreenSize()에서 WindowManager 객체의 Width/Height를 읽는 패턴.
-        // mov eax, [WindowManager_static]; mov edx, [eax+4]; mov eax, [WindowManager_static]; mov eax, [eax+8]
-        // → WindowManager static slot = match + 1의 4바이트 absolute address
-        // Read: readU32(slot) = WindowManager 객체
-        //   Width  = readI32(obj + 0x04)
-        //   Height = readI32(obj + 0x08)
-        //   SpriteRes = readI32(obj + 0x0C)
-        public static readonly AobSignature WindowManager = new AobSignature
-        {
-            Name = "WindowManager",
-            Pattern = "A1 ?? ?? ?? ?? 8B 50 04 A1 ?? ?? ?? ?? 8B 40 08 89 95",
-            Mask = "FF 00 00 00 00 FF FF FF FF FF 00 00 00 00 FF FF FF FF FF FF",
-            OperandSkip = 1,
-            PostAdd = 0,
-            ScanAll = false
-        };
+        // 여기 있던 WindowManager 시그니처는 제거했다.
+        //
+        // 패턴("A1 ?? ?? ?? ?? 8B 50 04 A1 ?? ?? ?? ?? 8B 40 08 89 95")이 SetScreenSize()
+        // 내부 코드였는데, 이 메서드는 사용자가 해상도를 "바꿀 때"만 호출된다. 그냥 켜기만
+        // 한 osu!에서는 JIT되지 않아 그 바이트열이 메모리에 아예 존재하지 않는다 —
+        // 실측 85/85 스캔 실패. 재스캔을 붙여도 없는 패턴은 못 찾으므로 소용없다.
+        // 렌더 해상도는 ConfigDictionary의 Width/Height + WidthFullscreen/HeightFullscreen을
+        // Fullscreen 값으로 골라 읽는다(ResolutionReader 참고). 실측 96/96 성공.
 
         // ── ConfigManager Dictionary (tosu 방식) ──
         // ConfigManager의 Dictionary<string, Bindable> 에 접근하는 코드 패턴.
