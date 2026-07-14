@@ -60,37 +60,17 @@ namespace OsuEnlightenOverlay.Memory
         public double Accuracy { get { return score.Accuracy; } }
         public List<int> HitErrors { get { return score.HitErrors; } }
 
-        // ── Render at Native Resolution 관련 — ResolutionReader 위임 ──
+        // ── 레터박싱/해상도 — ResolutionReader 위임 ──
         /// <summary>실제 렌더링 너비 (WindowManager.Width)</summary>
         public int WindowWidth { get { return resolution.WindowWidth; } }
         /// <summary>실제 렌더링 높이 (WindowManager.Height, MenuHeight 제외 전)</summary>
         public int WindowHeight { get { return resolution.WindowHeight; } }
-        /// <summary>스프라이트 기준 해상도 (보통 768)</summary>
-        public int SpriteRes { get { return resolution.SpriteRes; } }
-        /// <summary>설정된 너비 (ConfigManager.sWidth, 창 모드)</summary>
-        public int ConfigWidth { get { return resolution.ConfigWidth; } }
-        /// <summary>풀스크린 여부</summary>
-        public bool IsFullscreen { get { return resolution.IsFullscreen; } }
         /// <summary>레터박싱 여부 (osu! UI: "Render at native resolution")</summary>
         public bool IsLetterboxing { get { return resolution.IsLetterboxing; } }
         /// <summary>레터박스 수평 위치 (-100~100, 0=중앙)</summary>
         public int LetterboxPositionX { get { return resolution.LetterboxPositionX; } }
         /// <summary>레터박스 수직 위치 (-100~100, 0=중앙)</summary>
         public int LetterboxPositionY { get { return resolution.LetterboxPositionY; } }
-        /// <summary>네이티브 해상도로 렌더링 중인지 (WindowManager == InitialDesktopResolution)</summary>
-        public bool IsNativeResolution { get { return resolution.IsNativeResolution; } }
-        /// <summary>화면 비율 (Height / 480)</summary>
-        public float Ratio { get { return resolution.Ratio; } }
-        /// <summary>와이드스크린 오프셋 (NonWidescreenOffsetX)</summary>
-        public int NonWidescreenOffsetX { get { return resolution.NonWidescreenOffsetX; } }
-        /// <summary>GameField ScaleFactor</summary>
-        public float GameFieldScale { get { return resolution.GameFieldScale; } }
-        /// <summary>설정된 전체화면 너비 (ConfigManager.sWidthFullscreen)</summary>
-        public int ConfigWidthFullscreen { get { return resolution.ConfigWidthFullscreen; } }
-        /// <summary>설정된 전체화면 높이 (ConfigManager.sHeightFullscreen)</summary>
-        public int ConfigHeightFullscreen { get { return resolution.ConfigHeightFullscreen; } }
-        /// <summary>설정된 창 모드 높이 (ConfigManager.sHeight)</summary>
-        public int ConfigHeight { get { return resolution.ConfigHeight; } }
         /// <summary>모니터 실제 네이티브 해상도 너비 (Win32 API)</summary>
         public int DesktopWidth { get { return resolution.DesktopWidth; } }
         /// <summary>모니터 실제 네이티브 해상도 높이 (Win32 API)</summary>
