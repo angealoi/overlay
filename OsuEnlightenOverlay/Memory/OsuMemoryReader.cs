@@ -15,10 +15,12 @@ namespace OsuEnlightenOverlay.Memory
         // 해상도/레터박싱 읽기 — WindowManager + ConfigManager Dictionary
         ResolutionReader resolution;
 
+        // 스코어 읽기 — Ruleset → gameplayBase → scoreBase (Play 모드 전용)
+        ScoreReader score;
+
         IntPtr timeSlot = IntPtr.Zero;
         IntPtr modeSlot = IntPtr.Zero;
         IntPtr modsSlot = IntPtr.Zero;
-        IntPtr rulesetSlot = IntPtr.Zero;
         IntPtr beatmapStaticAddr = IntPtr.Zero;
         IntPtr playModeSlot = IntPtr.Zero;
         List<IntPtr> cursorSlots = new List<IntPtr>();
@@ -28,6 +30,7 @@ namespace OsuEnlightenOverlay.Memory
         public OsuMemoryReader()
         {
             resolution = new ResolutionReader(pm);
+            score = new ScoreReader(pm);
         }
 
         public int TimeMs { get; private set; }
@@ -45,18 +48,19 @@ namespace OsuEnlightenOverlay.Memory
         public string BeatmapDifficultyName { get; private set; }
         public int PlayMode { get; private set; }
 
-        public bool ScoreLive { get; private set; }
-        public int TotalScore { get; private set; }
-        public int MaxCombo { get; private set; }
-        public int CurrentCombo { get; private set; }
-        public ushort Count300 { get; private set; }
-        public ushort Count100 { get; private set; }
-        public ushort Count50 { get; private set; }
-        public ushort CountMiss { get; private set; }
+        // ── 스코어 — ScoreReader 위임 ──
+        public bool ScoreLive { get { return score.ScoreLive; } }
+        public int TotalScore { get { return score.TotalScore; } }
+        public int MaxCombo { get { return score.MaxCombo; } }
+        public int CurrentCombo { get { return score.CurrentCombo; } }
+        public ushort Count300 { get { return score.Count300; } }
+        public ushort Count100 { get { return score.Count100; } }
+        public ushort Count50 { get { return score.Count50; } }
+        public ushort CountMiss { get { return score.CountMiss; } }
 
         // HUD용 추가 상태
-        public double Accuracy { get; private set; }
-        public List<int> HitErrors { get; private set; } = new List<int>();
+        public double Accuracy { get { return score.Accuracy; } }
+        public List<int> HitErrors { get { return score.HitErrors; } }
 
         // ── Render at Native Resolution 관련 — ResolutionReader 위임 ──
         /// <summary>실제 렌더링 너비 (WindowManager.Width)</summary>
@@ -94,16 +98,9 @@ namespace OsuEnlightenOverlay.Memory
         /// <summary>모니터 실제 네이티브 해상도 높이 (Win32 API)</summary>
         public int DesktopHeight { get { return resolution.DesktopHeight; } }
 
-        // ── RefreshScore 배치 읽기 범위 ──
-        // MaxCombo(0x68)부터 CurrentCombo(0x94, ushort)까지를 한 번에 덮음.
-        const int ScoreBatchBase = Offsets.Score_MaxCombo;
-        const int ScoreBatchSize = Offsets.Score_CurrentCombo + sizeof(ushort) - ScoreBatchBase;
-
         // 재사용 버퍼 — 매 프레임 new 할당 방지 (GC 스톨 방지)
         List<HitObjectJudgement> reusedJudgements = new List<HitObjectJudgement>(64);
-        byte[] reusedScoreBatch = new byte[ScoreBatchSize];
         byte[] reusedHoBatch = new byte[0x118]; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120 포함)
-        byte[] buf120; // HitErrors 배치 읽기용 (30 int = 120바이트)
         HitObjectJudgement[] reusedJudgementPool = new HitObjectJudgement[64];
 
         public bool IsOpen { get { return pm.IsOpen; } }
@@ -187,7 +184,7 @@ namespace OsuEnlightenOverlay.Memory
                 return false;
 
             playModeSlot = ScanSlot(Signatures.PlayMode);
-            rulesetSlot = ScanSlot(Signatures.Ruleset);
+            score.ScanSlots();
             ScanCursorSlots();
             ScanPlayerInstanceSlot();
             resolution.ScanSlots();
@@ -302,10 +299,10 @@ namespace OsuEnlightenOverlay.Memory
                     PlayMode = playModeVal;
             }
 
-            if (Mode == Offsets.Mode_Play && rulesetSlot != IntPtr.Zero)
-                RefreshScore();
+            if (Mode == Offsets.Mode_Play && score.HasSlot)
+                score.Refresh();
             else
-                ScoreLive = false;
+                score.Clear();
         }
 
         void RefreshCursor()
@@ -404,54 +401,6 @@ namespace OsuEnlightenOverlay.Memory
             }
         }
 
-        void RefreshScore()
-        {
-            ScoreLive = false;
-
-            IntPtr rulesetObj;
-            if (!pm.ReadPointer(rulesetSlot, out rulesetObj) || rulesetObj == IntPtr.Zero)
-                return;
-
-            IntPtr gameplayBase;
-            if (!pm.ReadPointer(rulesetObj + Offsets.Ruleset_GameplayBase, out gameplayBase) || gameplayBase == IntPtr.Zero)
-                return;
-
-            IntPtr scoreBase;
-            if (!pm.ReadPointer(gameplayBase + Offsets.GameplayBase_ScoreBase, out scoreBase) || scoreBase == IntPtr.Zero)
-                return;
-
-            // 배치 읽기 — MaxCombo(0x68) ~ CurrentCombo(0x94)를 한 번의 ReadProcessMemory로.
-            // 버퍼 내 위치는 Offsets 상수에서 컴파일 타임에 산출 (진실의 원천 = Offsets).
-            byte[] scoreBatch = reusedScoreBatch;
-            if (!pm.ReadBytes(scoreBase + ScoreBatchBase, scoreBatch, ScoreBatchSize)) return;
-
-            int maxCombo = ProcessMemory.GetInt32(scoreBatch, Offsets.Score_MaxCombo - ScoreBatchBase);
-            int totalScore = ProcessMemory.GetInt32(scoreBatch, Offsets.Score_TotalScore - ScoreBatchBase);
-            ushort c100 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count100 - ScoreBatchBase);
-            ushort c300 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count300 - ScoreBatchBase);
-            ushort c50 = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_Count50 - ScoreBatchBase);
-            ushort cMiss = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_CountMiss - ScoreBatchBase);
-            ushort curCombo = ProcessMemory.GetUInt16(scoreBatch, Offsets.Score_CurrentCombo - ScoreBatchBase);
-
-            if (c300 >= 65000 || c100 >= 65000 || c50 >= 65000 || cMiss >= 65000)
-                return;
-
-            TotalScore = totalScore;
-            MaxCombo = maxCombo;
-            CurrentCombo = curCombo;
-            Count300 = c300;
-            Count100 = c100;
-            Count50 = c50;
-            CountMiss = cMiss;
-            ScoreLive = true;
-
-            // Accuracy 읽기 — gameplayBase + 0x48 → accuracyObj + 0x0C → double
-            RefreshAccuracy(gameplayBase);
-
-            // Hit Errors 읽기 — scoreBase + 0x38 → List<int>
-            RefreshHitErrors(scoreBase);
-        }
-
         public bool IsHD { get { return (MenuMods & Offsets.Mod_HD) != 0; } }
         public bool IsHR { get { return (MenuMods & Offsets.Mod_HR) != 0; } }
         public bool IsFL { get { return (MenuMods & Offsets.Mod_FL) != 0; } }
@@ -459,73 +408,6 @@ namespace OsuEnlightenOverlay.Memory
         public bool IsHT { get { return (MenuMods & Offsets.Mod_HT) != 0; } }
         public bool IsNC { get { return (MenuMods & Offsets.Mod_NC) != 0; } }
         public bool IsEZ { get { return (MenuMods & Offsets.Mod_EZ) != 0; } }
-
-        /// <summary>
-        /// Accuracy 읽기 — gameplayBase + 0x48 → accuracyObj + 0x0C → double.
-        /// NEWNEWOVERLAY osu_reader.cpp RefreshScore 포팅.
-        /// </summary>
-        void RefreshAccuracy(IntPtr gameplayBase)
-        {
-            try
-            {
-                IntPtr accObj;
-                if (!pm.ReadPointer(gameplayBase + Offsets.GameplayBase_Accuracy, out accObj) || accObj == IntPtr.Zero)
-                    return;
-
-                double acc;
-                if (pm.ReadDouble(accObj + Offsets.Accuracy_Value, out acc))
-                    Accuracy = acc;
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// Hit Errors 읽기 — scoreBase + 0x38 → List<int> → items 배열 순회.
-        /// 최근 30개만 유지, ±10000ms 범위 외 값 거부.
-        /// NEWNEWOVERLAY osu_reader.cpp 포팅.
-        /// </summary>
-        void RefreshHitErrors(IntPtr scoreBase)
-        {
-            HitErrors.Clear();
-            try
-            {
-                IntPtr listObj;
-                if (!pm.ReadPointer(scoreBase + Offsets.Score_HitErrors, out listObj) || listObj == IntPtr.Zero)
-                    return;
-
-                IntPtr itemsArr;
-                if (!pm.ReadPointer(listObj + Offsets.List_Items, out itemsArr) || itemsArr == IntPtr.Zero)
-                    return;
-
-                int size;
-                if (!pm.ReadInt32(listObj + Offsets.List_Size, out size) || size <= 0)
-                    return;
-
-                // 최근 30개만
-                int start = Math.Max(0, size - 30);
-                int count = size - start;
-
-                // 배치 읽기 — 30개 int = 120바이트를 한 번의 ReadProcessMemory로 읽기
-                // (개별 ReadInt32 30번 → 1번으로 감소, syscall 오버헤드 제거)
-                if (count > 0 && itemsArr != IntPtr.Zero)
-                {
-                    int byteCount = count * 4;
-                    byte[] buf = buf120 ?? (buf120 = new byte[120]);
-                    if (byteCount > buf.Length) byteCount = buf.Length;
-                    if (pm.ReadBytes(itemsArr + Offsets.Array_Data + start * 4, buf, byteCount))
-                    {
-                        int numInts = byteCount / 4;
-                        for (int i = 0; i < numInts; i++)
-                        {
-                            int error = ProcessMemory.GetInt32(buf, i * 4);
-                            if (Math.Abs(error) <= 10000)
-                                HitErrors.Add(error);
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
 
         // ── HitObject 리스트 읽기 ──
         // Ruleset → HOM → hitObjects List → items 배열 → 각 HitObject
