@@ -18,6 +18,7 @@ namespace OsuEnlightenOverlay.Memory
         public const int GameplayBase_ScoreBase = 0x38; // gameplayBase + 0x38 → scoreBase
         public const int GameplayBase_HpBar = 0x40;     // gameplayBase + 0x40 → hpBar
         public const int GameplayBase_Accuracy = 0x48;  // gameplayBase + 0x48 → accuracyObj
+        public const int Accuracy_Value = 0x0C;         // accuracyObj + 0x0C → double (0.0~1.0)
 
         // ── SIG.MD 4절: Beatmap Field Offsets ──
         // Beatmap 객체 기준
@@ -44,17 +45,9 @@ namespace OsuEnlightenOverlay.Memory
         public const int HitObject_IsTracking = 0x120;   // byte; slider-hold flag
 
         // ── Ruleset → HitObjectManager 체인 ──
-        // NEWNEWOVERLAY: Ruleset + 0x18 → HOM
-        // Osu-external-overlay: Ruleset + 0x48 → HOM (fallback: +0x68 → +0x3C)
-        // Eazfuscator가 필드 재배열하므로 빌드마다 다름 — 동적 스캔 필요
-        public const int Ruleset_HOM_0x18 = 0x18;
-        public const int Ruleset_HOM_0x48 = 0x48;
-        public const int Ruleset_HOM_0x68 = 0x68;
-        public const int Ruleset_HOM_0x68_Sub = 0x3C;
-
-        // ── HitObjectManager → hitObjects List ──
-        // NEWNEWOVERLAY: HOM + 0x18 → List<HitObject>
-        public const int HOM_HitObjectsList_0x18 = 0x18;
+        // 고정 오프셋 상수는 두지 않음: Eazfuscator가 빌드마다 필드를 재배열하므로
+        // 참조 구현들의 값(Ruleset+0x18 / +0x48 / +0x68→+0x3C)이 이 빌드에서 맞다는 보장이 없음.
+        // OsuMemoryReader.DetectHomOffsets()가 .osu 파싱 결과와 교차검증해 런타임에 감지함.
 
         // ── .NET List<T> 내부 레이아웃 ──
         public const int List_Items = 0x04;    // _items 배열 참조
@@ -66,6 +59,7 @@ namespace OsuEnlightenOverlay.Memory
         // scoreBase 기준
         public const int Score_Mods = 0x1C;              // mods wrapper ref
         public const int Score_PlayerName = 0x28;        // string ref
+        public const int Score_HitErrors = 0x38;         // List<int> ref (판정 오차 ms)
         public const int Score_Mode = 0x64;               // PlayModes enum
         public const int Score_MaxCombo = 0x68;           // int
         public const int Score_TotalScore = 0x78;         // int
@@ -124,16 +118,11 @@ namespace OsuEnlightenOverlay.Memory
         public const int AudioState_Seeking = 2;
 
         // ── Render at Native Resolution 관련 ──
-        // WindowManager 객체 필드 오프셋 (int 필드)
-        public const int WindowManager_Width     = 0x04;  // int (실제 렌더링 너비)
-        public const int WindowManager_Height    = 0x08;  // int (실제 렌더링 높이)
-        public const int WindowManager_SpriteRes = 0x0C;  // int (기준 해상도, 보통 768)
-
         // BindableInt 필드 오프셋 (double Value)
-        public const int BindableInt_Value = 0x04;  // double (설정값)
+        public const int BindableInt_Value = 0x04;  // double (설정값 — int를 double로 담는다)
 
         // BindableBool 필드 오프셋 (byte Value)
-        public const int BindableBool_Value = 0x0C;  // byte (0=false, 1=true)
+        public const int BindableBool_Value = 0x0C;  // byte (0=false, 1=true). +0x0D는 기본값.
 
         // ── ConfigManager Dictionary (tosu 방식) ──
         // Dictionary<string, Bindable> 구조
@@ -143,10 +132,6 @@ namespace OsuEnlightenOverlay.Memory
         public const int Dict_EntryKey   = 0x00;   // string ptr
         public const int Dict_EntryValue = 0x04;   // Bindable 객체 ptr
 
-        // WindowManager 기본 상수
-        public const int WindowManager_DefaultWidth  = 640;
-        public const int WindowManager_DefaultHeight = 480;
-        public const int WindowManager_DefaultSpriteRes = 768;
         public const int GameField_DefaultWidth  = 512;
         public const int GameField_DefaultHeight = 384;
     }

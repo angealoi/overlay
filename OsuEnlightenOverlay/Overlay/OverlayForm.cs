@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using OpenTK;
 using OpenTK.Graphics;
@@ -63,10 +62,11 @@ namespace OsuEnlightenOverlay.Overlay
         // HR 상태 추적 — HR 변경 시 맵 재파싱 (Y-flip)
         bool lastHR = false;
 
-        // HUD edit mode 드래그 상태 + 단축키 엣지 검출용 static 래치
-        OverlayEditState editState = new OverlayEditState();
-        bool s_tab = false, s_up = false, s_down = false, s_esc = false;
-        bool s_s = false, s_x = false, s_y = false;
+        // HUD edit mode 입력 처리 (드래그 + 단축키) — OnLoad에서 생성
+        HudEditController hudEditController;
+
+        // Difficulty Changer 수학 (mod + 오버라이드 → DifficultyValues) — 생성자에서 생성
+        DifficultyController difficultyController;
 
         // 지연된 스킨/커서 재로드 — ControlPanelForm 스레드에서 직접 OpenGL 작업 불가
         // OnSyncTick(Render 스레드)에서 처리
@@ -98,92 +98,15 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// Difficulty Changer + mod 적용하여 최종 AR/CS/OD 계산.
-        /// Osu-external-overlay-main 참조 구현 기반:
-        ///   Auto AR: HR/EZ 적용 → PreEmpt 계산 → speed multiplier로 나눔 (DT÷1.5, HT÷0.75)
-        ///   Override AR: HR/EZ 미적용, speed scaling 없음 — 사용자 값이 최종 AR
-        ///   Auto CS: 맵 CS + HR/EZ 적용
-        ///   Override CS: 사용자 값, 단 맵 CS(mod 적용)보다 작아질 수 없음 (overdrive)
-        ///   FadeIn: 400 * min(1, PreEmpt/450)
-        ///   HitWindow: speed multiplier로 나눔 (Auto만, Override는 미적용)
+        /// 현재 맵 + mod + 설정으로 최종 난이도 계산 (DifficultyController 위임).
+        /// 게임필드 크기는 리사이즈로 바뀌므로 호출 시점 값을 넘긴다.
         /// </summary>
         DifficultyValues ComputeEffectiveDifficulty()
         {
-            if (currentBeatmap == null || settings == null || reader == null)
+            if (difficultyController == null || currentBeatmap == null || renderer == null)
                 return null;
-
-            bool isHR = reader.IsHR;
-            bool isEZ = reader.IsEZ;
-            bool isDT = reader.IsDT || reader.IsNC; // NC = DT 파생
-            bool isHT = reader.IsHT;
-            float speedMultiplier = DifficultyCalculator.GetSpeedMultiplier(isDT, isHT);
-
-            // ── AR 결정 ──
-            // DT/HT 모드 시 DT/HT AR 슬롯 사용, 아니면 일반 AR 슬롯
-            bool arOverride;
-            double arOverrideValue = 0;
-            if (isDT && !settings.ArDtAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArDtValue;
-            }
-            else if (isHT && !settings.ArHtAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArHtValue;
-            }
-            else if (!settings.ArAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArValue;
-            }
-            else
-            {
-                arOverride = false;
-            }
-
-            double ar;
-            bool scalePreEmpt;
-            if (arOverride)
-            {
-                // Override AR: HR/EZ 미적용, PreEmpt speed scaling 없음
-                // (사용자가 이미 DT/HT를 고려한 AR값을 설정하므로 PreEmpt는 그대로)
-                ar = Math.Max(0, Math.Min(10, arOverrideValue));
-                scalePreEmpt = false;
-            }
-            else
-            {
-                // Auto AR: 맵 AR + HR/EZ 적용 (hardRockFactor=1.4)
-                ar = DifficultyCalculator.ApplyModsToDifficulty(
-                    currentBeatmap.ApproachRate, 1.4, isEZ, isHR);
-                scalePreEmpt = true; // PreEmpt에 speed multiplier 적용
-            }
-
-            // ── CS 결정 ──
-            // Auto CS: 맵 CS + HR/EZ 적용 (hardRockFactor=1.3)
-            double autoCs = DifficultyCalculator.ApplyModsToDifficulty(
-                currentBeatmap.CircleSize, 1.3, isEZ, isHR);
-            autoCs = Math.Max(0, Math.Min(10, autoCs));
-
-            double cs;
-            if (!settings.CsAuto)
-            {
-                // Override CS: 사용자 값, 단 맵 CS(mod 적용)보다 작아질 수 없음 (overdrive)
-                cs = Math.Max(settings.CsValue, autoCs);
-                cs = Math.Min(10, cs);
-            }
-            else
-            {
-                cs = autoCs;
-            }
-
-            // ── OD 결정 ── (항상 맵 OD + HR/EZ, speed multiplier는 HitWindow에만)
-            double od = DifficultyCalculator.ApplyModsToDifficulty(
-                currentBeatmap.OverallDifficulty, 1.4, isEZ, isHR);
-
-            return DifficultyCalculator.CalculateWithValues(ar, cs, od,
-                renderer.GameField.Width, renderer.GameField.Ratio,
-                speedMultiplier, scalePreEmpt);
+            return difficultyController.Compute(currentBeatmap,
+                renderer.GameField.Width, renderer.GameField.Ratio);
         }
 
         /// <summary>
@@ -260,8 +183,7 @@ namespace OsuEnlightenOverlay.Overlay
         /// </summary>
         public float GetMapAR()
         {
-            if (currentBeatmap == null) return 9.0f;
-            return (float)currentBeatmap.ApproachRate;
+            return difficultyController.GetMapAR(currentBeatmap);
         }
 
         /// <summary>
@@ -362,36 +284,28 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// 현재 맵의 파싱된 CS 값 반환 (mod 미적용).
+        /// Auto 모드에서 실제 적용되는 CS (HR/EZ 반영) 반환.
+        /// ControlPanel CS Auto 버튼 채움값.
         /// </summary>
-        public float GetMapCS()
+        public float GetAutoCS()
         {
-            if (currentBeatmap == null) return 4.0f;
-            return (float)currentBeatmap.CircleSize;
+            return difficultyController.GetAutoCS(currentBeatmap);
         }
 
         /// <summary>
         /// DT 적용 시 표시 AR 반환 — PreEmpt 기반 역산.
-        /// AR → PreEmpt → ÷1.5 → 역산 AR
         /// </summary>
         public float GetMapDtAR()
         {
-            if (currentBeatmap == null) return 10.0f;
-            double preempt = DifficultyCalculator.MapDifficultyRangeRaw(currentBeatmap.ApproachRate, 1800, 1200, 450);
-            preempt = DifficultyCalculator.ApplySpeedMultiplierToTime(preempt, 1.5f);
-            return (float)Math.Min(10, DifficultyCalculator.MapDifficultyRangeInv(preempt, 1800, 1200, 450));
+            return difficultyController.GetMapDtAR(currentBeatmap);
         }
 
         /// <summary>
         /// HT 적용 시 표시 AR 반환 — PreEmpt 기반 역산.
-        /// AR → PreEmpt → ÷0.75 → 역산 AR
         /// </summary>
         public float GetMapHtAR()
         {
-            if (currentBeatmap == null) return 8.0f;
-            double preempt = DifficultyCalculator.MapDifficultyRangeRaw(currentBeatmap.ApproachRate, 1800, 1200, 450);
-            preempt = DifficultyCalculator.ApplySpeedMultiplierToTime(preempt, 0.75f);
-            return (float)Math.Min(10, DifficultyCalculator.MapDifficultyRangeInv(preempt, 1800, 1200, 450));
+            return difficultyController.GetMapHtAR(currentBeatmap);
         }
 
         // ── ControlPanelForm 상태 동기화용 속성 ──
@@ -442,21 +356,14 @@ namespace OsuEnlightenOverlay.Overlay
         /// </summary>
         public float LiveCS
         {
-            get
-            {
-                if (reader == null || currentBeatmap == null) return 0f;
-                bool isHR = reader.IsHR;
-                bool isEZ = reader.IsEZ;
-                double cs = DifficultyCalculator.ApplyModsToDifficulty(
-                    currentBeatmap.CircleSize, 1.3, isEZ, isHR);
-                return (float)Math.Max(0, Math.Min(10, cs));
-            }
+            get { return difficultyController.GetLiveCS(currentBeatmap); }
         }
 
         public OverlayForm(OsuMemoryReader reader, ControlPanel.OverlaySettings settings)
         {
             this.reader = reader;
             this.settings = settings;
+            this.difficultyController = new DifficultyController(settings, reader);
 
             // Form 기본 설정
             FormBorderStyle = FormBorderStyle.None;
@@ -504,7 +411,8 @@ namespace OsuEnlightenOverlay.Overlay
             hudRenderer = new HudRenderer(fontRenderer, renderer.SpriteManager, renderer.TextureManager);
             hudRenderer.SetSettings(settings);
             hudRenderer.SetReader(reader);
-            hudRenderer.SetEditState(editState);
+            hudEditController = new HudEditController(settings, hudRenderer);
+            hudRenderer.SetEditState(hudEditController.State);
 
             // 스킨 매니저 초기화 — 설정된 스킨 로드 (기본값: Default)
             string skinName = settings != null ? settings.SkinName : "Default";
@@ -872,11 +780,9 @@ namespace OsuEnlightenOverlay.Overlay
                     lastClickThroughState = wantClickThrough;
                 }
 
-                if (settings.HudEditMode)
-                {
-                    HandleEditShortcuts();
-                    HandleEditMouse(); // 폴링 기반 드래그 (자식 창 메시지 라우팅 문제 우회)
-                }
+                // 폴링 기반 드래그/단축키 (자식 창 메시지 라우팅 문제 우회)
+                if (settings.HudEditMode && hudEditController != null)
+                    hudEditController.Update(Handle, ClientSize);
             }
 
             // edit → false 전환 시 자동 저장 (NEWNEWOVERLAY main.cpp:205-210)
@@ -902,6 +808,7 @@ namespace OsuEnlightenOverlay.Overlay
             frameCount++;
         }
 
+        string lastGeoState = ""; // [Sync] 로그 — 지오메트리 변화 감지용
         int frameCount = 0;
         int lastFrameTime = -1; // Retry 감지용
         int syncCounter = 0; // SyncToOsu 빈도 제어
@@ -970,7 +877,7 @@ namespace OsuEnlightenOverlay.Overlay
             else
             {
                 // 렌터박싱 OFF: GameField = 클라이언트 영역
-                // 단, WindowManager 해상도가 클라이언트와 다르면(스케일됨) WM 기준 사용
+                // 단, 렌더 해상도가 클라이언트와 다르면(스케일됨) 그쪽 기준 사용
                 if (reader.WindowWidth > 0 && reader.WindowHeight > 0 &&
                     (reader.WindowWidth != clientW || reader.WindowHeight != clientH))
                 {
@@ -979,14 +886,17 @@ namespace OsuEnlightenOverlay.Overlay
                 }
             }
 
-            // 디버그: osu! 창 크기 (최초 1회)
-            if (lastBeatmapFolder == null || lastBeatmapFolder.Length == 0)
+            // 지오메트리가 바뀔 때만 한 줄 남긴다 — 해상도/레터박스 변경 시에만 찍히므로
+            // 조용하고, 오버레이가 게임 필드에서 어긋났을 때 원인을 좁히는 데 이게 유일한 단서다.
+            string geoState = $"{clientW}x{clientH}|{overlayX},{overlayY}|{overlayW}x{overlayH}|{gameFieldW}x{gameFieldH}";
+            if (geoState != lastGeoState)
             {
-                Console.WriteLine($"[Sync] osu! client={clientW}x{clientH}" +
-                    $" overlay={overlayW}x{overlayH}" +
-                    $" gameField={gameFieldW}x{gameFieldH}" +
-                    $" letterbox={reader.IsLetterboxing}");
-                lastBeatmapFolder = " ";
+                lastGeoState = geoState;
+                Console.WriteLine($"[Sync] client=({clientX},{clientY}) {clientW}x{clientH}"
+                    + $" desktop={reader.DesktopWidth}x{reader.DesktopHeight}"
+                    + $" | LB={reader.IsLetterboxing} render={reader.WindowWidth}x{reader.WindowHeight}"
+                    + $" pos=({reader.LetterboxPositionX},{reader.LetterboxPositionY})"
+                    + $" | overlay=({overlayX},{overlayY}) {overlayW}x{overlayH}");
             }
 
             // 오버레이 창을 게임 필드 영역에 정확히 맞춤
@@ -1112,226 +1022,6 @@ namespace OsuEnlightenOverlay.Overlay
                 ClickThrough.Enable(hwnd);
             else if (!wantClickThrough && isClickThrough)
                 ClickThrough.Disable(hwnd);
-        }
-
-        // ── edit 모드 마우스 폴링 (NEWNEWOVERLAY WndProc 드래그 대응) ──
-        // GLControl 자식 창이 메시지를 가로채는 문제를 우회: GetAsyncKeyState + GetCursorPos 폴링.
-        void HandleEditMouse()
-        {
-            bool lbuttonDown = (WindowInterop.GetAsyncKeyState(WindowInterop.VK_LBUTTON) & 0x8000) != 0;
-
-            if (!editState.Dragging)
-            {
-                // 버튼 누름 엣지 — HUD 위에서 클릭 시 드래그 시작.
-                bool wasDown = lbuttonPrev;
-                lbuttonPrev = lbuttonDown;
-                if (lbuttonDown && !wasDown)
-                    TryStartDrag();
-            }
-            else
-            {
-                lbuttonPrev = lbuttonDown;
-                if (lbuttonDown)
-                {
-                    // 드래그 진행.
-                    UpdateDragPosition(ClientCursorPoint());
-                }
-                else
-                {
-                    // 버튼 뗌 — 드래그 종료.
-                    UpdateDragPosition(ClientCursorPoint());
-                    editState.Reset();
-                }
-            }
-
-            // HUD 위면 크기조정 커서 표시.
-            int hit = editState.Dragging ? editState.DragElement : HitTestHud(ClientCursorPoint());
-            if (hit >= 0)
-                WindowInterop.SetCursor(WindowInterop.IDC_SIZEALL_Handle);
-        }
-
-        bool lbuttonPrev = false;
-
-        // 화면 좌표 → 오버레이 클라이언트 좌표.
-        System.Drawing.Point ClientCursorPoint()
-        {
-            WindowInterop.POINT p;
-            WindowInterop.GetCursorPos(out p);
-            long result = WindowInterop.MapWindowPoints(IntPtr.Zero, Handle, ref p, 1);
-            return new System.Drawing.Point(p.X, p.Y);
-        }
-
-        void TryStartDrag()
-        {
-            System.Drawing.Point pt = ClientCursorPoint();
-            int element = HitTestHud(pt);
-            if (element < 0) return;
-
-            settings.HudEditSelected = element;
-            settings.HudUseCustomPos[element] = true;
-
-            System.Drawing.RectangleF r = hudRenderer.HudRects[element];
-            editState.Dragging = true;
-            editState.DragElement = element;
-            editState.DragOffsetX = pt.X - r.X;
-            editState.DragOffsetY = pt.Y - r.Y;
-            editState.DragStartX = r.X;
-            editState.DragStartY = r.Y;
-        }
-
-        // ── edit 모드 마우스 히트테스트 (NEWNEWOVERLAY HitTestHud) ──
-        // HudRects를 뒤→앞 순회, 6px 패딩. 히트 시 인덱스, 아니면 -1.
-        int HitTestHud(System.Drawing.Point clientPoint)
-        {
-            if (hudRenderer == null) return -1;
-            System.Drawing.RectangleF[] rects = hudRenderer.HudRects;
-            float pad = EditConstants.HighlightPad;
-            for (int i = 3; i >= 0; i--)
-            {
-                System.Drawing.RectangleF r = rects[i];
-                if (r.Width < 0.0f) continue;  // 미렌더링
-                if (clientPoint.X >= r.X - pad && clientPoint.X <= r.Right + pad &&
-                    clientPoint.Y >= r.Y - pad && clientPoint.Y <= r.Bottom + pad)
-                    return i;
-            }
-            return -1;
-        }
-
-        // ── 드래그 위치 업데이트 (NEWNEWOVERLAY UpdateDragPosition) ──
-        // axis-lock + center-snap + 클라이언트 영역 clamp.
-        void UpdateDragPosition(System.Drawing.Point clientPoint)
-        {
-            if (editState.DragElement < 0) return;
-
-            float clientW = ClientSize.Width;
-            float clientH = ClientSize.Height;
-            System.Drawing.RectangleF r = hudRenderer.HudRects[editState.DragElement];
-            float hudW = r.Width;
-            float hudH = r.Height;
-            float maxX = Math.Max(0.0f, clientW - hudW);
-            float maxY = Math.Max(0.0f, clientH - hudH);
-
-            float posX = clientPoint.X - editState.DragOffsetX;
-            float posY = clientPoint.Y - editState.DragOffsetY;
-
-            // axis lock: 비주축을 lock 시작 시 캡처한 HUD 중심에 고정.
-            // X = 수평 전용(y 고정), Y = 수직 전용(x 고정).
-            if (editState.Lock == OverlayEditState.AxisLock.Horizontal)
-                posY = editState.LockCenterY - hudH * 0.5f;
-            else if (editState.Lock == OverlayEditState.AxisLock.Vertical)
-                posX = editState.LockCenterX - hudW * 0.5f;
-
-            // center snap: HUD의 시각적 중심이 화면 수평 중심에 정렬되도록 흡착 (x 축만).
-            if (settings.HudEditSnap)
-            {
-                float centerX = clientW * 0.5f - hudW * 0.5f;
-                if (Math.Abs(posX - centerX) < EditConstants.SnapThreshold)
-                    posX = centerX;
-            }
-
-            posX = Math.Max(0.0f, Math.Min(posX, maxX));
-            posY = Math.Max(0.0f, Math.Min(posY, maxY));
-
-            int i = editState.DragElement;
-            settings.HudUseCustomPos[i] = true;
-            // 정규화 좌표(0.0~1.0)로 저장 — 모든 해상도에서 호환
-            settings.HudPositionX[i] = (clientW > 0) ? posX / clientW : 0;
-            settings.HudPositionY[i] = (clientH > 0) ? posY / clientH : 0;
-        }
-
-        // ── edit 모드 키보드 단축키 (NEWNEWOVERLAY HandleEditShortcuts) ──
-        // GetAsyncKeyState 폴링 + static bool 래치로 엣지 검출.
-        void HandleEditShortcuts()
-        {
-            if (!settings.HudEditMode) return;
-
-            bool KeyDown(int vk) { return (WindowInterop.GetAsyncKeyState(vk) & 0x8000) != 0; }
-            bool KeyPressed(int vk, ref bool prev)
-            {
-                bool down = (WindowInterop.GetAsyncKeyState(vk) & 0x8000) != 0;
-                bool pressed = down && !prev;
-                prev = down;
-                return pressed;
-            }
-
-            // 기본 선택 — 단축키 즉시 동작을 위해 첫 활성 HUD 자동 선택.
-            void EnsureSelection()
-            {
-                int sel = settings.HudEditSelected;
-                if (sel >= 0 && sel < 4 && settings.HudEnabled[sel]) return;
-                sel = -1;
-                for (int i = 0; i < 4; i++)
-                {
-                    if (settings.HudEnabled[i]) { sel = i; break; }
-                }
-                settings.HudEditSelected = sel;
-            }
-            EnsureSelection();
-
-            bool shift = KeyDown(WindowInterop.VK_SHIFT);
-
-            // Tab: 활성 HUD 순환 선택 (Shift = 역방향).
-            if (KeyPressed(WindowInterop.VK_TAB, ref s_tab))
-            {
-                int dir = shift ? -1 : 1;
-                int sel = settings.HudEditSelected;
-                for (int step = 0; step < 4; step++)
-                {
-                    sel = (sel + dir + 4) % 4;
-                    if (settings.HudEnabled[sel])
-                    {
-                        settings.HudEditSelected = sel;
-                        break;
-                    }
-                }
-            }
-
-            // Up/Down: 선택 HUD 폰트 크기 조정 (Shift = ×10).
-            int fontStep = shift ? EditConstants.FontSizeShiftStep : EditConstants.FontSizeStep;
-            if (KeyPressed(WindowInterop.VK_UP, ref s_up) && settings.HudEditSelected >= 0)
-            {
-                int i = settings.HudEditSelected;
-                settings.HudFontSizes[i] = Math.Min(settings.HudFontSizes[i] + fontStep, EditConstants.FontSizeMax);
-            }
-            if (KeyPressed(WindowInterop.VK_DOWN, ref s_down) && settings.HudEditSelected >= 0)
-            {
-                int i = settings.HudEditSelected;
-                settings.HudFontSizes[i] = Math.Max(settings.HudFontSizes[i] - fontStep, EditConstants.FontSizeMin);
-            }
-
-            // Esc: edit 모드 종료.
-            if (KeyPressed(WindowInterop.VK_ESCAPE, ref s_esc))
-            {
-                settings.HudEditMode = false;
-            }
-
-            // S: center snap 토글. X/Y: axis lock 토글(sticky, 재누름 시 해제).
-            if (KeyPressed((int)'S', ref s_s))
-            {
-                settings.HudEditSnap = !settings.HudEditSnap;
-            }
-            // lock 시작 시 HUD의 현재 중심 캡처 — 드래그 시작 모서리가 아닌 실제 위치 기준.
-            void CaptureLockCenter()
-            {
-                if (editState.DragElement < 0) return;
-                System.Drawing.RectangleF r = hudRenderer.HudRects[editState.DragElement];
-                editState.LockCenterX = r.X + r.Width * 0.5f;
-                editState.LockCenterY = r.Y + r.Height * 0.5f;
-            }
-            if (KeyPressed((int)'X', ref s_x))
-            {
-                bool engaging = editState.Lock != OverlayEditState.AxisLock.Horizontal;
-                editState.Lock = engaging ? OverlayEditState.AxisLock.Horizontal
-                                          : OverlayEditState.AxisLock.None;
-                if (engaging) CaptureLockCenter();
-            }
-            if (KeyPressed((int)'Y', ref s_y))
-            {
-                bool engaging = editState.Lock != OverlayEditState.AxisLock.Vertical;
-                editState.Lock = engaging ? OverlayEditState.AxisLock.Vertical
-                                          : OverlayEditState.AxisLock.None;
-                if (engaging) CaptureLockCenter();
-            }
         }
 
         protected override void Dispose(bool disposing)

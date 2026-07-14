@@ -15,10 +15,10 @@ namespace OsuEnlightenOverlay
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // 로그 파일 초기화 — 이후 모든 Console.WriteLine 은 파일에도 기록
+            // exe 옆 overlay.log 에 기록 — WinExe라 콘솔이 없어 이게 유일한 진단 경로
             Logger.Init();
 
-            Console.WriteLine("=== osu! Enlighten Overlay — Phase 2: 오버레이 창 ===");
+            Console.WriteLine("=== osu! Enlighten Overlay ===");
             Console.WriteLine();
 
             // 1. 메모리 리더 초기화

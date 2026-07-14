@@ -173,8 +173,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             sliderColoursValid = false; // 스킨 변경 시 재계산
         }
 
-        public bool IsSpriteAdding { get { return false; } }
-
         // HiddenActive 변경 시 approach circle 가시성 업데이트용
         public List<HitCircleOsu> GetHitCircles() { return hitCircles; }
         public List<SliderOsu> GetSliders() { return sliders; }

@@ -48,6 +48,8 @@
     <Compile Include="Memory\AobScanner.cs" />
     <Compile Include="Memory\Signatures.cs" />
     <Compile Include="Memory\Offsets.cs" />
+    <Compile Include="Memory\ResolutionReader.cs" />
+    <Compile Include="Memory\ScoreReader.cs" />
     <Compile Include="Memory\OsuMemoryReader.cs" />
     <Compile Include="Overlay\OverlayForm.cs" />
     <Compile Include="Overlay\WindowInterop.cs" />
@@ -56,6 +58,8 @@
     <Compile Include="Overlay\ClickThrough.cs" />
     <Compile Include="Overlay\EditState.cs" />
     <Compile Include="Overlay\EditConstants.cs" />
+    <Compile Include="Overlay\HudEditController.cs" />
+    <Compile Include="Overlay\DifficultyController.cs" />
     <Compile Include="Rendering\GameField.cs" />
     <Compile Include="Rendering\Shader.cs" />
     <Compile Include="Rendering\SpriteManager.cs" />

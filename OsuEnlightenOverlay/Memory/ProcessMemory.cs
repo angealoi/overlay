@@ -216,18 +216,10 @@ namespace OsuEnlightenOverlay.Memory
 
         /// <summary>
         /// 바이트 배열 읽기 (미리 할당된 버퍼). 실패 시 false.
+        /// 여러 필드를 한 번에 읽어 GetInt32/GetFloat/GetByte 등으로 추출하면
+        /// ReadProcessMemory 호출 횟수를 대폭 줄일 수 있음.
         /// </summary>
         public bool ReadBytes(IntPtr address, byte[] buffer, int size)
-        {
-            return ReadProcessMemory(Handle, address, buffer, size, out bytesRead);
-        }
-
-        /// <summary>
-        /// 배치 읽기 — address에서 size 바이트를 한 번에 읽어 buffer에 저장.
-        /// 이후 GetInt32/GetFloat/GetByte 등으로 버퍼에서 값을 추출.
-        /// ReadProcessMemory 호출 횟수를 대폭 줄임.
-        /// </summary>
-        public bool ReadBatch(IntPtr address, byte[] buffer, int size)
         {
             return ReadProcessMemory(Handle, address, buffer, size, out bytesRead);
         }

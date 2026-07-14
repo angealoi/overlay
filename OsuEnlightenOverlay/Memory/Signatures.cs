@@ -134,43 +134,15 @@ namespace OsuEnlightenOverlay.Memory
             ScanAll = false
         };
 
-        // hom_walk.md §3: RulesetOsu::CreateHitObjectManager (HOM MethodTable 검증용)
-        // new HitObjectManagerOsu()에 넘기는 MT 값을 획득해, 런타임에 HOM 포인터를 검증.
-        // 분기: target-practice path(B9 [0x90DD7B0]) / normal path(B9 [0x90D5868]).
-        //
-        // 이 패턴은 target-practice path의 B9(매치 +0x0D)까지 매칭.
-        // hom_walk.md §3 라이브 검증: normal path B9는 jz +0x18 변위를 따라
-        //   (매치+0x0B) + 2 + 0x18 = 매치 + 0x25 에 존재 → +0x26 부터 4바이트 = normal MT.
-        //
-        // 추출은 OperandSkip/PostAdd 방식이 아닌 OsuMemoryReader.ScanHomMethodTable()에서
-        // 매치 +0x25 가 0xB9인지 검증 후 +0x26 의 4바이트를 읽어 처리 (MT 검증 실패 시 폴백).
-        public static readonly AobSignature CreateHitObjectManager = new AobSignature
-        {
-            Name = "CreateHitObjectManager",
-            Pattern = "55 8B EC 56 E8 ?? ?? ?? ?? 85 C0 74 18 B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B F0",
-            Mask = "FF FF FF FF FF 00 00 00 00 00 FF FF FF FF 00 00 00 00 FF 00 00 00 00 00 FF FF",
-            OperandSkip = 0,   // 사용 안 함 — OsuMemoryReader에서 별도 추출
-            PostAdd = 0,
-            ScanAll = false
-        };
-
         // ── Render at Native Resolution 관련 ──
-        // SetScreenSize()에서 WindowManager 객체의 Width/Height를 읽는 패턴.
-        // mov eax, [WindowManager_static]; mov edx, [eax+4]; mov eax, [WindowManager_static]; mov eax, [eax+8]
-        // → WindowManager static slot = match + 1의 4바이트 absolute address
-        // Read: readU32(slot) = WindowManager 객체
-        //   Width  = readI32(obj + 0x04)
-        //   Height = readI32(obj + 0x08)
-        //   SpriteRes = readI32(obj + 0x0C)
-        public static readonly AobSignature WindowManager = new AobSignature
-        {
-            Name = "WindowManager",
-            Pattern = "A1 ?? ?? ?? ?? 8B 50 04 A1 ?? ?? ?? ?? 8B 40 08 89 95",
-            Mask = "FF 00 00 00 00 FF FF FF FF FF 00 00 00 00 FF FF FF FF FF FF",
-            OperandSkip = 1,
-            PostAdd = 0,
-            ScanAll = false
-        };
+        // 여기 있던 WindowManager 시그니처는 제거했다.
+        //
+        // 패턴("A1 ?? ?? ?? ?? 8B 50 04 A1 ?? ?? ?? ?? 8B 40 08 89 95")이 SetScreenSize()
+        // 내부 코드였는데, 이 메서드는 사용자가 해상도를 "바꿀 때"만 호출된다. 그냥 켜기만
+        // 한 osu!에서는 JIT되지 않아 그 바이트열이 메모리에 아예 존재하지 않는다 —
+        // 실측 85/85 스캔 실패. 재스캔을 붙여도 없는 패턴은 못 찾으므로 소용없다.
+        // 렌더 해상도는 ConfigDictionary의 Width/Height + WidthFullscreen/HeightFullscreen을
+        // Fullscreen 값으로 골라 읽는다(ResolutionReader 참고). 실측 96/96 성공.
 
         // ── ConfigManager Dictionary (tosu 방식) ──
         // ConfigManager의 Dictionary<string, Bindable> 에 접근하는 코드 패턴.

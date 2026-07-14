@@ -168,8 +168,10 @@ namespace OsuEnlightenOverlay.ControlPanel
                 settings.CsValue, settings.CsAuto, 0, 10, 2,
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 (b) => { settings.CsAuto = b; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                () => overlayRef != null ? overlayRef.GetMapCS() : 4.0f,
-                out tbCS, out nudCS, out btnCSAuto);
+                // Auto 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
+                () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
+                out tbCS, out nudCS, out btnCSAuto,
+                refillOnManual: true);
             AddValueRow(grpDiff, 100, "DT",
                 settings.ArDtValue, settings.ArDtAuto, 0, 12, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
@@ -427,14 +429,20 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         /// <summary>
         /// TrackBar + NumericUpDown + Auto Button 행 추가.
-        /// Auto 버튼: 클릭 시 현재 파싱된 맵 값으로 채우고 수동 모드로 전환.
-        /// 수동 모드에서 다시 클릭하면 Auto 모드로 복귀.
+        /// Auto 버튼: 클릭 시 getMapValue() 값으로 채우고 모드 토글.
         /// </summary>
+        /// <param name="refillOnManual">
+        /// Manual 전환 시에도 getMapValue()로 다시 채울지.
+        /// CS는 true — mod가 바뀌어도 값이 Auto 클릭 시점에 고정되면
+        /// overdrive 클램프 Math.Max(CsValue, autoCs)가 낡은 값을 통과시켜 EZ가 무시된다.
+        /// AR은 false — Manual은 사용자 값이 무조건 우선(의도된 설계).
+        /// </param>
         void AddValueRow(GroupBox parent, int yPos, string label,
             float value, bool auto, float min, float max, int decimals,
             Action<float> onValueChanged, Action<bool> onAutoChanged,
             Func<float> getMapValue,
-            out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto)
+            out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto,
+            bool refillOnManual = false)
         {
             Label lbl = new Label();
             lbl.Text = label + ":";
@@ -482,13 +490,13 @@ namespace OsuEnlightenOverlay.ControlPanel
             {
                 bool curAuto = (bool)btnAuto.Tag;
                 bool newAuto = !curAuto; // 토글
-                if (newAuto)
+                // Auto 진입: 현재 적용값 표시. Manual 진입: 현재 적용값을 편집 시작점으로(CS만).
+                if (newAuto || refillOnManual)
                 {
-                    // Auto 모드 진입 — 파싱된 맵 값으로 채우기
                     float mapVal = getMapValue();
                     mapVal = Math.Max(min, Math.Min(max, mapVal));
                     tb.Value = (int)(mapVal * 10);
-                    nud.Value = (decimal)mapVal;
+                    nud.Value = (decimal)mapVal; // 값이 바뀌면 ValueChanged → onValueChanged로 설정 반영
                 }
                 btnAuto.Tag = (object)newAuto;
                 UpdateAutoButton(btnAuto, newAuto, tb, nud);
@@ -638,16 +646,6 @@ namespace OsuEnlightenOverlay.ControlPanel
         void Save()
         {
             SettingsSerializer.Save(settings);
-        }
-
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            base.WndProc(ref m);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
