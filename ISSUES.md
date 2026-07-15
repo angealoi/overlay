@@ -237,8 +237,8 @@
 |---|---|
 | stable | `HitObjectManager.cs:120` — `internal static readonly int FadeIn = 400;` **상수** |
 | ~~ours~~ | ~~`FadeIn = 400 × min(1, PreEmpt/450)` (lazer 공식)~~ → `dv.FadeIn = 400` 상수로 수정 |
-| 함께 수정 | 소비처의 `Math.Min(FadeIn, PreEmpt)` 클램프도 제거 (히트서클 메인 페이드·슬라이더 바디 — stable에 없음). 어프로치서클 클램프는 stable과 **등가**라 유지 |
-| 검증 | 빌드 통과 · **실기 확인 대기** (고AR/DT에서 페이드 확인 권장) |
+| 함께 수정 | ~~소비처 `Math.Min(FadeIn, PreEmpt)` 클램프 제거~~ → **되돌림** (`846221b`). 클램프는 PreEmpt<400(오버라이드 AR>10.6)에서만 작동하고 stable 범위(AR≤10)에선 무의미해 stable과 동일. 제거 시 AR12 오버라이드에서 페이드인이 히트를 넘겨 팝 애니메이션과 충돌했다. 어프로치서클 클램프는 처음부터 유지 |
+| 검증 | 빌드 통과 · **실기 확인 대기** (AR12 오버라이드 히트 애니메이션) |
 
 #### H2. 반복 슬라이더 리턴 패스의 틱이 통째로 사라짐
 | | |
