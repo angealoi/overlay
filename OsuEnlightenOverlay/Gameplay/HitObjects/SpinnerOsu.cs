@@ -72,6 +72,16 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         // 종료 시 glow 페이드아웃을 이미 걸었는지 — stable Hit()의 FadeOut(300) 대응 (1회성)
         bool glowEndFaded = false;
 
+        // glow 기본색 — osu-stable SpinnerOsu.cs:443/306의 new Color(3, 151, 255)
+        static readonly Color GlowColour = Color.FromArgb(255, 3, 151, 255);
+
+        // 보너스 flash — osu-stable은 pSprite.FlashColour(White, 200)로 흰색→InitialColour를
+        // 200ms Colour 변환으로 건다. 우리 pSprite에는 Colour 변환 지원이 없어(Fade/Scale/
+        // Rotation/Movement만) 여기서 직접 보간한다. glow가 유일한 사용처라 인프라를
+        // 추가하는 것보다 국소 처리가 낫다.
+        const int GlowFlashDuration = 200;
+        int glowFlashStart = int.MinValue;
+
         /// <summary>
         /// LoadBeatmap/retry 재진입 시 호출 — state 완전 리셋.
         /// </summary>
@@ -86,6 +96,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (spriteGlow != null)
             {
                 glowEndFaded = false;
+                glowFlashStart = int.MinValue;   // 진행 중이던 보너스 flash 취소
+                spriteGlow.Colour = GlowColour;
+                spriteGlow.CurrentColour = GlowColour;
                 spriteGlow.Transformations.Clear();
                 spriteGlow.Transformations.Add(new Transformation(
                     TransformationType.Fade, 0f, 0f, StartTime, EndTime, EasingTypes.None));
@@ -314,6 +327,28 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             rotationRequirement = (int)(length / 1000.0 * difficulty.SpinnerRotationRatio);
         }
 
+        /// <summary>
+        /// glow 색상 적용 — 보너스 flash(흰색)에서 기본 파란색으로 복귀하는 보간.
+        /// osu-stable pSprite.FlashColour(White, 200)의 대응: 흰색→InitialColour를 200ms
+        /// Colour 변환으로 거는데, 우리 pSprite는 Colour 변환을 지원하지 않아 직접 계산한다.
+        /// stable의 flash 변환은 easing이 없으므로 선형 보간.
+        /// </summary>
+        void ApplyGlowColour(int timeMs)
+        {
+            if (spriteGlow == null) return;
+
+            Color c = GlowColour;
+            int elapsed = timeMs - glowFlashStart;
+            if (glowFlashStart != int.MinValue && elapsed >= 0 && elapsed < GlowFlashDuration)
+            {
+                float t = (float)elapsed / GlowFlashDuration;
+                c = ColourHelper.ColourLerp(Color.White, GlowColour, t);
+            }
+
+            spriteGlow.Colour = c;
+            spriteGlow.CurrentColour = c;
+        }
+
         /// <summary>UpdateTransformations 대상 — 공통 Fade In/Out을 받는 메인 스프라이트.</summary>
         List<pSprite> GetMainSprites()
         {
@@ -484,11 +519,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 // glow + scale — osu-stable updateCompletion (SpinnerOsu.cs:439-449)
                 if (spriteGlow != null)
                 {
+                    // 보너스 flash 보간 — stable FlashColour(White, 200): 흰색에서 기본색으로 복귀.
+                    // state와 무관하게 매 프레임 적용해야 Passed 이후(보너스 구간)에도 흰색이
+                    // 굳지 않고 파란색으로 돌아온다.
+                    ApplyGlowColour(timeMs);
+
                     if (state < SpinningState.Passed)
                     {
-                        // stable :443 — 진행 중에도 파란색 (3,151,255)
-                        spriteGlow.Colour = Color.FromArgb(255, 3, 151, 255);
-                        spriteGlow.CurrentColour = spriteGlow.Colour;
 
                         // stable :444-446 — 알파는 Fade 변환의 값 자체를 수정한다.
                         // Alpha 필드에 직접 쓰면 안 된다: 생성 시 넣은 Fade(0,0) 변환이
@@ -531,13 +568,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 // Clear — osu-stable: SpinningState == 2 (Passed) = scoringRotationCount >= rotationRequirement
                 if (state == SpinningState.Started && spinningState >= 2)
                 {
-                    if (spriteGlow != null)
-                    {
-                        // stable :305-306 — 색만 파란색으로. 알파는 updateCompletion이 마지막으로
-                        // 변환에 써둔 값이 유지된다 (통과 시점이면 사실상 1).
-                        spriteGlow.Colour = Color.FromArgb(255, 3, 151, 255);
-                        spriteGlow.CurrentColour = spriteGlow.Colour;
-                    }
+                    // stable :305-306 — InitialColour를 파란색으로. 우리는 ApplyGlowColour가
+                    // 매 프레임 GlowColour(=파란색)를 기준으로 칠하므로 여기서 할 일이 없다.
+                    // 알파는 updateCompletion이 마지막으로 변환에 써둔 값이 유지된다(통과 시 1).
 
                     if (spriteClear != null)
                     {
@@ -568,12 +601,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         int bonusScore = 1000 * excess / 2;
                         ShowBonus(timeMs, effectiveEnd, bonusScore);
 
-                        // glow flash — osu-stable: spriteGlow.FlashColour(White, 200)
-                        if (spriteGlow != null)
-                        {
-                            spriteGlow.Colour = Color.White;
-                            spriteGlow.CurrentColour = Color.White;
-                        }
+                        // glow flash — osu-stable :386 spriteGlow.FlashColour(White, 200).
+                        // 시작 시각만 기록하고 실제 보간은 ApplyGlowColour가 한다.
+                        glowFlashStart = timeMs;
                     }
                 }
             }
