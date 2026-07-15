@@ -253,13 +253,14 @@
 | 검산 | segCount=2, i=1 진입 시 진행거리 ≈ L → `L×1 − L − d = −d` → **음수** → 첫 틱부터 skipTick → **리턴 패스 틱 전부 미생성**. 역으로 첫 패스에선 stable이 스킵하는 끝부분 틱을 ours가 스킵 안 함 |
 | 추가 | **틱 소멸 시점도 다름**: stable은 세그먼트 종료 시 일괄(`:933-935`), ours는 각 틱의 scoreTime에 개별(`SliderOsu.cs:307-308`) → stable은 볼이 지나가도 틱이 세그먼트 끝까지 남음 |
 
-#### H3. newStyle 스피너 glow가 아예 안 보임 (확정 버그)
+#### ~~H3. newStyle 스피너 glow가 아예 안 보임~~ ✅ 해결 (`4261cad`)
 | | |
 |---|---|
-| stable | `SpinnerOsu.cs:444-446` — glow의 **Fade 변환 객체의 StartFloat/EndFloat를 percent로 수정** |
-| ours | `Gameplay/HitObjects/SpinnerOsu.cs:462` — `spriteGlow.Alpha = progress` 직접 설정 |
-| 왜 안 보이나 | `SpinnerOsu.cs:255-256`에서 넣은 `Fade(0,0)` 변환이 활성 상태 → `pSprite.Update`가 **매 프레임 CurrentAlpha를 0으로 덮어씀** → Alpha 필드 설정이 무효. Passed 시 `Alpha=1`(`:494`)도 동일하게 무효 |
-| 추가 | **진행 중 색상도 다름**: stable은 진행 중에도 파란색 `(3,151,255)`, ours는 White로 두다가 Passed에만 파란색 |
+| 원인 | `spriteGlow.Alpha` 직접 설정이 생성 시 `Fade(0,0)` 변환에 매 프레임 덮여 무효 |
+| 수정 | stable(:444-446) 방식 — **Fade 변환의 Start/EndFloat 자체를 진행도로 수정**. 진행 중 파란색(:443), 스케일 OutQuad(:448 easeOutVal — 기존 cos 공식은 easing 방향 반대), percent 무클램프 |
+| 전제 수정 | `UpdateTransformations`가 spin/clear/glow 변환까지 Clear하던 것을 메인 스프라이트만으로 분리 — stable은 생성자에서 셋이 생기기 전에 돌고, 셋은 자기 변환을 소유 |
+| 종료 처리 | glow가 보이게 되면서 드러난 잔상(종료 후 ~2초) — stable `Hit()`의 `FadeOut(300)` 대응으로 종료 감지 시 1회 페이드아웃, ResetState에서 캔버스 복원 |
+| 검증 | 빌드 통과 · **실기 확인 대기** (스피너 돌릴 때 glow 표시/통과 시 파란 유지/종료 페이드) |
 
 #### ~~H4. 스네이킹 선분 병합에서 `forceEnd` 무시~~ ✅ 해결 (`b3958e1`)
 | | |
