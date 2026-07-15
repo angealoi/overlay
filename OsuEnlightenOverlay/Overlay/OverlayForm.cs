@@ -647,7 +647,11 @@ namespace OsuEnlightenOverlay.Overlay
                 if (pendingBeatmapData != null)
                 {
                     currentBeatmap = pendingBeatmapData;
-                    currentDifficulty = pendingDifficultyData;
+                    // Difficulty Changer 오버라이드 + 현재 mod를 반영해 계산한다.
+                    // pendingDifficultyData는 파싱 Task가 만든 nomod 맵 원본값이라 그대로 쓰면
+                    // 오버라이드가 무시된다. 게다가 아래에서 lastMods를 현재값으로 맞추므로
+                    // CheckDifficultyUpdate가 "변화 없음"으로 early-return해 영영 재계산되지 않았다.
+                    currentDifficulty = ComputeEffectiveDifficulty() ?? pendingDifficultyData;
                     lastMods = reader.MenuMods;
 
                     if (hom == null)
