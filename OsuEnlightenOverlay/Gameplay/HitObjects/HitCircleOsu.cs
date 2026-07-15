@@ -255,6 +255,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // Fade In — osu-stable HitCircleOsu.cs:105-109
             // nomod: 0→1 (startTime-p → startTime-p+FadeIn)
             // HD:    0→1 (startTime-p → startTime-p*0.6)
+            //
+            // FadeIn을 PreEmpt로 클램프한다. stable(:108)은 클램프가 없지만 stable은 AR≤10
+            // (PreEmpt≥450)이라 min(400,PreEmpt)=400으로 클램프가 무의미하다 — 즉 이 클램프는
+            // stable 범위에서 완전히 동일하다. 오버레이는 AR을 12까지 오버라이드로 열어놨고,
+            // 그 경우 PreEmpt<400이라 페이드인이 히트 시점을 넘겨 Arm 팝 애니메이션과 충돌한다.
+            // 클램프하면 페이드인이 히트 정각에 끝나 자연스럽다.
             int fadeInClamped = Math.Min(difficulty.FadeIn, p);
             Transformation fadeIn = HiddenActive ?
                 new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - (int)(p * 0.6), EasingTypes.None) :
@@ -269,20 +275,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // Disarm — osu! stable HitCircleOsu.Disarm()
             // nomod: Fade 1→0 (StartTime+HitWindow100 → StartTime+HitWindow50)
             Disarm();
-        }
-
-        /// <summary>
-        /// Approach Circle 가시성 업데이트 — HD mod에서 SpriteManager에서도 제거.
-        /// </summary>
-        public void UpdateApproachCircleVisibility(SpriteManager sm)
-        {
-            // HD mod이면 approach circle 제거
-            if (HiddenActive && spriteApproachCircle != null)
-            {
-                if (sm != null && sm.Contains(spriteApproachCircle))
-                    sm.Remove(spriteApproachCircle);
-                spriteApproachCircle = null;
-            }
         }
 
         void CreateApproachCircle(pTexture texApproach, int startTime, int p, Color comboColour)
@@ -372,7 +364,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
 
             // Hit Circle / Overlay / Text Fade In 재구성
-            // nomod: 0→1 (startTime-p → startTime-p+FadeIn)
+            // nomod: 0→1 (startTime-p → startTime-p+FadeIn) — 클램프 이유는 생성자 주석 참고
             // HD:    0→1 (startTime-p → startTime-p*0.6)
             int fadeInClamped = Math.Min(newDifficulty.FadeIn, p);
             Transformation fadeIn = HiddenActive ?

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace OsuEnlightenOverlay.ControlPanel
 {
@@ -14,10 +14,10 @@ namespace OsuEnlightenOverlay.ControlPanel
         public bool HiddenOverride = false;
 
         // Difficulty Changer
-        public float ArValue = 9.2f;     public bool ArAuto = true;
-        public float CsValue = 4.0f;     public bool CsAuto = true;
-        public float ArDtValue = 10.3f;  public bool ArDtAuto = true;
-        public float ArHtValue = 8.0f;   public bool ArHtAuto = true;
+        public float ArValue = 9.2f;
+        public float CsValue = 4.0f;
+        public float ArDtValue = 10.3f;
+        public float ArHtValue = 8.0f;
 
         // Cursor
         public bool CursorAutoSize = false;
@@ -54,12 +54,14 @@ namespace OsuEnlightenOverlay.ControlPanel
             c.CaptureBlocked = CaptureBlocked;
             c.FpsCap = FpsCap;
             c.HiddenOverride = HiddenOverride;
-            c.ArValue = ArValue; c.ArAuto = ArAuto;
-            c.CsValue = CsValue; c.CsAuto = CsAuto;
-            c.ArDtValue = ArDtValue; c.ArDtAuto = ArDtAuto;
-            c.ArHtValue = ArHtValue; c.ArHtAuto = ArHtAuto;
+            c.ArValue = ArValue;
+            c.CsValue = CsValue;
+            c.ArDtValue = ArDtValue;
+            c.ArHtValue = ArHtValue;
             c.CursorAutoSize = CursorAutoSize;
             c.CursorSize = CursorSize;
+            c.CursorPackEnabled = CursorPackEnabled;
+            c.CursorPackName = CursorPackName;
             c.HudEnabled = (bool[])HudEnabled.Clone();
             c.HudFontSizes = (int[])HudFontSizes.Clone();
             c.HudEditMode = HudEditMode;

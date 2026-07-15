@@ -96,15 +96,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 startCircle.ComboNumber = comboNumber;
         }
 
-        /// <summary>
-        /// HD mod에서 시작원 approach circle 가시성 업데이트.
-        /// </summary>
-        public void UpdateStartCircleApproachVisibility(SpriteManager sm)
-        {
-            if (startCircle != null)
-                startCircle.UpdateApproachCircleVisibility(sm);
-        }
-
         public SliderOsu(HitObjectData data, DifficultyValues difficulty, BeatmapData beatmap, TextureManager texManager, Color comboColour, int comboNumber, int comboColourIndex, bool isFirstObject)
         {
             this.data = data;
@@ -784,11 +775,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         storedStart = i;
 
                     bool last = i == count - 1;
-                    // 곡선 선분은 min_dist=6, 직선은 32
-                    float minDist = 6; // 곡선 (straight 필드 없으므로 기본값)
+                    // osu-stable SliderOsu.cs:1072 — 직선 선분은 min_dist=32, 곡선은 6
+                    float minDist = curvePath[i].straight ? 32 : 6;
                     float dist = Vector2.Distance(curvePath[storedStart].p1, curvePath[i].p2);
 
-                    if (dist > minDist || last || (i == count - 2))
+                    // osu-stable:1074 — forceEnd(멀티파트/레드앵커 경계)에서 반드시 선분을 끊는다.
+                    // 이게 없으면 경계를 넘어 병합되어 각진 부분이 뭉개진다.
+                    if (dist > minDist || last || curvePath[i].forceEnd || (i == count - 2))
                     {
                         if (last && countRemainder > 0)
                         {

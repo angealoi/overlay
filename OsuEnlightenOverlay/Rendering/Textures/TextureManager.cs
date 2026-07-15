@@ -58,9 +58,7 @@ namespace OsuEnlightenOverlay.Rendering.Textures
     /// </summary>
     internal class TextureManager : IDisposable
     {
-        // 캐시: source별 + 이름별
-        Dictionary<SkinSource, Dictionary<string, pTexture>> sourceCache = new Dictionary<SkinSource, Dictionary<string, pTexture>>();
-        // 통합 캐시 (LoadFirstAvailable용)
+        // 텍스처 캐시 — key = "source:name"
         Dictionary<string, pTexture> cache = new Dictionary<string, pTexture>();
 
         string defaultSkinFolder;  // 기본 스킨 폴더 (ref/default skin) — null이면 임베디드 리소스 사용
@@ -165,16 +163,6 @@ namespace OsuEnlightenOverlay.Rendering.Textures
         /// </summary>
         public void ClearCache()
         {
-            foreach (var sourceKv in sourceCache)
-            {
-                foreach (var texKv in sourceKv.Value)
-                {
-                    if (texKv.Value != null && texKv.Value.IsDisposable)
-                        texKv.Value.Dispose();
-                }
-            }
-            sourceCache.Clear();
-
             foreach (var texKv in cache)
             {
                 if (texKv.Value != null && texKv.Value.IsDisposable)

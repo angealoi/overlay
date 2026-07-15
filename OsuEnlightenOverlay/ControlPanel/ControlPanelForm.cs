@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 using OsuEnlightenOverlay.Overlay;
@@ -22,6 +23,7 @@ namespace OsuEnlightenOverlay.ControlPanel
         TrackBar tbAR, tbCS, tbDtAR, tbHtAR;
         NumericUpDown nudAR, nudCS, nudDtAR, nudHtAR;
         Button btnARAuto, btnCSAuto, btnDtARAuto, btnHtARAuto;
+
 
         // Cursor 섹션
         CheckBox chkCursorAutoSize;
@@ -158,30 +160,28 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpDiff.Width = 330;
             grpDiff.Height = 200;
 
+            // NOMOD AR 상한 10 — osu! 실제 NOMOD AR이 10에서 막히고, 그 이상은 부자연스럽다.
             AddValueRow(grpDiff, 20, "AR",
-                settings.ArValue, settings.ArAuto, 0, 12, 2,
+                settings.ArValue, 0, 10, 2,
                 (v) => { settings.ArValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                (b) => { settings.ArAuto = b; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapAR() : 9.0f,
                 out tbAR, out nudAR, out btnARAuto);
             AddValueRow(grpDiff, 60, "CS",
-                settings.CsValue, settings.CsAuto, 0, 10, 2,
+                settings.CsValue, 0, 10, 2,
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                (b) => { settings.CsAuto = b; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                // Auto 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
+                // 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
                 () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
-                out tbCS, out nudCS, out btnCSAuto,
-                refillOnManual: true);
+                out tbCS, out nudCS, out btnCSAuto);
             AddValueRow(grpDiff, 100, "DT",
-                settings.ArDtValue, settings.ArDtAuto, 0, 12, 2,
+                settings.ArDtValue, 0, 12, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                (b) => { settings.ArDtAuto = b; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
                 out tbDtAR, out nudDtAR, out btnDtARAuto);
+            // HT AR 상한 10 — HT는 AR을 낮추는 mod라 10 이상은 의미가 없다.
+            // (DT만 10 초과 유지: AR10 맵+DT의 체감 AR은 10을 넘는다.)
             AddValueRow(grpDiff, 140, "HT",
-                settings.ArHtValue, settings.ArHtAuto, 0, 12, 2,
+                settings.ArHtValue, 0, 10, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                (b) => { settings.ArHtAuto = b; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
                 out tbHtAR, out nudHtAR, out btnHtARAuto);
 
@@ -411,16 +411,15 @@ namespace OsuEnlightenOverlay.ControlPanel
                     if (lblBeatmap.Text != overlayRef.BeatmapText)
                         lblBeatmap.Text = overlayRef.BeatmapText;
 
-                    // CS override 모드일 때 mod 적용 CS보다 작으면 상향
-                    // LiveCS는 이미 HR/EZ mod가 적용된 effective CS
-                    if (!settings.CsAuto && overlayRef.LiveCS > 0)
+                    // CS 하한 강제 — 맵 CS(HR/EZ 반영) 아래로는 못 내려간다.
+                    // 곡을 바꿔서 내 값이 새 곡의 CS보다 작아지면 즉시 새 곡 값으로 올린다.
+                    // Compute도 Math.Max(CsValue, 맵CS)로 같은 하한을 걸지만, 여기서 슬라이더까지
+                    // 올려야 사용자가 실제 적용값을 보게 된다.
+                    if (overlayRef.LiveCS > 0)
                     {
-                        float effectiveCs = overlayRef.LiveCS;
-                        if ((decimal)effectiveCs > nudCS.Value)
-                        {
-                            nudCS.Value = (decimal)Math.Min(10, Math.Round(effectiveCs, 2));
-                            settings.CsValue = (float)nudCS.Value;
-                        }
+                        decimal floor = (decimal)Math.Min(10, Math.Round(overlayRef.LiveCS, 2));
+                        if (floor > nudCS.Value)
+                            nudCS.Value = floor; // ValueChanged → settings.CsValue 반영 + Save
                     }
                 }
             };
@@ -429,26 +428,31 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         /// <summary>
         /// TrackBar + NumericUpDown + Auto Button 행 추가.
-        /// Auto 버튼: 클릭 시 getMapValue() 값으로 채우고 모드 토글.
+        ///
+        /// Auto는 모드가 아니라 일회성 동작이다 — 누르면 getMapValue()(= 현재 맵의 값,
+        /// HR/EZ 반영)를 슬라이더에 채워넣고 끝이다. 슬라이더는 항상 편집 가능하고,
+        /// 슬라이더 값이 곧 적용되는 값이다. "Manual로 바꿔놨는데 원래 맵 값으로
+        /// 되돌리고 싶다"에 쓰는 버튼.
         /// </summary>
-        /// <param name="refillOnManual">
-        /// Manual 전환 시에도 getMapValue()로 다시 채울지.
-        /// CS는 true — mod가 바뀌어도 값이 Auto 클릭 시점에 고정되면
-        /// overdrive 클램프 Math.Max(CsValue, autoCs)가 낡은 값을 통과시켜 EZ가 무시된다.
-        /// AR은 false — Manual은 사용자 값이 무조건 우선(의도된 설계).
-        /// </param>
         void AddValueRow(GroupBox parent, int yPos, string label,
-            float value, bool auto, float min, float max, int decimals,
-            Action<float> onValueChanged, Action<bool> onAutoChanged,
+            float value, float min, float max, int decimals,
+            Action<float> onValueChanged,
             Func<float> getMapValue,
-            out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto,
-            bool refillOnManual = false)
+            out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto)
         {
             Label lbl = new Label();
             lbl.Text = label + ":";
             lbl.Location = new Point(15, yPos + 3);
             lbl.Width = 35;
             parent.Controls.Add(lbl);
+
+            // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value는 범위 밖 대입 시 예외를
+            // 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생 가능.)
+            // 클램프됐으면 아래에서 설정에도 반영해야 한다 — 안 그러면 슬라이더는 10을
+            // 보여주는데 settings에는 12가 남아 Compute가 12를 계속 쓴다.
+            float clampedValue = Math.Max(min, Math.Min(max, value));
+            bool wasClamped = clampedValue != value;
+            value = clampedValue;
 
             TrackBar tb = new TrackBar();
             tb.Location = new Point(55, yPos);
@@ -474,7 +478,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             nud.ValueChanged += (s, e) =>
             {
                 float v = (float)nud.Value;
-                tb.Value = (int)(v * 10);
+                tb.Value = Math.Max(tb.Minimum, Math.Min(tb.Maximum, (int)(v * 10)));
                 onValueChanged(v);
             };
             parent.Controls.Add(tb);
@@ -484,25 +488,21 @@ namespace OsuEnlightenOverlay.ControlPanel
             btnAuto.Location = new Point(255, yPos);
             btnAuto.Width = 55;
             btnAuto.Height = 23;
-            btnAuto.Tag = (object)auto; // Tag에 auto 상태 저장 (Button.Checked 없음)
-            UpdateAutoButton(btnAuto, auto, tb, nud);
+            btnAuto.Text = "Auto";
             btnAuto.Click += (s, e) =>
             {
-                bool curAuto = (bool)btnAuto.Tag;
-                bool newAuto = !curAuto; // 토글
-                // Auto 진입: 현재 적용값 표시. Manual 진입: 현재 적용값을 편집 시작점으로(CS만).
-                if (newAuto || refillOnManual)
-                {
-                    float mapVal = getMapValue();
-                    mapVal = Math.Max(min, Math.Min(max, mapVal));
-                    tb.Value = (int)(mapVal * 10);
-                    nud.Value = (decimal)mapVal; // 값이 바뀌면 ValueChanged → onValueChanged로 설정 반영
-                }
-                btnAuto.Tag = (object)newAuto;
-                UpdateAutoButton(btnAuto, newAuto, tb, nud);
-                onAutoChanged(newAuto);
+                float mapVal = getMapValue();
+                if (float.IsNaN(mapVal) || float.IsInfinity(mapVal)) return;
+                mapVal = Math.Max(min, Math.Min(max, mapVal));
+                // nud.Value 변경이 ValueChanged를 타고 onValueChanged로 설정에 반영된다
+                nud.Value = (decimal)Math.Round(mapVal, 2);
             };
             parent.Controls.Add(btnAuto);
+
+            // 로드 값이 범위 밖이라 클램프됐다면 설정에도 반영(+저장). 핸들러는 위에서
+            // 붙었으므로 이 시점 호출은 정상적으로 onValueChanged를 탄다.
+            if (wasClamped)
+                onValueChanged(value);
 
             outTb = tb;
             outNud = nud;
@@ -517,37 +517,21 @@ namespace OsuEnlightenOverlay.ControlPanel
         {
             foreach (Control c in parent.Controls)
             {
-                if (c is NumericUpDown || c is TrackBar || c is ListBox)
+                // ComboBox가 빠져 있어서 스킨/커서 목록이 휠에 반응했다.
+                // 이 패널에 ListBox는 없지만(스킨·커서 모두 ComboBox), 타입 가드는 남겨둔다.
+                if (c is NumericUpDown || c is TrackBar || c is ListBox || c is ComboBox)
                 {
                     c.MouseWheel += (s, e) =>
                     {
-                        // 스크롤 휠 이벤트를 무시하고 부모 패널의 스크롤로 전달
-                        ((HandledMouseEventArgs)e).Handled = true;
+                        // Handled=true면 Control.WmMouseWheel이 DefWndProc을 건너뛰어
+                        // 네이티브 컨트롤의 기본 휠 처리(값/선택 변경)가 일어나지 않는다.
+                        HandledMouseEventArgs h = e as HandledMouseEventArgs;
+                        if (h != null) h.Handled = true;
                     };
                 }
                 // 재귀적으로 자식 컨트롤도 처리
                 if (c.HasChildren)
                     DisableMouseWheelOnControls(c);
-            }
-        }
-
-        void UpdateAutoButton(Button btn, bool auto, TrackBar tb, NumericUpDown nud)
-        {
-            if (auto)
-            {
-                btn.Text = "Auto";
-                btn.BackColor = SystemColors.Control;
-                btn.ForeColor = Color.Green;
-                tb.Enabled = false;
-                nud.Enabled = false;
-            }
-            else
-            {
-                btn.Text = "Manual";
-                btn.BackColor = SystemColors.Control;
-                btn.ForeColor = Color.Black;
-                tb.Enabled = true;
-                nud.Enabled = true;
             }
         }
 

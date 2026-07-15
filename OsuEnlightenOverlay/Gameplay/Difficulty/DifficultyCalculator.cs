@@ -20,37 +20,49 @@ namespace OsuEnlightenOverlay.Gameplay.Difficulty
 
         /// <summary>
         /// 난이도 값들을 계산 — mod + Difficulty Changer 설정 적용.
+        ///
+        /// DT/HT는 여기서 아무것도 하지 않는다. PreEmpt와 HitWindow는 "곡 시간" 단위이고,
+        /// 오버레이는 osu!의 오디오 시간(= 곡 시간)으로 렌더링한다. DT면 그 시계 자체가
+        /// 실시간 대비 1.5배로 흐르므로 체감 속도는 저절로 빨라진다. 여기서 또 나누면
+        /// 이중 적용이다.
+        ///
+        /// osu! stable도 동일하다 (HitObjectManager.UpdateVariables:468):
+        ///   PreEmpt = (int)MapDifficultyRange(Beatmap.DifficultyApproachRate, 1800, 1200, 450);
+        /// MapDifficultyRange 안의 ApplyModsToDifficulty는 Easy와 HardRock만 본다.
+        ///
+        /// osu!에 ApplyModsToTime(time/1.5)이 있긴 하지만 PreEmpt에 쓰이는 곳은 단 한 군데,
+        /// 곡 선택 화면 툴팁(Beatmap.cs:1153, SongSelection_DifficultyInfo_Tooltip_Osu)뿐이다.
+        /// 플레이어에게 "이 mod면 체감이 이 정도"라고 보여주는 표시용 변환이지 게임플레이
+        /// 로직이 아니다. 이 둘을 혼동한 것이 DT에서 모든 게 1.5배속으로 보이던 원인이었다.
         /// </summary>
         /// <param name="ar">최종 AR 값 (이미 mod + 설정 오버라이드 적용됨)</param>
         /// <param name="cs">최종 CS 값 (이미 mod + 설정 오버라이드 적용됨)</param>
         /// <param name="od">최종 OD 값 (이미 mod 적용됨)</param>
-        /// <param name="speedMultiplier">DT=1.5, HT=0.75, nomod=1.0 — PreEmpt/HitWindow에 적용</param>
-        /// <param name="scalePreEmpt">PreEmpt에 speed multiplier 적용 여부 (AR override 시 false)</param>
+        /// <param name="preemptScale">
+        /// PreEmpt를 곡 시간으로 환산하는 배수. Auto AR은 맵 값이라 이미 곡 시간이므로 1.0.
+        /// 사용자 override AR은 "DT 켜고 봤을 때 보이는 AR"(실시간 기준)이므로 곡 시간으로
+        /// 바꾸려면 speedMultiplier를 곱한다 — DT 1.5, HT 0.75.
+        /// 예: override AR9 + DT → 실시간 600ms를 원함 → 곡 시간 900ms → 시계가 1.5배로
+        /// 흐르니 실제로 600ms에 보인다.
+        /// </param>
         public static DifficultyValues CalculateWithValues(double ar, double cs, double od,
-            float gamefieldWidth, float gamefieldRatio,
-            float speedMultiplier = 1.0f, bool scalePreEmpt = true)
+            float gamefieldWidth, float gamefieldRatio, double preemptScale = 1.0)
         {
             DifficultyValues dv = new DifficultyValues();
 
             // AR → PreEmpt (MapDifficultyRange with hardRockFactor=1.4 already applied to ar)
-            double preempt = MapDifficultyRangeRaw(ar, 1800, 1200, 450);
-            if (scalePreEmpt)
-                preempt = ApplySpeedMultiplierToTime(preempt, speedMultiplier);
+            double preempt = MapDifficultyRangeRaw(ar, 1800, 1200, 450) * preemptScale;
             dv.PreEmpt = (int)preempt;
 
-            // FadeIn — osu! stable: 400 * min(1, PreEmpt/450)
-            dv.FadeIn = (int)(400.0 * Math.Min(1.0, preempt / 450.0));
+            // FadeIn — osu! stable HitObjectManager.FadeIn 은 고정 상수 400이다 (HitObjectManager.cs:120).
+            // 이전 값 400*min(1,PreEmpt/450)은 osu!lazer 공식이었고 stable과 달라 고AR(PreEmpt<450)에서
+            // 페이드가 짧아졌다. 상수로 되돌린다.
+            dv.FadeIn = FadeIn;
 
-            // OD → HitWindow (speed multiplier 항상 적용 — AR override와 무관)
-            double hw50 = MapDifficultyRangeRaw(od, 200, 150, 100);
-            double hw100 = MapDifficultyRangeRaw(od, 140, 100, 60);
-            double hw300 = MapDifficultyRangeRaw(od, 80, 50, 20);
-            hw50 = ApplySpeedMultiplierToTime(hw50, speedMultiplier);
-            hw100 = ApplySpeedMultiplierToTime(hw100, speedMultiplier);
-            hw300 = ApplySpeedMultiplierToTime(hw300, speedMultiplier);
-            dv.HitWindow50 = Math.Max(1, (int)hw50);
-            dv.HitWindow100 = Math.Max(1, (int)hw100);
-            dv.HitWindow300 = Math.Max(1, (int)hw300);
+            // OD → HitWindow
+            dv.HitWindow50 = Math.Max(1, (int)MapDifficultyRangeRaw(od, 200, 150, 100));
+            dv.HitWindow100 = Math.Max(1, (int)MapDifficultyRangeRaw(od, 140, 100, 60));
+            dv.HitWindow300 = Math.Max(1, (int)MapDifficultyRangeRaw(od, 80, 50, 20));
 
             // OD → SpinnerRotationRatio (speed 미적용)
             dv.SpinnerRotationRatio = MapDifficultyRangeRaw(od, 3, 5, 7.5);
@@ -94,19 +106,14 @@ namespace OsuEnlightenOverlay.Gameplay.Difficulty
         }
 
         /// <summary>
-        /// DT/HT speed multiplier — osu! stable ModSpeedChange.
-        /// DT/NC: 1.5, HT: 0.75, nomod: 1.0
-        /// </summary>
-        public static float GetSpeedMultiplier(bool isDT, bool isHT)
-        {
-            if (isDT) return 1.5f;
-            if (isHT) return 0.75f;
-            return 1.0f;
-        }
-
-        /// <summary>
-        /// 시간값에 speed multiplier 적용 — osu! stable ApplySpeedMultiplierToTime.
-        /// DT: time / 1.5 (빠르게 나타남), HT: time / 0.75 (느리게 나타남)
+        /// 곡 시간을 실시간으로 환산 — osu! stable HitObjectManager.ApplyModsToTime.
+        /// DT: time / 1.5, HT: time / 0.75
+        ///
+        /// 표시 전용이다. 게임플레이 계산에 쓰면 안 된다 — PreEmpt/HitWindow는 곡 시간
+        /// 단위인데 오디오 시계가 이미 DT면 1.5배로 흐르므로 이중 적용이 된다.
+        /// osu!도 이 함수를 PreEmpt에 쓰는 곳은 곡 선택 툴팁 한 군데뿐이다
+        /// (Beatmap.cs:1153, SongSelection_DifficultyInfo_Tooltip_Osu).
+        /// 여기서는 컨트롤 패널의 DT/HT AR 표시값 역산(GetMapDtAR/GetMapHtAR)에만 쓴다.
         /// </summary>
         public static double ApplySpeedMultiplierToTime(double timeMs, float speedMultiplier)
         {

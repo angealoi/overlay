@@ -35,7 +35,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
         // 배치
         QuadBatch3D quadBatch;
         LinearBatch3D halfCircleBatch;
-        LinearBatch gradientLineBatch;
 
         // 캡 메시 인덱스
         int numPrimitives_cap;
@@ -57,7 +56,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             quadBatch = new QuadBatch3D(200 * 6);
             halfCircleBatch = new LinearBatch3D(MAXRES * 100 * 3);
-            gradientLineBatch = new LinearBatch(8, PrimitiveType.LineStrip);
 
             CalculateCapMesh();
         }
@@ -372,8 +370,10 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             // FBO 텍스처 — DpiScale 처리 방식 변경 후 FlipVertical 불필요
             // sliderBody.FlipVertical = true;
 
-            // Fade transformations — osu! stable과 동일
+            // Fade transformations — osu! stable SliderOsu.cs:965-967
             // Fade In: 0→1 (StartTime-PreEmpt → StartTime-PreEmpt+FadeIn)
+            // FadeIn을 PreEmpt로 클램프 — stable(AR≤10, PreEmpt≥450)에선 무의미(=stable 동일)하고,
+            // 오버라이드 고AR(PreEmpt<400)에서만 페이드인이 슬라이더 시작을 넘지 않게 막는다.
             int fadeInClamped = Math.Min(fadeIn, preEmpt);
             sliderBody.Transformations.Add(new Transformation(
                 TransformationType.Fade, 0f, 1f,
@@ -543,7 +543,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             if (quadBatch != null) quadBatch.Dispose();
             if (halfCircleBatch != null) halfCircleBatch.Dispose();
-            if (gradientLineBatch != null) gradientLineBatch.Dispose();
         }
     }
 }

@@ -211,16 +211,13 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 // (메모리에서 IsHit=1로 미리 세팅된 객체일 수 있음)
                 if (j.StartTime > timeMs + 1000) { skippedFuture++; continue; }
 
-                // 판정 시간 — 슬라이더는 EndTime, Circle/Spinner는 StartTime
-                int judgementTime = isSlider ? j.EndTime : j.StartTime;
-
                 // HitObject 위치 — StartTime으로 beatmapObjects에서 찾기
                 Vector2 endPosition;
                 int startTime;
                 int endTime;
                 if (!GetHitObjectInfoByStartTime(j.StartTime, out endPosition, out startTime, out endTime))
                 {
-                    // GetHitObjectInfo 실패 — hitSeen에 등록하지 않음 (다음 프레임에 재시도)
+                    // 조회 실패 — hitSeen에 등록하지 않음 (다음 프레임에 재시도)
                     continue;
                 }
 
@@ -269,49 +266,6 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             if ((type & (int)HitObjectType.Spinner) != 0) { endPosition = h.Position; endTime = h.EndTime; }
             else if ((type & (int)HitObjectType.Slider) != 0) { endPosition = h.BaseEndPosition; endTime = h.StartTime; }
             else { endPosition = h.Position; endTime = h.StartTime; }
-            return true;
-        }
-
-        /// <summary>
-        /// 인덱스 i의 HitObject 위치, StartTime, EndTime 반환.
-        /// </summary>
-        bool GetHitObjectInfo(int index, out Vector2 endPosition, out int startTime, out int endTime)
-        {
-            endPosition = Vector2.Zero;
-            startTime = 0;
-            endTime = 0;
-
-            if (beatmapObjects == null || index < 0 || index >= beatmapObjects.Count)
-                return false;
-
-            HitObjectData h = beatmapObjects[index];
-            startTime = h.StartTime;
-
-            // 슬라이더/스피너의 EndTime
-            if ((int)h.Type == 0) return false; // 잘못된 타입
-
-            int type = (int)h.Type;
-            if ((type & (int)HitObjectType.Spinner) != 0)
-            {
-                // 스피너는 중앙 고정 위치
-                endPosition = h.Position;
-                endTime = h.EndTime;
-            }
-            else if ((type & (int)HitObjectType.Slider) != 0)
-            {
-                // 슬라이더 판정 HitBurst는 끝점(EndPosition)에 표시 — osu! stable HitObjectManager.Hit()
-                // h.EndPosition 사용 (osu! stable HitObjectManager.cs:1017).
-                // BaseEndPosition은 BeatmapParser에서 곡선 끝점으로 계산됨.
-                endPosition = h.BaseEndPosition;
-                endTime = h.StartTime; // 근사값 (정확한 EndTime은 sliderDuration 필요)
-            }
-            else
-            {
-                // Circle — 위치 그대로
-                endPosition = h.Position;
-                endTime = h.StartTime;
-            }
-
             return true;
         }
 

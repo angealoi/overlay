@@ -23,32 +23,8 @@ namespace OsuEnlightenOverlay.Memory
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool CloseHandle(IntPtr hObject);
 
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "K32EnumProcesses")]
-        static extern bool EnumProcesses(uint[] lpidProcess, int cb, out int lpcbNeeded);
-
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "QueryFullProcessImageName")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, System.Text.StringBuilder lpExeName, ref uint lpdwSize);
-
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "K32EnumProcessModules")]
-        static extern bool EnumProcessModules(IntPtr hProcess, IntPtr[] lphModule, int cb, out int lpcbNeeded);
-
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "K32GetModuleFileNameEx")]
-        static extern int GetModuleFileNameEx(IntPtr hProcess, IntPtr hModule, System.Text.StringBuilder lpFilename, int nSize);
-
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "K32GetModuleInformation")]
-        static extern bool GetModuleInformation(IntPtr hProcess, IntPtr hModule, out MODULEINFO lpmodinfo, int cb);
-
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, int dwLength);
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct MODULEINFO
-        {
-            public IntPtr lpBaseOfDll;
-            public int SizeOfImage;
-            public IntPtr EntryPoint;
-        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct MEMORY_BASIC_INFORMATION
@@ -144,7 +120,6 @@ namespace OsuEnlightenOverlay.Memory
 
         /// <summary>
         /// osu! 프로세스를 실행 파일 이름(osu!.exe)으로 찾아서 오픈.
-        /// QueryFullProcessImageName 사용 — 32-bit/64-bit 상관없이 작동.
         /// </summary>
         public bool OpenOsu()
         {
@@ -174,44 +149,6 @@ namespace OsuEnlightenOverlay.Memory
             if (Handle == IntPtr.Zero)
                 Handle = OpenProcess(PROCESS_VM_READ, false, pid);
             return Handle != IntPtr.Zero;
-        }
-
-        /// <summary>
-        /// osu!.exe 모듈의 베이스 주소와 크기를 반환.
-        /// </summary>
-        public bool GetModuleInfo(out IntPtr baseAddress, out int moduleSize)
-        {
-            baseAddress = IntPtr.Zero;
-            moduleSize = 0;
-
-            if (!IsOpen) return false;
-
-            IntPtr[] modules = new IntPtr[1024];
-            int cb = modules.Length * IntPtr.Size;
-            int needed;
-
-            if (!EnumProcessModules(Handle, modules, cb, out needed))
-                return false;
-
-            int count = needed / IntPtr.Size;
-            for (int i = 0; i < count; i++)
-            {
-                System.Text.StringBuilder sb = new System.Text.StringBuilder(260);
-                GetModuleFileNameEx(Handle, modules[i], sb, sb.Capacity);
-
-                if (sb.ToString().EndsWith("osu!.exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    MODULEINFO modInfo;
-                    if (GetModuleInformation(Handle, modules[i], out modInfo, Marshal.SizeOf(typeof(MODULEINFO))))
-                    {
-                        baseAddress = modInfo.lpBaseOfDll;
-                        moduleSize = modInfo.SizeOfImage;
-                        return true;
-                    }
-                    return false;
-                }
-            }
-            return false;
         }
 
         /// <summary>

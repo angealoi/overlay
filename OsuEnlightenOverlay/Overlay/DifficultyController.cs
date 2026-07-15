@@ -30,13 +30,15 @@ namespace OsuEnlightenOverlay.Overlay
 
         /// <summary>
         /// Difficulty Changer + mod 적용하여 최종 AR/CS/OD 계산.
-        /// Osu-external-overlay-main 참조 구현 기반:
-        ///   Auto AR: HR/EZ 적용 → PreEmpt 계산 → speed multiplier로 나눔 (DT÷1.5, HT÷0.75)
-        ///   Override AR: HR/EZ 미적용, speed scaling 없음 — 사용자 값이 최종 AR
+        ///   Auto AR: 맵 AR + HR/EZ 적용, PreEmpt 환산 없음 (맵 값은 이미 곡 시간)
+        ///   Override AR: HR/EZ 미적용. 사용자 값은 "그 mod로 플레이할 때 보이는 AR"이므로
+        ///                실시간 기준 → PreEmpt에 speedMultiplier를 곱해 곡 시간으로 환산
         ///   Auto CS: 맵 CS + HR/EZ 적용
         ///   Override CS: 사용자 값, 단 맵 CS(mod 적용)보다 작아질 수 없음 (overdrive)
         ///   FadeIn: 400 * min(1, PreEmpt/450)
-        ///   HitWindow: speed multiplier로 나눔 (Auto만, Override는 미적용)
+        ///
+        /// HitWindow에는 DT/HT를 적용하지 않는다 — osu! stable과 동일하며, 곡 시간 단위인
+        /// HitWindow에 또 배수를 걸면 이중 적용이 된다. DifficultyCalculator 주석 참고.
         /// </summary>
         public DifficultyValues Compute(BeatmapData beatmap, float gamefieldWidth, float gamefieldRatio)
         {
@@ -47,137 +49,99 @@ namespace OsuEnlightenOverlay.Overlay
             bool isEZ = reader.IsEZ;
             bool isDT = reader.IsDT || reader.IsNC; // NC = DT 파생
             bool isHT = reader.IsHT;
-            float speedMultiplier = DifficultyCalculator.GetSpeedMultiplier(isDT, isHT);
 
             // ── AR 결정 ──
-            // DT/HT 모드 시 DT/HT AR 슬롯 사용, 아니면 일반 AR 슬롯
-            bool arOverride;
-            double arOverrideValue = 0;
-            if (isDT && !settings.ArDtAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArDtValue;
-            }
-            else if (isHT && !settings.ArHtAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArHtValue;
-            }
-            else if (!settings.ArAuto)
-            {
-                arOverride = true;
-                arOverrideValue = settings.ArValue;
-            }
-            else
-            {
-                arOverride = false;
-            }
+            // 현재 mod에 해당하는 슬롯 값을 그대로 쓴다. Auto 모드는 없다 — Auto 버튼은
+            // "이 맵의 값을 슬라이더에 채워넣는" 일회성 동작이고, 이후엔 슬라이더가 곧 값이다.
+            double arValue = isDT ? settings.ArDtValue
+                           : isHT ? settings.ArHtValue
+                           : settings.ArValue;
+            double ar = Math.Max(0, Math.Min(ArOverrideMax, arValue));
 
-            double ar;
-            bool scalePreEmpt;
-            if (arOverride)
-            {
-                // Override AR: HR/EZ 미적용, PreEmpt speed scaling 없음
-                // (사용자가 이미 DT/HT를 고려한 AR값을 설정하므로 PreEmpt는 그대로)
-                ar = Math.Max(0, Math.Min(10, arOverrideValue));
-                scalePreEmpt = false;
-            }
-            else
-            {
-                // Auto AR: 맵 AR + HR/EZ 적용 (hardRockFactor=1.4)
-                ar = DifficultyCalculator.ApplyModsToDifficulty(
-                    beatmap.ApproachRate, 1.4, isEZ, isHR);
-                scalePreEmpt = true; // PreEmpt에 speed multiplier 적용
-            }
+            // 슬라이더 값은 "그 mod로 플레이할 때 보이는 AR"(실시간 기준)이므로
+            // 곡 시간으로 환산하려면 speedMultiplier를 곱한다.
+            double preemptScale = isDT ? 1.5 : isHT ? 0.75 : 1.0;
 
             // ── CS 결정 ──
-            // Auto CS: 맵 CS + HR/EZ 적용 (hardRockFactor=1.3)
-            double autoCs = DifficultyCalculator.ApplyModsToDifficulty(
-                beatmap.CircleSize, 1.3, isEZ, isHR);
-            autoCs = Math.Max(0, Math.Min(10, autoCs));
+            // 맵 CS(mod 적용)가 하한 — 그 아래로는 내려갈 수 없다(overdrive 전용).
+            double cs = Math.Min(10, Math.Max(settings.CsValue, MapCS(beatmap, isEZ, isHR)));
 
-            double cs;
-            if (!settings.CsAuto)
-            {
-                // Override CS: 사용자 값, 단 맵 CS(mod 적용)보다 작아질 수 없음 (overdrive)
-                cs = Math.Max(settings.CsValue, autoCs);
-                cs = Math.Min(10, cs);
-            }
-            else
-            {
-                cs = autoCs;
-            }
-
-            // ── OD 결정 ── (항상 맵 OD + HR/EZ, speed multiplier는 HitWindow에만)
+            // ── OD 결정 ── (항상 맵 OD + HR/EZ)
             double od = DifficultyCalculator.ApplyModsToDifficulty(
                 beatmap.OverallDifficulty, 1.4, isEZ, isHR);
 
             return DifficultyCalculator.CalculateWithValues(ar, cs, od,
-                gamefieldWidth, gamefieldRatio,
-                speedMultiplier, scalePreEmpt);
+                gamefieldWidth, gamefieldRatio, preemptScale);
+        }
+
+        /// <summary>UI 슬라이더 상한과 동일 — DT 체감 AR은 10을 넘으므로 10에서 자르면 안 된다.</summary>
+        public const double ArOverrideMax = 12;
+
+        /// <summary>맵 CS + 현재 HR/EZ 적용 (hardRockFactor=1.3).</summary>
+        static double MapCS(BeatmapData beatmap, bool isEZ, bool isHR)
+        {
+            return Math.Max(0, Math.Min(10,
+                DifficultyCalculator.ApplyModsToDifficulty(beatmap.CircleSize, 1.3, isEZ, isHR)));
+        }
+
+        /// <summary>맵 AR + 현재 HR/EZ 적용 (hardRockFactor=1.4).</summary>
+        double MapAR(BeatmapData beatmap)
+        {
+            return DifficultyCalculator.ApplyModsToDifficulty(
+                beatmap.ApproachRate, 1.4, reader.IsEZ, reader.IsHR);
         }
 
         /// <summary>
-        /// 현재 맵의 파싱된 AR 값 반환 (mod 미적용).
-        /// ControlPanel Auto 버튼에서 사용.
+        /// 이 맵을 speedMult 배속으로 플레이할 때 "보이는" AR — Auto 버튼 채움값.
+        /// 맵 AR(+HR/EZ) → PreEmpt(곡시간) → ÷배속 → 실시간 PreEmpt → 역산 AR
+        ///
+        /// Compute가 슬라이더 값을 체감 AR로 해석해 ×배속 하므로, 여기서 채운 값을 그대로
+        /// 두면 맵 원래 화면이 재현된다. 10으로 클램프하면 안 된다 — AR9+DT의 체감은
+        /// 10.33이고, 10으로 깎으면 채운 직후부터 맵과 다른 화면이 나온다.
         /// </summary>
+        float EffectiveAR(BeatmapData beatmap, float speedMult, float fallback)
+        {
+            if (beatmap == null || reader == null) return fallback;
+            double preempt = DifficultyCalculator.MapDifficultyRangeRaw(MapAR(beatmap), 1800, 1200, 450);
+            preempt = DifficultyCalculator.ApplySpeedMultiplierToTime(preempt, speedMult);
+            return (float)Math.Max(0, Math.Min(ArOverrideMax,
+                DifficultyCalculator.MapDifficultyRangeInv(preempt, 1800, 1200, 450)));
+        }
+
+        /// <summary>nomod AR 슬롯의 Auto 버튼 채움값 — 맵 AR + HR/EZ.</summary>
         public float GetMapAR(BeatmapData beatmap)
         {
-            if (beatmap == null) return 9.0f;
-            return (float)beatmap.ApproachRate;
+            if (beatmap == null || reader == null) return 9.0f;
+            return (float)Math.Max(0, Math.Min(ArOverrideMax, MapAR(beatmap)));
         }
 
-        /// <summary>
-        /// Auto 모드에서 실제 적용되는 CS (= Compute()의 autoCs, HR/EZ 반영).
-        /// ControlPanel CS Auto 버튼 채움값. 맵 미로드 시 4.0 기본값.
-        ///
-        /// nomod 원본 CS를 채우면 안 된다: 채움이 nud.ValueChanged를 타고
-        /// settings.CsValue를 오염시키고, Manual 전환 시 overdrive 클램프
-        /// Math.Max(CsValue, autoCs)가 그 nomod 값을 통과시켜 EZ가 무시된다.
-        /// (HR은 클램프가 큰 쪽을 골라 우연히 가려짐 — EZ에서만 드러남)
-        /// </summary>
-        public float GetAutoCS(BeatmapData beatmap)
-        {
-            if (beatmap == null || reader == null) return 4.0f;
-            return GetLiveCS(beatmap);
-        }
-
-        /// <summary>
-        /// DT 적용 시 표시 AR 반환 — PreEmpt 기반 역산.
-        /// AR → PreEmpt → ÷1.5 → 역산 AR
-        /// </summary>
+        /// <summary>DT AR 슬롯의 Auto 버튼 채움값 — DT로 플레이할 때 보이는 AR.</summary>
         public float GetMapDtAR(BeatmapData beatmap)
         {
-            if (beatmap == null) return 10.0f;
-            double preempt = DifficultyCalculator.MapDifficultyRangeRaw(beatmap.ApproachRate, 1800, 1200, 450);
-            preempt = DifficultyCalculator.ApplySpeedMultiplierToTime(preempt, 1.5f);
-            return (float)Math.Min(10, DifficultyCalculator.MapDifficultyRangeInv(preempt, 1800, 1200, 450));
+            return EffectiveAR(beatmap, 1.5f, 10.0f);
         }
 
-        /// <summary>
-        /// HT 적용 시 표시 AR 반환 — PreEmpt 기반 역산.
-        /// AR → PreEmpt → ÷0.75 → 역산 AR
-        /// </summary>
+        /// <summary>HT AR 슬롯의 Auto 버튼 채움값 — HT로 플레이할 때 보이는 AR.</summary>
         public float GetMapHtAR(BeatmapData beatmap)
         {
-            if (beatmap == null) return 8.0f;
-            double preempt = DifficultyCalculator.MapDifficultyRangeRaw(beatmap.ApproachRate, 1800, 1200, 450);
-            preempt = DifficultyCalculator.ApplySpeedMultiplierToTime(preempt, 0.75f);
-            return (float)Math.Min(10, DifficultyCalculator.MapDifficultyRangeInv(preempt, 1800, 1200, 450));
+            return EffectiveAR(beatmap, 0.75f, 8.0f);
         }
 
         /// <summary>
-        /// 현재 mod가 적용된 effective CS — ControlPanelForm CS override 기준값.
-        /// HR/EZ mod가 반영된 CS.
+        /// CS 하한 — 맵 CS + 현재 HR/EZ. CS 슬라이더가 이 값 아래로 못 내려가게 하는 기준이자
+        /// CS Auto 버튼 채움값. 맵 미로드 시 0(하한 없음).
         /// </summary>
         public float GetLiveCS(BeatmapData beatmap)
         {
             if (reader == null || beatmap == null) return 0f;
-            bool isHR = reader.IsHR;
-            bool isEZ = reader.IsEZ;
-            double cs = DifficultyCalculator.ApplyModsToDifficulty(
-                beatmap.CircleSize, 1.3, isEZ, isHR);
-            return (float)Math.Max(0, Math.Min(10, cs));
+            return (float)MapCS(beatmap, reader.IsEZ, reader.IsHR);
+        }
+
+        /// <summary>CS Auto 버튼 채움값 — 맵 CS + HR/EZ. 맵 미로드 시 4.0.</summary>
+        public float GetAutoCS(BeatmapData beatmap)
+        {
+            if (beatmap == null || reader == null) return 4.0f;
+            return GetLiveCS(beatmap);
         }
     }
 }
