@@ -160,8 +160,9 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpDiff.Width = 330;
             grpDiff.Height = 200;
 
+            // NOMOD AR 상한 10 — osu! 실제 NOMOD AR이 10에서 막히고, 그 이상은 부자연스럽다.
             AddValueRow(grpDiff, 20, "AR",
-                settings.ArValue, 0, 12, 2,
+                settings.ArValue, 0, 10, 2,
                 (v) => { settings.ArValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapAR() : 9.0f,
                 out tbAR, out nudAR, out btnARAuto);
@@ -176,8 +177,10 @@ namespace OsuEnlightenOverlay.ControlPanel
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
                 out tbDtAR, out nudDtAR, out btnDtARAuto);
+            // HT AR 상한 10 — HT는 AR을 낮추는 mod라 10 이상은 의미가 없다.
+            // (DT만 10 초과 유지: AR10 맵+DT의 체감 AR은 10을 넘는다.)
             AddValueRow(grpDiff, 140, "HT",
-                settings.ArHtValue, 0, 12, 2,
+                settings.ArHtValue, 0, 10, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
                 out tbHtAR, out nudHtAR, out btnHtARAuto);
@@ -443,6 +446,14 @@ namespace OsuEnlightenOverlay.ControlPanel
             lbl.Width = 35;
             parent.Controls.Add(lbl);
 
+            // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value는 범위 밖 대입 시 예외를
+            // 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생 가능.)
+            // 클램프됐으면 아래에서 설정에도 반영해야 한다 — 안 그러면 슬라이더는 10을
+            // 보여주는데 settings에는 12가 남아 Compute가 12를 계속 쓴다.
+            float clampedValue = Math.Max(min, Math.Min(max, value));
+            bool wasClamped = clampedValue != value;
+            value = clampedValue;
+
             TrackBar tb = new TrackBar();
             tb.Location = new Point(55, yPos);
             tb.Width = 140;
@@ -487,6 +498,11 @@ namespace OsuEnlightenOverlay.ControlPanel
                 nud.Value = (decimal)Math.Round(mapVal, 2);
             };
             parent.Controls.Add(btnAuto);
+
+            // 로드 값이 범위 밖이라 클램프됐다면 설정에도 반영(+저장). 핸들러는 위에서
+            // 붙었으므로 이 시점 호출은 정상적으로 onValueChanged를 탄다.
+            if (wasClamped)
+                onValueChanged(value);
 
             outTb = tb;
             outNud = nud;
