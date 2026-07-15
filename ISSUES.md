@@ -232,14 +232,13 @@
 
 ### H-1. 최우선 — 모든 맵에서 실제로 다르게 렌더링됨 (5건)
 
-#### H1. `FadeIn`이 stable 상수가 아니라 lazer 공식 ⚠️ 뿌리 버그
+#### ~~H1. `FadeIn`이 stable 상수가 아니라 lazer 공식~~ ✅ 해결 (`b3958e1`)
 | | |
 |---|---|
 | stable | `HitObjectManager.cs:120` — `internal static readonly int FadeIn = 400;` **상수** |
-| ours | `Gameplay/Difficulty/DifficultyCalculator.cs` — `FadeIn = 400 × min(1, PreEmpt/450)` |
-| 실체 | 이 공식은 **osu!lazer**의 것. 코드 주석의 *"osu! stable: 400 * min(1, PreEmpt/450)"* 는 **거짓** |
-| 파급 | 히트서클 페이드인 · 어프로치서클 페이드(`FadeIn×2`) · 슬라이더 바디 페이드인 · 스피너 페이드인 · `spinner-spin`(`FadeIn/2`) · 콤보숫자 — **전부** 이 값을 사용 |
-| 언제 드러나나 | PreEmpt ≥ 450(AR ≤ 10.33)이면 `min()`이 1로 잘려 우연히 400 → 동일. **PreEmpt < 450(고 AR, 특히 DT AR 오버라이드)에서 stable보다 페이드가 짧아짐** |
+| ~~ours~~ | ~~`FadeIn = 400 × min(1, PreEmpt/450)` (lazer 공식)~~ → `dv.FadeIn = 400` 상수로 수정 |
+| 함께 수정 | 소비처의 `Math.Min(FadeIn, PreEmpt)` 클램프도 제거 (히트서클 메인 페이드·슬라이더 바디 — stable에 없음). 어프로치서클 클램프는 stable과 **등가**라 유지 |
+| 검증 | 빌드 통과 · **실기 확인 대기** (고AR/DT에서 페이드 확인 권장) |
 
 #### H2. 반복 슬라이더 리턴 패스의 틱이 통째로 사라짐
 | | |
@@ -257,13 +256,12 @@
 | 왜 안 보이나 | `SpinnerOsu.cs:255-256`에서 넣은 `Fade(0,0)` 변환이 활성 상태 → `pSprite.Update`가 **매 프레임 CurrentAlpha를 0으로 덮어씀** → Alpha 필드 설정이 무효. Passed 시 `Alpha=1`(`:494`)도 동일하게 무효 |
 | 추가 | **진행 중 색상도 다름**: stable은 진행 중에도 파란색 `(3,151,255)`, ours는 White로 두다가 Passed에만 파란색 |
 
-#### H4. 스네이킹 선분 병합에서 `forceEnd` 무시 — 레드앵커 모서리 뭉개짐
+#### ~~H4. 스네이킹 선분 병합에서 `forceEnd` 무시~~ ✅ 해결 (`b3958e1`)
 | | |
 |---|---|
-| stable | `SliderOsu.cs:1075` — 병합 중단 조건에 **`\|\| sliderCurveSmoothLines[i].forceEnd`** 포함 |
-| ours | `Gameplay/HitObjects/SliderOsu.cs:791` — `dist > minDist \|\| last \|\| (i == count-2)` — **forceEnd 없음** |
-| 증상 | 멀티파트(레드앵커) 경계를 넘어 선분이 병합되어 각진 부분이 뭉개짐 |
-| 부수 | `straight` 선분의 `min_dist=32`도 미적용 (항상 6) — 이쪽은 성능 영향만 |
+| stable | `SliderOsu.cs:1074` — 병합 중단 조건에 **`\|\| sliderCurveSmoothLines[i].forceEnd`** 포함, `min_dist`는 `.straight ? 32 : 6` |
+| ~~ours~~ | ~~`dist > minDist \|\| last \|\| (i==count-2)`, minDist 항상 6~~ → forceEnd 추가 + `minDist = straight ? 32 : 6`. `Line.forceEnd`/`straight`는 SliderCurve가 이미 세팅 중이라 배선만 |
+| 검증 | 빌드 통과 · **실기 확인 대기** (레드앵커 슬라이더 모서리) |
 
 #### H5. 브레이크 뒤 콤보 번호/색 리셋 누락
 | | |
