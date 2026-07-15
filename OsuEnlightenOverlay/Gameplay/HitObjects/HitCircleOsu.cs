@@ -253,12 +253,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
 
             // Fade In — osu-stable HitCircleOsu.cs:105-109
-            // nomod: 0→1 (startTime-p → startTime-p+FadeIn)
+            // nomod: 0→1 (startTime-p → startTime-p+FadeIn) — stable은 클램프 없음(:108)
             // HD:    0→1 (startTime-p → startTime-p*0.6)
-            int fadeInClamped = Math.Min(difficulty.FadeIn, p);
             Transformation fadeIn = HiddenActive ?
                 new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - (int)(p * 0.6), EasingTypes.None) :
-                new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - p + fadeInClamped, EasingTypes.None);
+                new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - p + difficulty.FadeIn, EasingTypes.None);
 
             spriteHitCircle.Transformations.Add(fadeIn.Clone());
             if (spriteHitCircleOverlay != null)
@@ -358,12 +357,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
 
             // Hit Circle / Overlay / Text Fade In 재구성
-            // nomod: 0→1 (startTime-p → startTime-p+FadeIn)
+            // nomod: 0→1 (startTime-p → startTime-p+FadeIn) — stable은 클램프 없음(:108)
             // HD:    0→1 (startTime-p → startTime-p*0.6)
-            int fadeInClamped = Math.Min(newDifficulty.FadeIn, p);
             Transformation fadeIn = HiddenActive ?
                 new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - (int)(p * 0.6), EasingTypes.None) :
-                new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - p + fadeInClamped, EasingTypes.None);
+                new Transformation(TransformationType.Fade, 0f, 1f, startTime - p, startTime - p + newDifficulty.FadeIn, EasingTypes.None);
             if (spriteHitCircle != null)
             {
                 spriteHitCircle.Transformations.Clear();

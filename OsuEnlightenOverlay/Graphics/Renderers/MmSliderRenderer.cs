@@ -370,13 +370,12 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             // FBO 텍스처 — DpiScale 처리 방식 변경 후 FlipVertical 불필요
             // sliderBody.FlipVertical = true;
 
-            // Fade transformations — osu! stable과 동일
+            // Fade transformations — osu! stable SliderOsu.cs:965-967과 동일 (FadeIn 클램프 없음)
             // Fade In: 0→1 (StartTime-PreEmpt → StartTime-PreEmpt+FadeIn)
-            int fadeInClamped = Math.Min(fadeIn, preEmpt);
             sliderBody.Transformations.Add(new Transformation(
                 TransformationType.Fade, 0f, 1f,
                 startTime - preEmpt,
-                startTime - preEmpt + fadeInClamped,
+                startTime - preEmpt + fadeIn,
                 EasingTypes.None));
             // Fade Out — HD: 1→0 (Start-PreEmpt+FadeIn → EndTime, EasingTypes.Out)
             //               nomod: 1→0 (EndTime → EndTime+FadeOut)
@@ -384,7 +383,7 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             {
                 sliderBody.Transformations.Add(new Transformation(
                     TransformationType.Fade, 1f, 0f,
-                    startTime - preEmpt + fadeInClamped,
+                    startTime - preEmpt + fadeIn,
                     endTime,
                     EasingTypes.Out));
             }

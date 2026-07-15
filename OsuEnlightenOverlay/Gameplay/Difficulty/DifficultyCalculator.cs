@@ -54,8 +54,10 @@ namespace OsuEnlightenOverlay.Gameplay.Difficulty
             double preempt = MapDifficultyRangeRaw(ar, 1800, 1200, 450) * preemptScale;
             dv.PreEmpt = (int)preempt;
 
-            // FadeIn — osu! stable: 400 * min(1, PreEmpt/450)
-            dv.FadeIn = (int)(400.0 * Math.Min(1.0, preempt / 450.0));
+            // FadeIn — osu! stable HitObjectManager.FadeIn 은 고정 상수 400이다 (HitObjectManager.cs:120).
+            // 이전 값 400*min(1,PreEmpt/450)은 osu!lazer 공식이었고 stable과 달라 고AR(PreEmpt<450)에서
+            // 페이드가 짧아졌다. 상수로 되돌린다.
+            dv.FadeIn = FadeIn;
 
             // OD → HitWindow
             dv.HitWindow50 = Math.Max(1, (int)MapDifficultyRangeRaw(od, 200, 150, 100));
