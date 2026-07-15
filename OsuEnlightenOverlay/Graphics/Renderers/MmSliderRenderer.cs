@@ -35,7 +35,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
         // 배치
         QuadBatch3D quadBatch;
         LinearBatch3D halfCircleBatch;
-        LinearBatch gradientLineBatch;
 
         // 캡 메시 인덱스
         int numPrimitives_cap;
@@ -57,7 +56,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             quadBatch = new QuadBatch3D(200 * 6);
             halfCircleBatch = new LinearBatch3D(MAXRES * 100 * 3);
-            gradientLineBatch = new LinearBatch(8, PrimitiveType.LineStrip);
 
             CalculateCapMesh();
         }
@@ -543,7 +541,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             if (quadBatch != null) quadBatch.Dispose();
             if (halfCircleBatch != null) halfCircleBatch.Dispose();
-            if (gradientLineBatch != null) gradientLineBatch.Dispose();
         }
     }
 }

@@ -271,20 +271,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             Disarm();
         }
 
-        /// <summary>
-        /// Approach Circle 가시성 업데이트 — HD mod에서 SpriteManager에서도 제거.
-        /// </summary>
-        public void UpdateApproachCircleVisibility(SpriteManager sm)
-        {
-            // HD mod이면 approach circle 제거
-            if (HiddenActive && spriteApproachCircle != null)
-            {
-                if (sm != null && sm.Contains(spriteApproachCircle))
-                    sm.Remove(spriteApproachCircle);
-                spriteApproachCircle = null;
-            }
-        }
-
         void CreateApproachCircle(pTexture texApproach, int startTime, int p, Color comboColour)
         {
             if (texApproach == null) return;

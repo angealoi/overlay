@@ -32,7 +32,6 @@ namespace OsuEnlightenOverlay.Overlay
     {
         GLControl glControl;
         IntPtr osuHwnd = IntPtr.Zero;
-        Timer syncTimer;
         System.Diagnostics.Stopwatch renderStopwatch;
         double fpsCapInterval = 0; // 0 = unlimited
         OsuMemoryReader reader;
@@ -80,21 +79,12 @@ namespace OsuEnlightenOverlay.Overlay
 
         public void ApplyFpsCap()
         {
+            // fpsCapInterval은 OnApplicationIdle의 렌더 루프가 프레임 간격 제한에 사용한다.
+            // 0이면 무제한.
             if (settings == null || settings.FpsCap <= 0)
-            {
-                fpsCapInterval = 0; // unlimited
-                if (syncTimer != null) syncTimer.Interval = 1; // 1ms = 최대한 빠르게
-            }
+                fpsCapInterval = 0;
             else
-            {
                 fpsCapInterval = 1000.0 / settings.FpsCap;
-                if (syncTimer != null)
-                {
-                    // Timer Interval을 FPS cap에 맞춤 — 최소 1ms
-                    int interval = Math.Max(1, (int)Math.Round(fpsCapInterval));
-                    syncTimer.Interval = interval;
-                }
-            }
         }
 
         /// <summary>
@@ -386,10 +376,8 @@ namespace OsuEnlightenOverlay.Overlay
                 glControlHook.AssignHandle(glControl.Handle);
             };
 
-            // 타이머: osu! 창 추종 + 렌더링
-            syncTimer = new Timer();
+            // 렌더/추종은 StartOverlay에서 Application.Idle에 건다 (OnApplicationIdle).
             ApplyFpsCap();
-            syncTimer.Tick += OnSyncTick;
         }
 
         protected override void OnLoad(EventArgs e)
@@ -1032,8 +1020,6 @@ namespace OsuEnlightenOverlay.Overlay
                 try { WindowInterop.timeEndPeriod(1); } catch { }
                 if (renderer != null)
                     renderer.Dispose();
-                if (syncTimer != null)
-                    syncTimer.Dispose();
                 if (glControl != null)
                     glControl.Dispose();
             }

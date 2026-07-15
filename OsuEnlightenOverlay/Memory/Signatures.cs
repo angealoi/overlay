@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace OsuEnlightenOverlay.Memory
 {
@@ -11,10 +11,8 @@ namespace OsuEnlightenOverlay.Memory
     {
         public string Name;
         public string Pattern;       // "5E 5F 5D C3 A1 ?? ?? ?? ?? 89 ?? 04"
-        public string Mask;          // "FF FF FF FF FF 00 00 00 00 FF 00 FF"
         public int OperandSkip;      // 매치 위치에서 operand까지의 오프셋
         public int PostAdd;          // operand 읽은 후 추가할 값
-        public bool ScanAll;         // 다중 매치 여부 (Cursor X/Y)
     }
 
     internal static class Signatures
@@ -28,10 +26,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "AudioEngine.Time",
             Pattern = "5E 5F 5D C3 A1 ?? ?? ?? ?? 89 ?? 04",
-            Mask = "FF FF FF FF FF 00 00 00 00 FF 00 FF",
             OperandSkip = 5,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // SIG.MD 1절: GameBase.Mode (OsuModes enum)
@@ -42,10 +38,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "GameBase.Mode",
             Pattern = "48 83 F8 04 73 1E",
-            Mask = "FF FF FF FF FF FF",
             OperandSkip = -4,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // SIG.MD 1절: MenuMods (mods bitmask)
@@ -56,10 +50,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "MenuMods",
             Pattern = "C8 FF ?? ?? ?? ?? ?? 81 0D ?? ?? ?? ?? ?? 08 00 00",
-            Mask = "FF FF 00 00 00 00 00 FF FF 00 00 00 00 00 FF FF FF",
             OperandSkip = 9,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // SIG.MD 1절: Ruleset (Player walk entry)
@@ -70,10 +62,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "Ruleset",
             Pattern = "7D 15 A1 ?? ?? ?? ?? 85 C0",
-            Mask = "FF FF FF 00 00 00 00 FF FF",
             OperandSkip = -0xB,
-            PostAdd = 4,
-            ScanAll = false
+            PostAdd = 4
         };
 
         // SIG.MD 1절: CurrentBeatmap (AR/CS/HP/OD + metadata)
@@ -83,10 +73,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "CurrentBeatmap",
             Pattern = "F8 01 74 04 83 65",
-            Mask = "FF FF FF FF FF FF",
             OperandSkip = -0xC,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // SIG.MD 1절: PlayMode (lazer-style mode selector)
@@ -96,10 +84,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "PlayMode",
             Pattern = "F8 01 74 04 83 65",
-            Mask = "FF FF FF FF FF FF",
             OperandSkip = -0x33,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // SIG.MD 1절: Cursor X/Y v2 (always-alive screen-space)
@@ -110,10 +96,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "Cursor X/Y v2",
             Pattern = "8B 35 ?? ?? ?? ?? 83 C6 04 F3 0F 7E 06 66 0F D6 07 5E 5F C3",
-            Mask = "FF FF 00 00 00 00 00 FF FF FF FF FF FF FF FF FF FF FF FF FF",
             OperandSkip = 2,
-            PostAdd = 0,
-            ScanAll = true
+            PostAdd = 0
         };
 
         // hom_walk.md §2/§3: Player::Instance (canonical HOM 진입점)
@@ -128,10 +112,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "Player::Instance",
             Pattern = "80 3D ?? ?? ?? ?? 00 75 26 A1 ?? ?? ?? ?? 85 C0 74 0C",
-            Mask = "FF FF 00 00 00 00 00 FF FF FF 00 00 00 00 FF FF FF FF",
             OperandSkip = 10,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
 
         // ── Render at Native Resolution 관련 ──
@@ -164,10 +146,8 @@ namespace OsuEnlightenOverlay.Memory
         {
             Name = "ConfigDictionary",
             Pattern = "8D 45 EC 50 8B 0D ?? ?? ?? ?? 8B D7 39 09 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 4D EC",
-            Mask = "FF FF FF FF FF FF 00 00 00 00 FF FF FF FF FF 00 00 00 00 FF FF FF 00 FF FF FF",
             OperandSkip = 6,
-            PostAdd = 0,
-            ScanAll = false
+            PostAdd = 0
         };
     }
 }

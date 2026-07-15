@@ -96,15 +96,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 startCircle.ComboNumber = comboNumber;
         }
 
-        /// <summary>
-        /// HD mod에서 시작원 approach circle 가시성 업데이트.
-        /// </summary>
-        public void UpdateStartCircleApproachVisibility(SpriteManager sm)
-        {
-            if (startCircle != null)
-                startCircle.UpdateApproachCircleVisibility(sm);
-        }
-
         public SliderOsu(HitObjectData data, DifficultyValues difficulty, BeatmapData beatmap, TextureManager texManager, Color comboColour, int comboNumber, int comboColourIndex, bool isFirstObject)
         {
             this.data = data;
