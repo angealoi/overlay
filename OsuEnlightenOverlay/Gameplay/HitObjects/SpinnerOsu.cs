@@ -69,14 +69,41 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         public int RotationRequirement { get { return rotationRequirement; } }
         public bool IsSpriteAdded; // 시간 윈도우 기반 스프라이트 추가 추적
 
+        // 종료 시 glow 페이드아웃을 이미 걸었는지 — stable Hit()의 FadeOut(300) 대응 (1회성)
+        bool glowEndFaded = false;
+
+        // glow 기본색 — osu-stable SpinnerOsu.cs:443/306의 new Color(3, 151, 255)
+        static readonly Color GlowColour = Color.FromArgb(255, 3, 151, 255);
+
+        // 보너스 flash — osu-stable은 pSprite.FlashColour(White, 200)로 흰색→InitialColour를
+        // 200ms Colour 변환으로 건다. 우리 pSprite에는 Colour 변환 지원이 없어(Fade/Scale/
+        // Rotation/Movement만) 여기서 직접 보간한다. glow가 유일한 사용처라 인프라를
+        // 추가하는 것보다 국소 처리가 낫다.
+        const int GlowFlashDuration = 200;
+        int glowFlashStart = int.MinValue;
+
         /// <summary>
-        /// LoadBeatmap 시 호출 — state 완전 리셋.
+        /// LoadBeatmap/retry 재진입 시 호출 — state 완전 리셋.
         /// </summary>
         public void ResetState()
         {
             state = SpinningState.NotStarted;
             lastBonusScoreCount = 0;
             effectiveEndTime = 0;
+
+            // glow 변환을 초기 상태(Fade 0,0 — updateCompletion이 값을 수정하는 캔버스)로 복원.
+            // 종료 페이드아웃으로 교체됐거나 진행도가 남아있을 수 있다.
+            if (spriteGlow != null)
+            {
+                glowEndFaded = false;
+                glowFlashStart = int.MinValue;   // 진행 중이던 보너스 flash 취소
+                spriteGlow.Colour = GlowColour;
+                spriteGlow.CurrentColour = GlowColour;
+                spriteGlow.Transformations.Clear();
+                spriteGlow.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 0f, 0f, StartTime, EndTime, EasingTypes.None));
+                spriteGlow.ComputeTimeRange();
+            }
         }
 
         /// <summary>
@@ -260,13 +287,20 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         void UpdateTransformations()
         {
-            // 모든 ?�프?�이?�에 Fade In/Out ?�용
+            // 메인 스프라이트에만 Fade In/Out 적용.
+            //
+            // spin/clear/glow는 제외한다 — osu-stable에서 UpdateTransformations는 생성자에서
+            // 이 셋이 만들어지기 전에 돌고(InitializeSpritesNoFadeIn이 나중), 셋은 각자 자기
+            // 변환을 소유한다. 특히 glow는 Fade(0,0) 변환의 Start/EndFloat를 매 프레임
+            // 진행도로 직접 수정하는 방식(stable updateCompletion :444-446)이라, 여기서
+            // Clear하면 glow 알파 제어가 통째로 무너진다. 우리는 UpdateDifficulty에서 이
+            // 메서드를 재호출하므로 stable과 달리 명시적으로 걸러야 한다.
             Transformation fadeIn = new Transformation(
                 TransformationType.Fade, 0f, 1f, StartTime - difficulty.FadeIn, StartTime, EasingTypes.None);
             Transformation fadeOut = new Transformation(
                 TransformationType.Fade, 1f, 0f, EndTime, EndTime + DifficultyCalculator.FadeOut, EasingTypes.None);
 
-            foreach (pSprite p in GetAllSprites())
+            foreach (pSprite p in GetMainSprites())
             {
                 if (p == null) continue;
                 p.Transformations.Clear();
@@ -293,20 +327,50 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             rotationRequirement = (int)(length / 1000.0 * difficulty.SpinnerRotationRatio);
         }
 
-        List<pSprite> GetAllSprites()
+        /// <summary>
+        /// glow 색상 적용 — 보너스 flash(흰색)에서 기본 파란색으로 복귀하는 보간.
+        /// osu-stable pSprite.FlashColour(White, 200)의 대응: 흰색→InitialColour를 200ms
+        /// Colour 변환으로 거는데, 우리 pSprite는 Colour 변환을 지원하지 않아 직접 계산한다.
+        /// stable의 flash 변환은 easing이 없으므로 선형 보간.
+        /// </summary>
+        void ApplyGlowColour(int timeMs)
+        {
+            if (spriteGlow == null) return;
+
+            Color c = GlowColour;
+            int elapsed = timeMs - glowFlashStart;
+            if (glowFlashStart != int.MinValue && elapsed >= 0 && elapsed < GlowFlashDuration)
+            {
+                float t = (float)elapsed / GlowFlashDuration;
+                c = ColourHelper.ColourLerp(Color.White, GlowColour, t);
+            }
+
+            spriteGlow.Colour = c;
+            spriteGlow.CurrentColour = c;
+        }
+
+        /// <summary>UpdateTransformations 대상 — 공통 Fade In/Out을 받는 메인 스프라이트.</summary>
+        List<pSprite> GetMainSprites()
         {
             List<pSprite> list = new List<pSprite>();
             if (spriteCircleTop != null) list.Add(spriteCircleTop);
             if (spriteCircleBottom != null) list.Add(spriteCircleBottom);
             if (spriteMiddleTop != null) list.Add(spriteMiddleTop);
             if (spriteMiddleBottom != null) list.Add(spriteMiddleBottom);
-            if (spriteGlow != null) list.Add(spriteGlow);
             if (spriteBackground != null) list.Add(spriteBackground);
             if (spriteScoreMetre != null) list.Add(spriteScoreMetre);
             if (spriteApproachCircle != null) list.Add(spriteApproachCircle);
+            if (spriteRpmBackground != null) list.Add(spriteRpmBackground);
+            return list;
+        }
+
+        /// <summary>전체 스프라이트 — SpriteManager 추가/제거·TimeRange 재계산용.</summary>
+        List<pSprite> GetAllSprites()
+        {
+            List<pSprite> list = GetMainSprites();
+            if (spriteGlow != null) list.Add(spriteGlow);
             if (spriteSpin != null) list.Add(spriteSpin);
             if (spriteClear != null) list.Add(spriteClear);
-            if (spriteRpmBackground != null) list.Add(spriteRpmBackground);
             return list;
         }
 
@@ -431,9 +495,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 if (spriteMiddleBottom != null)
                     spriteMiddleBottom.Rotation = middleRotation;
 
-                // 진행도 — osu-stable updateCompletion: |floatRotationCount| / rotationRequirement
-                float percent = Math.Min(100, frc / Math.Max(1, req) * 100);
-                float progress = percent / 100f;
+                // 진행도 — osu-stable updateCompletion: |floatRotationCount| / rotationRequirement * 100
+                // stable은 여기서 percent를 클램프하지 않는다 (metre 경로만 99로, glow 알파만 1로).
+                float percent = frc / Math.Max(1, req) * 100f;
 
                 // old-style metre bar — osu-stable SpinnerOsu.cs:451-463
                 // spriteGlow == null (oldStyle)일 때만 metre 작동
@@ -452,14 +516,31 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     spriteScoreMetre.Position = new Vector2(spriteScoreMetre.Position.X, (float)(spinnerTopOffset + 43.25 * (10 - barCount)));
                 }
 
-                // glow + scale — osu-stable updateCompletion
+                // glow + scale — osu-stable updateCompletion (SpinnerOsu.cs:439-449)
                 if (spriteGlow != null)
                 {
+                    // 보너스 flash 보간 — stable FlashColour(White, 200): 흰색에서 기본색으로 복귀.
+                    // state와 무관하게 매 프레임 적용해야 Passed 이후(보너스 구간)에도 흰색이
+                    // 굳지 않고 파란색으로 돌아온다.
+                    ApplyGlowColour(timeMs);
+
                     if (state < SpinningState.Passed)
                     {
-                        float glowScale = 0.8f + (1f - (float)Math.Cos(progress * Math.PI / 2)) * 0.2f;
+
+                        // stable :444-446 — 알파는 Fade 변환의 값 자체를 수정한다.
+                        // Alpha 필드에 직접 쓰면 안 된다: 생성 시 넣은 Fade(0,0) 변환이
+                        // StartTime~EndTime 동안 활성이라 pSprite.Update가 매 프레임
+                        // CurrentAlpha를 변환 값(0)으로 덮어써 glow가 영영 안 보인다.
+                        if (spriteGlow.Transformations.Count > 0)
+                        {
+                            Transformation tr = spriteGlow.Transformations[0];
+                            tr.StartFloat = tr.EndFloat = Math.Min(1f, percent / 100f);
+                        }
+
+                        // stable :448 — 0.8 + easeOutVal(percent/100, 0, 0.2, 1) = OutQuad
+                        float u = percent / 100f;
+                        float glowScale = 0.8f + 0.2f * (1f - (1f - u) * (1f - u));
                         spriteGlow.Scale = glowScale;
-                        spriteGlow.Alpha = Math.Min(1, progress);
                         if (spriteCircleTop != null) spriteCircleTop.Scale = glowScale;
                         if (spriteCircleBottom != null) spriteCircleBottom.Scale = glowScale;
                         if (spriteMiddleTop != null) spriteMiddleTop.Scale = glowScale;
@@ -487,12 +568,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 // Clear — osu-stable: SpinningState == 2 (Passed) = scoringRotationCount >= rotationRequirement
                 if (state == SpinningState.Started && spinningState >= 2)
                 {
-                    if (spriteGlow != null)
-                    {
-                        spriteGlow.Colour = Color.FromArgb(255, 3, 151, 255);
-                        spriteGlow.CurrentColour = spriteGlow.Colour;
-                        spriteGlow.Alpha = 1f;
-                    }
+                    // stable :305-306 — InitialColour를 파란색으로. 우리는 ApplyGlowColour가
+                    // 매 프레임 GlowColour(=파란색)를 기준으로 칠하므로 여기서 할 일이 없다.
+                    // 알파는 updateCompletion이 마지막으로 변환에 써둔 값이 유지된다(통과 시 1).
 
                     if (spriteClear != null)
                     {
@@ -523,14 +601,26 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         int bonusScore = 1000 * excess / 2;
                         ShowBonus(timeMs, effectiveEnd, bonusScore);
 
-                        // glow flash — osu-stable: spriteGlow.FlashColour(White, 200)
-                        if (spriteGlow != null)
-                        {
-                            spriteGlow.Colour = Color.White;
-                            spriteGlow.CurrentColour = Color.White;
-                        }
+                        // glow flash — osu-stable :386 spriteGlow.FlashColour(White, 200).
+                        // 시작 시각만 기록하고 실제 보간은 ApplyGlowColour가 한다.
+                        glowFlashStart = timeMs;
                     }
                 }
+            }
+
+            // 스피너 종료 후 glow 정리 — osu-stable Hit()의 spriteGlow.FadeOut(300) 대응.
+            // glow의 Fade 변환은 종료 후 '과거'가 되어 마지막 알파가 그대로 유지되므로,
+            // 종료를 넘는 순간 1회 300ms 페이드아웃으로 교체한다. (안 하면 스프라이트
+            // 윈도우가 제거할 때까지 ~2초간 잔상이 남는다.)
+            if (spriteGlow != null && !glowEndFaded && timeMs > effectiveEnd)
+            {
+                glowEndFaded = true;
+                float currentAlpha = spriteGlow.Transformations.Count > 0
+                    ? spriteGlow.Transformations[0].EndFloat : 0f;
+                spriteGlow.Transformations.Clear();
+                spriteGlow.Transformations.Add(new Transformation(
+                    TransformationType.Fade, currentAlpha, 0f, timeMs, timeMs + 300, EasingTypes.None));
+                spriteGlow.ComputeTimeRange();
             }
 
             // bonus 숫자 스프라이트들도 업데이트

@@ -21,6 +21,8 @@
 | 2026-07-15 | **Difficulty Changer 오버라이드가 맵 로드 시 리셋되던 문제** (apply 블록이 nomod 값 대입) | `1eddd17` | 실기 확인 |
 | 2026-07-15 | **고AR 오버라이드 히트 애니메이션 충돌** (FadeIn 클램프 복원 — 충실도 무손실) | `846221b` | 실기 확인 |
 | 2026-07-15 | **NOMOD/HT AR 슬라이더 상한 10** (DT는 12) + 로드값 클램프(A1 계열 크래시 예방) | `d79570d` | 실기 확인 |
+| 2026-07-15 | **H3**: newStyle 스피너 glow가 아예 안 보이던 문제 (+ UpdateTransformations 분리, 종료 페이드) | `4261cad` | 실기 확인 |
+| 2026-07-15 | **H17**: 보너스 flash가 흰색으로 굳던 문제 (H3 수정으로 드러남) | `8a2442e` | 실기 확인 (실제 osu!와 동일 동작 확인) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -253,13 +255,14 @@
 | 검산 | segCount=2, i=1 진입 시 진행거리 ≈ L → `L×1 − L − d = −d` → **음수** → 첫 틱부터 skipTick → **리턴 패스 틱 전부 미생성**. 역으로 첫 패스에선 stable이 스킵하는 끝부분 틱을 ours가 스킵 안 함 |
 | 추가 | **틱 소멸 시점도 다름**: stable은 세그먼트 종료 시 일괄(`:933-935`), ours는 각 틱의 scoreTime에 개별(`SliderOsu.cs:307-308`) → stable은 볼이 지나가도 틱이 세그먼트 끝까지 남음 |
 
-#### H3. newStyle 스피너 glow가 아예 안 보임 (확정 버그)
+#### ~~H3. newStyle 스피너 glow가 아예 안 보임~~ ✅ 해결 (`4261cad`)
 | | |
 |---|---|
-| stable | `SpinnerOsu.cs:444-446` — glow의 **Fade 변환 객체의 StartFloat/EndFloat를 percent로 수정** |
-| ours | `Gameplay/HitObjects/SpinnerOsu.cs:462` — `spriteGlow.Alpha = progress` 직접 설정 |
-| 왜 안 보이나 | `SpinnerOsu.cs:255-256`에서 넣은 `Fade(0,0)` 변환이 활성 상태 → `pSprite.Update`가 **매 프레임 CurrentAlpha를 0으로 덮어씀** → Alpha 필드 설정이 무효. Passed 시 `Alpha=1`(`:494`)도 동일하게 무효 |
-| 추가 | **진행 중 색상도 다름**: stable은 진행 중에도 파란색 `(3,151,255)`, ours는 White로 두다가 Passed에만 파란색 |
+| 원인 | `spriteGlow.Alpha` 직접 설정이 생성 시 `Fade(0,0)` 변환에 매 프레임 덮여 무효 |
+| 수정 | stable(:444-446) 방식 — **Fade 변환의 Start/EndFloat 자체를 진행도로 수정**. 진행 중 파란색(:443), 스케일 OutQuad(:448 easeOutVal — 기존 cos 공식은 easing 방향 반대), percent 무클램프 |
+| 전제 수정 | `UpdateTransformations`가 spin/clear/glow 변환까지 Clear하던 것을 메인 스프라이트만으로 분리 — stable은 생성자에서 셋이 생기기 전에 돌고, 셋은 자기 변환을 소유 |
+| 종료 처리 | glow가 보이게 되면서 드러난 잔상(종료 후 ~2초) — stable `Hit()`의 `FadeOut(300)` 대응으로 종료 감지 시 1회 페이드아웃, ResetState에서 캔버스 복원 |
+| 검증 | ✅ **실기 확인** — 실제 osu!와 동일 동작 확인 (glow 표시·통과 시 파란 유지·보너스 flash 복귀·종료 페이드). H17(`8a2442e`)과 함께 검증 |
 
 #### ~~H4. 스네이킹 선분 병합에서 `forceEnd` 무시~~ ✅ 해결 (`b3958e1`)
 | | |
@@ -290,7 +293,7 @@
 | H14 | **metre 블링크** | `RNG.NextBool(((int)percent % 10) / 10f)` **확률적** 깜빡임 — `SpinnerOsu.cs:456` | `>= 0.5f` **결정적** 반올림 |
 | H15 | **followpoint 등장** | `SkinManager.IsDefault && GameBase.NewGraphicsAvailable`일 때만 Scale + **Movement**(posStart→pos, Out) — `HitObjectManager.cs:1887-1891` | Scale을 **무조건** 적용 + **Movement 누락**. ours의 `posStart` 계산(`HitObjectManagerOsu.cs:488`)은 **데드 코드** |
 | H16 | **sliderBall FlipVertical** | 곡선 시작 각도로 상하 반전 — `SliderOsu.cs:796-800` | 없음 |
-| H17 | **glow flash 복귀** | `FlashColour(White, 200)` — 200ms 후 파란색 복귀 — `SpinnerOsu.cs:386` | White로 바꾸고 **복귀 없음** |
+| ~~H17~~ ✅ | ~~**glow flash 복귀**~~ → 해결 (`8a2442e`) | `FlashColour(White, 200)` — 200ms 후 파란색 복귀 — `SpinnerOsu.cs:386` | ~~White로 바꾸고 복귀 없음~~ → glow 전용 수동 보간(`ApplyGlowColour`). pSprite에 Colour 변환 지원이 없어 인프라 추가 대신 국소 처리 |
 | H18 | **어프로치서클 소멸** | 생성 시 소멸 fade **없음**. `Arm()`에서만 (히트: 즉시 / 미스: 60ms) — `HitCircleOsu.cs:245, 264` | 생성 시 `0.9→0 @ startTime→+60` **하드코딩** + Arm 것도 추가 → 근사이나 1:1 아님 |
 | H19 | **Disarm 후 Scale 리셋** | `SpriteHitCircle1.Scale = 1`, `Text.Scale = TEXT_SIZE` — `HitCircleOsu.cs:223-225` | 누락 |
 | H20 | **스택 위치 재적용** | 범위 내 **전 객체** 무조건 `ModifyPosition` — `HitObjectManager.cs:1761-1765` | `StackCount != 0`인 것만 → 재계산 시 낡은 위치 잔존 가능 |
