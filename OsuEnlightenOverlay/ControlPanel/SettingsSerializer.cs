@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -40,13 +40,9 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // [Difficulty]
             settings.ArValue = ReadFloat(path, "Difficulty", "AR", settings.ArValue);
-            settings.ArAuto = ReadBool(path, "Difficulty", "ARAuto", settings.ArAuto);
             settings.CsValue = ReadFloat(path, "Difficulty", "CS", settings.CsValue);
-            settings.CsAuto = ReadBool(path, "Difficulty", "CSAuto", settings.CsAuto);
             settings.ArDtValue = ReadFloat(path, "Difficulty", "DtAR", settings.ArDtValue);
-            settings.ArDtAuto = ReadBool(path, "Difficulty", "DtARAuto", settings.ArDtAuto);
             settings.ArHtValue = ReadFloat(path, "Difficulty", "HtAR", settings.ArHtValue);
-            settings.ArHtAuto = ReadBool(path, "Difficulty", "HtARAuto", settings.ArHtAuto);
 
             // [Cursor]
             settings.CursorAutoSize = ReadBool(path, "Cursor", "AutoSize", settings.CursorAutoSize);
@@ -93,13 +89,9 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // [Difficulty]
             WriteFloat(path, "Difficulty", "AR", settings.ArValue);
-            WriteBool(path, "Difficulty", "ARAuto", settings.ArAuto);
             WriteFloat(path, "Difficulty", "CS", settings.CsValue);
-            WriteBool(path, "Difficulty", "CSAuto", settings.CsAuto);
             WriteFloat(path, "Difficulty", "DtAR", settings.ArDtValue);
-            WriteBool(path, "Difficulty", "DtARAuto", settings.ArDtAuto);
             WriteFloat(path, "Difficulty", "HtAR", settings.ArHtValue);
-            WriteBool(path, "Difficulty", "HtARAuto", settings.ArHtAuto);
 
             // [Cursor]
             WriteBool(path, "Cursor", "AutoSize", settings.CursorAutoSize);
