@@ -351,10 +351,14 @@ namespace OsuEnlightenOverlay.Skinning
         {
             SkinOsu skin = new SkinOsu();
             skin.RawName = skinName;
-            skin.FullPath = Path.Combine(skinsFolder, skinName);
 
-            string iniFilename = Path.Combine(skin.FullPath, "skin.ini");
-            bool hasIni = File.Exists(iniFilename);
+            // skinsFolder가 null이면(osu! 설치 경로 미해결) 디스크 스킨을 못 읽는다 —
+            // Path.Combine(null, ...)이 ArgumentNullException을 던져 기동이 막히던 것을 막고
+            // 임베디드 기본 스킨으로 진행한다 (A1: OverlayForm.OnLoad가 Show() 안에서 돈다).
+            skin.FullPath = skinsFolder != null ? Path.Combine(skinsFolder, skinName) : null;
+
+            string iniFilename = skin.FullPath != null ? Path.Combine(skin.FullPath, "skin.ini") : null;
+            bool hasIni = iniFilename != null && File.Exists(iniFilename);
             bool isDefault = skinName == "Default";
 
             Console.WriteLine("[Skin] LoadSkin: name=" + skinName + " folder=" + skin.FullPath + " ini=" + hasIni);

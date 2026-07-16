@@ -131,9 +131,10 @@ namespace OsuEnlightenOverlay.ControlPanel
             nudFpsCap = new NumericUpDown();
             nudFpsCap.Location = new Point(75, 68);
             nudFpsCap.Width = 80;
-            nudFpsCap.Minimum = 0;
-            nudFpsCap.Maximum = 10000;
-            nudFpsCap.Value = settings.FpsCap;
+            nudFpsCap.Minimum = OverlaySettings.FpsCapMin;
+            nudFpsCap.Maximum = OverlaySettings.FpsCapMax;
+            // 방어: Normalize()가 이미 범위 안으로 맞추지만, 범위 밖 값이 새어들어와도 예외 없이.
+            nudFpsCap.Value = Math.Min(nudFpsCap.Maximum, Math.Max(nudFpsCap.Minimum, (decimal)settings.FpsCap));
             nudFpsCap.ValueChanged += (s, e) =>
             {
                 settings.FpsCap = (int)nudFpsCap.Value;
@@ -161,26 +162,27 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpDiff.Height = 200;
 
             // NOMOD AR 상한 10 — osu! 실제 NOMOD AR이 10에서 막히고, 그 이상은 부자연스럽다.
+            // min/max는 OverlaySettings 상수 — Normalize() 클램프와 동일 범위를 공유한다.
             AddValueRow(grpDiff, 20, "AR",
-                settings.ArValue, 0, 10, 2,
+                settings.ArValue, OverlaySettings.ArMin, OverlaySettings.ArMax, 2,
                 (v) => { settings.ArValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapAR() : 9.0f,
                 out tbAR, out nudAR, out btnARAuto);
             AddValueRow(grpDiff, 60, "CS",
-                settings.CsValue, 0, 10, 2,
+                settings.CsValue, OverlaySettings.CsMin, OverlaySettings.CsMax, 2,
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 // 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
                 () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
                 out tbCS, out nudCS, out btnCSAuto);
             AddValueRow(grpDiff, 100, "DT",
-                settings.ArDtValue, 0, 12, 2,
+                settings.ArDtValue, OverlaySettings.DtArMin, OverlaySettings.DtArMax, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
                 out tbDtAR, out nudDtAR, out btnDtARAuto);
             // HT AR 상한 10 — HT는 AR을 낮추는 mod라 10 이상은 의미가 없다.
             // (DT만 10 초과 유지: AR10 맵+DT의 체감 AR은 10을 넘는다.)
             AddValueRow(grpDiff, 140, "HT",
-                settings.ArHtValue, 0, 10, 2,
+                settings.ArHtValue, OverlaySettings.HtArMin, OverlaySettings.HtArMax, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
                 out tbHtAR, out nudHtAR, out btnHtARAuto);
@@ -213,11 +215,16 @@ namespace OsuEnlightenOverlay.ControlPanel
             nudCursorSize = new NumericUpDown();
             nudCursorSize.Location = new Point(90, 45);
             nudCursorSize.Width = 70;
-            nudCursorSize.Minimum = 0.1m;
-            nudCursorSize.Maximum = 2.0m;
+            nudCursorSize.Minimum = (decimal)OverlaySettings.CursorSizeMin;
+            nudCursorSize.Maximum = (decimal)OverlaySettings.CursorSizeMax;
             nudCursorSize.DecimalPlaces = 2;
             nudCursorSize.Increment = 0.05m;
-            nudCursorSize.Value = (decimal)settings.CursorSize;
+            // 방어: NaN/Infinity는 (decimal) 캐스트에서 OverflowException을 던지므로 float 단계에서
+            // 먼저 살균한 뒤 범위로 클램프한다. (Normalize()가 이미 처리하지만 이중 방어.)
+            float cursorSize = settings.CursorSize;
+            if (float.IsNaN(cursorSize) || float.IsInfinity(cursorSize)) cursorSize = 1.0f;
+            cursorSize = Math.Max(OverlaySettings.CursorSizeMin, Math.Min(OverlaySettings.CursorSizeMax, cursorSize));
+            nudCursorSize.Value = (decimal)cursorSize;
             nudCursorSize.ValueChanged += (s, e) => { settings.CursorSize = (float)nudCursorSize.Value; Save(); };
             grpCursor.Controls.Add(nudCursorSize);
 
@@ -446,12 +453,18 @@ namespace OsuEnlightenOverlay.ControlPanel
             lbl.Width = 35;
             parent.Controls.Add(lbl);
 
-            // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value는 범위 밖 대입 시 예외를
-            // 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생 가능.)
+            // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value/NumericUpDown.Value는 범위 밖
+            // 대입 시 예외를 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생.)
             // 클램프됐으면 아래에서 설정에도 반영해야 한다 — 안 그러면 슬라이더는 10을
             // 보여주는데 settings에는 12가 남아 Compute가 12를 계속 쓴다.
+            //
+            // NaN/Infinity는 Math.Min/Max를 그대로 통과(전파)한 뒤 (decimal) 캐스트에서
+            // OverflowException을 낸다 — 클램프 전에 먼저 살균해야 한다. 원본과 비교해
+            // wasClamped를 판정하므로 NaN도 (min과 !=이라) 정상적으로 재저장된다.
+            float original = value;
+            if (float.IsNaN(value) || float.IsInfinity(value)) value = min;
             float clampedValue = Math.Max(min, Math.Min(max, value));
-            bool wasClamped = clampedValue != value;
+            bool wasClamped = clampedValue != original;
             value = clampedValue;
 
             TrackBar tb = new TrackBar();
@@ -554,7 +567,10 @@ namespace OsuEnlightenOverlay.ControlPanel
                 string skinsPath = System.IO.Path.Combine(osuDir, "Skins");
                 if (System.IO.Directory.Exists(skinsPath))
                 {
-                    string[] dirs = System.IO.Directory.GetDirectories(skinsPath);
+                    // Exists가 true여도 ACL로 GetDirectories가 예외를 낼 수 있다 — 생성자에서 죽지 않도록 (A1).
+                    string[] dirs;
+                    try { dirs = System.IO.Directory.GetDirectories(skinsPath); }
+                    catch { dirs = new string[0]; }
                     var skinNames = new System.Collections.Generic.List<string>();
 
                     foreach (string dir in dirs)
@@ -592,15 +608,22 @@ namespace OsuEnlightenOverlay.ControlPanel
                 System.Reflection.Assembly.GetExecutingAssembly().Location);
             string packsRoot = System.IO.Path.Combine(exeDir, "overlay-cursors");
 
-            // overlay-cursors 폴더가 없으면 생성
+            // overlay-cursors 폴더가 없으면 생성 — 쓰기 불가 폴더(예: Program Files)에서 실행 시
+            // CreateDirectory가 예외를 던져 생성자(=메인 폼)가 죽으면 앱이 아예 안 뜬다 (A1).
             if (!System.IO.Directory.Exists(packsRoot))
-                System.IO.Directory.CreateDirectory(packsRoot);
+            {
+                try { System.IO.Directory.CreateDirectory(packsRoot); }
+                catch { /* 팩 목록 없이 진행 — Auto만 표시 */ }
+            }
 
             int selectedIndex = 0; // Auto
 
             if (System.IO.Directory.Exists(packsRoot))
             {
-                string[] dirs = System.IO.Directory.GetDirectories(packsRoot);
+                // Exists가 true여도 ACL/리파스포인트로 GetDirectories가 access-denied를 낼 수 있다.
+                string[] dirs;
+                try { dirs = System.IO.Directory.GetDirectories(packsRoot); }
+                catch { dirs = new string[0]; }
                 var validPacks = new System.Collections.Generic.List<string>();
 
                 foreach (string dir in dirs)
