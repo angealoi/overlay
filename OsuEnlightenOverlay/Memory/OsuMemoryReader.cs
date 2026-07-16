@@ -144,36 +144,50 @@ namespace OsuEnlightenOverlay.Memory
             return ScanStaticSlots();
         }
 
+        /// <summary>
+        /// 기동 시 static slot 일괄 스캔.
+        /// 예전에는 시그니처마다 전체 메모리를 다시 읽어 **전체 패스가 9회** 돌았다 (D1).
+        /// 이제 모든 패턴을 한 배치로 넘겨 **1회 패스**로 끝낸다.
+        /// </summary>
         bool ScanStaticSlots()
         {
-            timeSlot = ScanSlot(Signatures.AudioEngineTime);
+            var time = new AobScanRequest(Signatures.AudioEngineTime.Pattern, false);
+            var mode = new AobScanRequest(Signatures.GameBaseMode.Pattern, false);
+            var mods = new AobScanRequest(Signatures.MenuMods.Pattern, false);
+            // CurrentBeatmap과 PlayMode는 패턴이 같고 OperandSkip만 다르다 — 요청 하나로 둘 다 해결
+            var beatmap = new AobScanRequest(Signatures.CurrentBeatmap.Pattern, false);
+            var ruleset = new AobScanRequest(Signatures.Ruleset.Pattern, false);
+            var player = new AobScanRequest(Signatures.PlayerInstance.Pattern, false);
+            var config = new AobScanRequest(Signatures.ConfigDictionary.Pattern, false);
+            // 커서는 JIT가 여러 코드 사이트에 같은 코드를 방출하므로 전체 매치가 필요
+            var cursor = new AobScanRequest(Signatures.CursorXY.Pattern, true);
+
+            AobScanner.ScanBatch(pm, new[] { time, mode, mods, beatmap, ruleset, player, config, cursor });
+
+            timeSlot = AobScanner.ResolveSlot(pm, Signatures.AudioEngineTime, time);
             if (timeSlot == IntPtr.Zero)
                 return false;
 
-            modeSlot = ScanSlot(Signatures.GameBaseMode);
+            modeSlot = AobScanner.ResolveSlot(pm, Signatures.GameBaseMode, mode);
             if (modeSlot == IntPtr.Zero)
                 return false;
 
-            modsSlot = ScanSlot(Signatures.MenuMods);
+            modsSlot = AobScanner.ResolveSlot(pm, Signatures.MenuMods, mods);
             if (modsSlot == IntPtr.Zero)
                 return false;
 
-            beatmapStaticAddr = ScanSlot(Signatures.CurrentBeatmap);
+            beatmapStaticAddr = AobScanner.ResolveSlot(pm, Signatures.CurrentBeatmap, beatmap);
             if (beatmapStaticAddr == IntPtr.Zero)
                 return false;
 
-            playModeSlot = ScanSlot(Signatures.PlayMode);
-            score.ScanSlots();
-            ScanCursorSlots();
-            ScanPlayerInstanceSlot();
-            resolution.ScanSlots();
+            playModeSlot = AobScanner.ResolveSlot(pm, Signatures.PlayMode, beatmap);
+            score.ApplyScan(ruleset);
+            ApplyCursorScan(cursor);
+            if (player.First != IntPtr.Zero)
+                pm.ReadPointer(player.First + Signatures.PlayerInstance.OperandSkip, out playerInstanceSlot);
+            resolution.ApplyScan(config);
 
             return timeSlot != IntPtr.Zero;
-        }
-
-        IntPtr ScanSlot(AobSignature sig)
-        {
-            return AobScanner.ResolveSlot(pm, sig);
         }
 
         /// <summary>
@@ -183,10 +197,17 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         void ScanCursorSlots()
         {
-            byte[] pattern;
-            string mask;
-            AobScanner.ParsePattern(Signatures.CursorXY.Pattern, out pattern, out mask);
-            List<IntPtr> matches = AobScanner.ScanAll(pm, pattern, mask);
+            var req = new AobScanRequest(Signatures.CursorXY.Pattern, true);
+            AobScanner.ScanBatch(pm, new[] { req });
+            ApplyCursorScan(req);
+        }
+
+        /// <summary>
+        /// 커서 스캔 결과 적용 — 기동 시 배치 스캔과 재스캔이 공유한다.
+        /// </summary>
+        void ApplyCursorScan(AobScanRequest req)
+        {
+            List<IntPtr> matches = req.Results;
 
             foreach (IntPtr match in matches)
             {
@@ -582,17 +603,6 @@ namespace OsuEnlightenOverlay.Memory
                 foundPlayerHomOff = -1; // 맵 변경 → 오프셋 재감지
                 foundHomListOff = -1;
             }
-        }
-
-        // Player.Instance 시그니처 스캔
-        void ScanPlayerInstanceSlot()
-        {
-            byte[] pattern;
-            string mask;
-            AobScanner.ParsePattern(Signatures.PlayerInstance.Pattern, out pattern, out mask);
-            IntPtr match = AobScanner.Scan(pm, pattern, mask);
-            if (match != IntPtr.Zero)
-                pm.ReadPointer(match + Signatures.PlayerInstance.OperandSkip, out playerInstanceSlot);
         }
 
         string GetOsuFilePathFromBeatmap(IntPtr beatmapObj)
