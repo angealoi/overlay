@@ -73,10 +73,21 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             int combo = 0;
             int comboNumber = 0;
             bool forceNew = false;
+            int lastBreakPoint = -1;
+            int breakCount = beatmap.Breaks.Count;
 
             for (int i = 0; i < beatmap.HitObjects.Count; i++)
             {
                 HitObjectData h = beatmap.HitObjects[i];
+
+                // 브레이크를 지난 첫 객체는 강제로 새 콤보 — osu! stable HitObjectManager.cs:1258-1263
+                while (lastBreakPoint + 1 < breakCount &&
+                       beatmap.Breaks[lastBreakPoint + 1].EndTime < h.StartTime)
+                {
+                    lastBreakPoint++;
+                    h.NewCombo = true;
+                }
+
                 int offset = h.ComboOffset;
 
                 if ((h.Type & HitObjectType.Spinner) != 0)
