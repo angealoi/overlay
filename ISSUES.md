@@ -25,6 +25,7 @@
 | 2026-07-15 | **H17**: 보너스 flash가 흰색으로 굳던 문제 (H3 수정으로 드러남) | `8a2442e` | 실기 확인 (실제 osu!와 동일 동작 확인) |
 | 2026-07-16 | **H5**: 브레이크 파싱 + 브레이크 뒤 강제 NewCombo (+ `NewCombo`를 Type 파생 프로퍼티로) | `743c16d` | 실제 맵 135개 회귀 + 합성 맵으로 새 경로 검증. **단 실사용 영향은 0맵 — "모든 맵에서 어긋남" 주장은 오류였음** |
 | 2026-07-16 | **H2 + H22**: 리턴 패스 틱(세그먼트 리셋·스티키 skipTick·경계 미러) + 틱 소멸 일괄화 | `3bc67c8` | 실제 커브로 수정 전/후 대조 — 리턴 틱 복구 205개(2.8%), 위치 변경 496개(6.7%), 미러 대칭 207/207. 실기 확인 대기 |
+| 2026-07-16 | **C1/H23 + H20**: 스택 시 슬라이더 전체 이동 (+ 재로드 커브 뒤틀림 · HitBurst 부호 버그 함께 수정) | `8384faf` | 커브 28438개 머리 정렬 불변식 확인. 영향 실측 0.4%(111개). 실기 확인 대기 |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -117,10 +118,15 @@
 
 ## C. 시각적 정확성
 
-### C1. 스택된 슬라이더 — 몸통 따로 머리 따로
-- **위치**: `Gameplay/HitObjects/SliderOsu.cs:134` (커브가 생성자에서 스택 **전** 좌표로 계산) vs `HitObjectManagerOsu.cs:132` (스택은 그 뒤에 실행) vs `SliderOsu.cs:532` (시작원만 이동)
-- **증상**: 스택 맵에서 슬라이더 시작원은 스택 오프셋만큼 이동하는데 바디/볼/틱은 제자리 — 어긋난 채 렌더링
-- **참고**: osu! stable은 슬라이더 전체를 이동시킴
+### ~~C1. 스택된 슬라이더 — 몸통 따로 머리 따로~~ ✅ 해결 (`8384faf`)
+- ~~**위치**: 커브가 생성자에서 스택 **전** 좌표로 계산되는데 `UpdateStackedPosition`은 시작원만 이동~~ → stable `SliderOsu.ModifyPosition`(:1395-1436)처럼 **슬라이더 전체**를 이동
+- **핵심**: `curvePath`만 옮기면 바디/볼/틱이 전부 따라온다 (셋 다 curvePath에서 위치를 계산). 끝원+리버스 화살표는 자기 `HitObjectData`를 가져서 별도 `ModifyPosition` 필요. 바디 FBO 캐시도 무효화
+- **함께 발견/수정** (아래 셋 다 이 작업 중 드러남):
+  1. **재로드 시 커브 뒤틀림** — 커브를 `data.Position`(스택이 변형함)으로 만드는데 `data.CurvePoints`는 원본이라, 같은 BeatmapData로 재로드(난이도 슬라이더 조작)되면 **머리만 밀린 커브**가 나왔다 → `BasePosition` 기준으로 변경
+  2. **HitBurst 위치 부호 버그** — `UpdateStacking`은 `basePosition **−** StackCount*stackVector`인데 `BaseEndPosition`은 `**+=** StackCount*stackOffset`이라 **반대 방향으로 2배** 밀렸다 → 이동 후 값을 그대로 대입해 부호 실수가 구조적으로 불가능하게
+  3. **[H20](#h-2-조건부--특정-맵--스킨--모드에서만-17건) 해결** — 스택 오프셋을 `StackCount != 0`에만 걸던 것을 무조건으로 (stable과 동일). `Position - BasePosition` 불변식 보장
+- **실제 영향**: **측정 — 스택된 슬라이더는 28438개 중 111개(0.4%), 18개 맵(13.3%)**. 스택 깊이 1~3 → 오프셋 3~10px. 서클은 6.2%가 스택되지만 **슬라이더는 거의 스택되지 않는다** ("스택은 거의 모든 맵에 있으니 영향이 클 것"이라는 추정은 틀렸음)
+- **검증**: 실제 맵 커브 **28438개 전부** `curve[0].p1 == BasePosition` 확인 (불일치 0, 오차 0.0000px) → 평행이동으로 머리와 몸통이 정확히 정렬됨이 보장. **실기 확인 대기**
 
 ### C2. 리버스 화살표 제거 누락
 - **위치**: `Gameplay/HitObjects/HitCircleOsu.cs:785` — `HitCircleSliderEnd`가 `AddToSpriteManager`만 override, `RemoveFromSpriteManager`는 안 함
@@ -305,7 +311,7 @@
 | ~~H17~~ ✅ | ~~**glow flash 복귀**~~ → 해결 (`8a2442e`) | `FlashColour(White, 200)` — 200ms 후 파란색 복귀 — `SpinnerOsu.cs:386` | ~~White로 바꾸고 복귀 없음~~ → glow 전용 수동 보간(`ApplyGlowColour`). pSprite에 Colour 변환 지원이 없어 인프라 추가 대신 국소 처리 |
 | H18 | **어프로치서클 소멸** | 생성 시 소멸 fade **없음**. `Arm()`에서만 (히트: 즉시 / 미스: 60ms) — `HitCircleOsu.cs:245, 264` | 생성 시 `0.9→0 @ startTime→+60` **하드코딩** + Arm 것도 추가 → 근사이나 1:1 아님 |
 | H19 | **Disarm 후 Scale 리셋** | `SpriteHitCircle1.Scale = 1`, `Text.Scale = TEXT_SIZE` — `HitCircleOsu.cs:223-225` | 누락 |
-| H20 | **스택 위치 재적용** | 범위 내 **전 객체** 무조건 `ModifyPosition` — `HitObjectManager.cs:1761-1765` | `StackCount != 0`인 것만 → 재계산 시 낡은 위치 잔존 가능 |
+| ~~H20~~ ✅ | ~~**스택 위치 재적용**~~ → 해결 (`8384faf`) | 범위 내 **전 객체** 무조건 `ModifyPosition` — `HitObjectManager.cs:1761-1765` | ~~`StackCount != 0`인 것만~~ → 무조건 적용 (C1/H23과 함께) |
 | H21 | **정렬 안정성** | `ListHelper.StableSort` — `HitObjectManager.cs:1240` | `List.Sort`(불안정) → 동시각 객체 순서 흔들림 (= [C5](#c5-불안정-정렬-z-플리커-가능성)) |
 | ~~H22~~ ✅ | ~~**틱 소멸 방식**~~ → 해결 (`3bc67c8`) | 세그먼트 끝에 일괄 `Fade(0,0)` — `SliderOsu.cs:933-935` | ~~각 틱의 scoreTime에 개별~~ → 세그먼트 끝 일괄로 변경 (H2와 함께) |
 
@@ -313,7 +319,7 @@
 
 | # | 항목 | stable 기준 |
 |---|---|---|
-| H23 | [C1. 스택된 슬라이더 바디 미이동](#c1-스택된-슬라이더--몸통-따로-머리-따로) | stable `ModifyPosition`은 **슬라이더 전체**(바디·볼·틱 포함)를 옮김 |
+| ~~H23~~ ✅ | ~~[C1. 스택된 슬라이더 바디 미이동]~~ → 해결 (`8384faf`) | stable `ModifyPosition`은 **슬라이더 전체**(바디·볼·틱 포함)를 옮김 — 동일하게 수정. 실측 영향 0.4% |
 | H24 | [C2. 리버스 화살표 제거 누락](#c2-리버스-화살표-제거-누락) | stable은 `SpriteCollection` 통째 관리 → 누락 불가능한 구조 |
 | H25 | [C4. 동시 StartTime 객체 오매칭](#c4-동일-starttime-객체-판정-오매칭-2baspire-맵) | stable은 객체 참조로 직접 처리 (StartTime 조회 없음) |
 

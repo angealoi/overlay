@@ -550,6 +550,22 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         }
 
         /// <summary>
+        /// 위치를 change만큼 통째로 이동 — osu! stable HitObject.ModifyPosition.
+        /// 자기 HitObjectData를 따로 가진 객체(슬라이더 끝 원)를 옮길 때 쓴다.
+        /// 부모와 data를 공유하는 시작 원은 UpdateStackedPosition을 쓸 것 — 이걸 쓰면 이중 적용된다.
+        /// </summary>
+        public virtual void ModifyPosition(Vector2 change)
+        {
+            data.Position += change;
+            data.BasePosition += change;
+            if (spriteApproachCircle != null) spriteApproachCircle.Position += change;
+            if (spriteHitCircle != null) spriteHitCircle.Position += change;
+            if (spriteHitCircleOverlay != null) spriteHitCircleOverlay.Position += change;
+            foreach (pSprite textSprite in spriteHitCircleText)
+                textSprite.Position += change;
+        }
+
+        /// <summary>
         /// 스택 적용 후 위치 업데이트 — UpdateStacking 호출 후.
         /// </summary>
         public void UpdateStackedPosition()
@@ -627,6 +643,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         int appearTimeRef;
         pSprite spriteReverseArrow; // osu! stable: SpriteHitCircleText = reversearrow
+
+        /// 리버스 화살표는 spriteHitCircleText 리스트가 아니라 별도 필드라 따로 옮겨야 한다.
+        public override void ModifyPosition(Vector2 change)
+        {
+            base.ModifyPosition(change);
+            if (spriteReverseArrow != null) spriteReverseArrow.Position += change;
+        }
 
         public HitCircleSliderEnd(HitObjectData data, DifficultyValues difficulty, TextureManager texManager,
             int appearTime, bool reverse, float angle, int startTime, Color comboColour,
