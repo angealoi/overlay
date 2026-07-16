@@ -74,8 +74,11 @@ namespace OsuEnlightenOverlay.Rendering
 
         public void Remove(pSprite sprite)
         {
+            // 없으면 O(1)에 끝낸다 — 예전에는 리스트에 없는 스프라이트도 전체를 훑었다 (D4).
+            // 트레일 스프라이트는 Update의 자동 Discard로 이미 빠진 뒤에 CursorRenderer가
+            // 다시 Remove를 부르므로, 이 조기 종료가 헛도는 O(n) 스캔을 통째로 없앤다.
+            if (!spriteSet.Remove(sprite)) return;
             sprites.Remove(sprite);
-            spriteSet.Remove(sprite);
         }
 
         public bool Contains(pSprite sprite)
@@ -102,17 +105,23 @@ namespace OsuEnlightenOverlay.Rendering
         public void Update(int time)
         {
             currentTime = time;
-            // 역방향 순회하며 Discard 제거 — osu-stable SpriteManager.cs:570-580
-            for (int i = sprites.Count - 1; i >= 0; i--)
+            // Discard 제거 — osu-stable SpriteManager.cs:570-580.
+            // 항목마다 RemoveAt하면 제거 1건당 O(n) 시프트라 다발 제거 시 O(n²)가 된다 (D4).
+            // 살아남은 것만 앞으로 당기는 단일 O(n) 압축 패스로 처리한다 (순서 보존).
+            int write = 0;
+            int count = sprites.Count;
+            for (int i = 0; i < count; i++)
             {
                 pSprite sprite = sprites[i];
-                UpdateResult result = sprite.Update(time);
-                if (result == UpdateResult.Discard)
+                if (sprite.Update(time) == UpdateResult.Discard)
                 {
                     spriteSet.Remove(sprite);
-                    sprites.RemoveAt(i);
+                    continue;
                 }
+                sprites[write++] = sprite;
             }
+            if (write < count)
+                sprites.RemoveRange(write, count - write);
         }
 
         /// <summary>

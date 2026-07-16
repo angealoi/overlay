@@ -46,9 +46,12 @@ namespace OsuEnlightenOverlay.Memory
             this.pm = pm;
         }
 
-        public void ScanSlots()
+        /// <summary>
+        /// 기동 시 배치 스캔(D1) 결과를 받아 slot 해석 — 전체 메모리를 다시 읽지 않는다.
+        /// </summary>
+        public void ApplyScan(AobScanRequest req)
         {
-            rulesetSlot = AobScanner.ResolveSlot(pm, Signatures.Ruleset);
+            rulesetSlot = AobScanner.ResolveSlot(pm, Signatures.Ruleset, req);
         }
 
         /// <summary>Play 모드가 아닐 때 — 낡은 스코어가 HUD에 남지 않도록.</summary>
