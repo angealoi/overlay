@@ -486,8 +486,12 @@ namespace OsuEnlightenOverlay.Overlay
             WindowInterop.SetWindowLong(Handle, WindowInterop.GWL_EXSTYLE,
                 WindowInterop.OverlayExStyle);
 
-            // 불투명 레이어드 창
-            WindowInterop.SetLayeredWindowAttributes(Handle, 0, 255, WindowInterop.LWA_ALPHA);
+            // 첫 프레임을 그리기 전까지는 창을 완전히 투명하게 둔다.
+            // Show()는 StartOverlay()보다 먼저 불리는데(Program.cs), 창 크기·위치를 osu!에
+            // 맞추는 건 StartOverlay의 SyncToOsu다. 그래서 그 사이에는 창이 StartPosition=Manual
+            // 기본값인 (0,0) 300x300으로 떠 있고, GL 서피스는 아직 아무것도 안 그려서
+            // 좌상단에 흰 사각형이 보였다. 첫 SwapBuffers 뒤에 Render()가 255로 올린다.
+            WindowInterop.SetLayeredWindowAttributes(Handle, 0, 0, WindowInterop.LWA_ALPHA);
 
             // DWM: 불투명 배경이므로 블러 비하인드 비활성화, 프레임 확장 안 함
             WindowInterop.MARGINS margins = new WindowInterop.MARGINS();
@@ -961,7 +965,19 @@ namespace OsuEnlightenOverlay.Overlay
             }
 
             glControl.SwapBuffers();
+
+            // 첫 프레임이 실제로 나온 뒤에야 창을 보이게 한다 — OnHandleCreated에서 알파 0으로
+            // 시작했다. 표시/숨김은 ShowWindow(ShowOverlay/HideOverlay)가 담당하므로 알파와
+            // 충돌하지 않는다.
+            if (!firstFrameShown)
+            {
+                firstFrameShown = true;
+                WindowInterop.SetLayeredWindowAttributes(Handle, 0, 255, WindowInterop.LWA_ALPHA);
+            }
         }
+
+        // 첫 SwapBuffers 완료 여부 — 그 전까지 창은 알파 0
+        bool firstFrameShown;
 
         protected override void WndProc(ref Message m)
         {
