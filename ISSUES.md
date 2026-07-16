@@ -26,6 +26,7 @@
 | 2026-07-16 | **H5**: 브레이크 파싱 + 브레이크 뒤 강제 NewCombo (+ `NewCombo`를 Type 파생 프로퍼티로) | `743c16d` | 실제 맵 135개 회귀 + 합성 맵으로 새 경로 검증. **단 실사용 영향은 0맵 — "모든 맵에서 어긋남" 주장은 오류였음** |
 | 2026-07-16 | **H2 + H22**: 리턴 패스 틱(세그먼트 리셋·스티키 skipTick·경계 미러) + 틱 소멸 일괄화 | `3bc67c8` | 실제 커브로 수정 전/후 대조 — 리턴 틱 복구 205개(2.8%), 위치 변경 496개(6.7%), 미러 대칭 207/207. 실기 확인 대기 |
 | 2026-07-16 | **C1/H23 + H20**: 스택 시 슬라이더 전체 이동 (+ 재로드 커브 뒤틀림 · HitBurst 부호 버그 함께 수정) | `8384faf` | 커브 28438개 머리 정렬 불변식 확인. 영향 실측 0.4%(111개). 실기 확인 대기 |
+| 2026-07-16 | **C2/H24**: 리버스 화살표가 SpriteManager에 영구 잔류 (`RemoveFromSpriteManager`가 virtual이 아니었음) | `9db56f9` | Add/Remove 짝 전수 확인. 잔류 실측 중앙값 24개·최대 3071개(투명이라 순회 비용만) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -128,9 +129,11 @@
 - **실제 영향**: **측정 — 스택된 슬라이더는 28438개 중 111개(0.4%), 18개 맵(13.3%)**. 스택 깊이 1~3 → 오프셋 3~10px. 서클은 6.2%가 스택되지만 **슬라이더는 거의 스택되지 않는다** ("스택은 거의 모든 맵에 있으니 영향이 클 것"이라는 추정은 틀렸음)
 - **검증**: 실제 맵 커브 **28438개 전부** `curve[0].p1 == BasePosition` 확인 (불일치 0, 오차 0.0000px) → 평행이동으로 머리와 몸통이 정확히 정렬됨이 보장. **실기 확인 대기**
 
-### C2. 리버스 화살표 제거 누락
-- **위치**: `Gameplay/HitObjects/HitCircleOsu.cs:785` — `HitCircleSliderEnd`가 `AddToSpriteManager`만 override, `RemoveFromSpriteManager`는 안 함
-- **증상**: 시간 윈도우 이탈 후에도 화살표가 SpriteManager에 잔류. 투명하지만 매 프레임 순회 비용이고 맵 끝까지 누적
+### ~~C2. 리버스 화살표 제거 누락~~ ✅ 해결 (`9db56f9`)
+- ~~**위치**: `HitCircleSliderEnd`가 `AddToSpriteManager`만 override~~ → `RemoveFromSpriteManager`가 애초에 **`virtual`이 아니라 override할 수 없었다**. virtual로 바꾸고 override 추가
+- **왜 자동 정리도 안 됐나**: `pSprite`의 Discard 경로 3곳(`pSprite.cs:170, 266, 276`)이 전부 `Clock`이 `Game`이나 `AudioOnce`일 때만 걸리는데, 리버스 화살표는 **`Clocks.Audio`** 라 어디에도 안 걸린다 → `SpriteManager.Update`의 자동 Discard를 못 받고 영원히 `NotVisible` 반환하며 잔류
+- **실제 영향**: **측정 — 맵 끝 시점 잔류 화살표 중앙값 24개**(무시할 수준). 다만 마라톤/연습 맵에서 **최대 3071개**까지 쌓인다. 화살표는 투명해서(`startTime`에 Fade 1→0) 보이지는 않았고, 매 프레임 자기 Transformation 전체를 순회하는 비용만 발생
+- **전수 확인**: Add/Remove override 짝은 이곳이 **유일한** 불일치였다
 
 ### C3. HR flip이 clamp 뒤에 적용
 - **위치**: `Gameplay/Beatmap/BeatmapParser.cs:216-217` — y를 512까지 허용해놓고 `384-y`
@@ -320,7 +323,7 @@
 | # | 항목 | stable 기준 |
 |---|---|---|
 | ~~H23~~ ✅ | ~~[C1. 스택된 슬라이더 바디 미이동]~~ → 해결 (`8384faf`) | stable `ModifyPosition`은 **슬라이더 전체**(바디·볼·틱 포함)를 옮김 — 동일하게 수정. 실측 영향 0.4% |
-| H24 | [C2. 리버스 화살표 제거 누락](#c2-리버스-화살표-제거-누락) | stable은 `SpriteCollection` 통째 관리 → 누락 불가능한 구조 |
+| ~~H24~~ ✅ | ~~[C2. 리버스 화살표 제거 누락]~~ → 해결 (`9db56f9`) | stable은 `SpriteCollection` 통째 관리 → 누락 불가능한 구조 |
 | H25 | [C4. 동시 StartTime 객체 오매칭](#c4-동일-starttime-객체-판정-오매칭-2baspire-맵) | stable은 객체 참조로 직접 처리 (StartTime 조회 없음) |
 
 ### 검증 결과 — **일치 확인**된 것 (안심 목록)
