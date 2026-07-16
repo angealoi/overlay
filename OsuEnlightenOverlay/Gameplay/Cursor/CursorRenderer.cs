@@ -78,6 +78,22 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
             cursorPackName = packName ?? "";
         }
 
+        // 현재 커서 텍스처를 커서팩에서 만들었는지 — true면 우리가 소유자라 해제 책임이 있다.
+        // 스킨 경로(textureManager.Load)는 캐시가 소유하므로 건드리면 안 된다.
+        bool packTexturesOwned;
+
+        /// <summary>
+        /// 커서팩에서 만든 텍스처 해제. 스킨 캐시 텍스처에는 절대 호출하지 말 것.
+        /// </summary>
+        void DisposePackTextures()
+        {
+            if (!packTexturesOwned) return;
+            if (cursorTexture != null) cursorTexture.Dispose();
+            if (cursorMiddleTexture != null) cursorMiddleTexture.Dispose();
+            if (cursorTrailTexture != null) cursorTrailTexture.Dispose();
+            packTexturesOwned = false;
+        }
+
         /// <summary>
         /// Cursor Pack 변경 시 텍스처 재로드.
         /// </summary>
@@ -92,7 +108,10 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
             trailParticles.Clear();
             lastTrailPosition = -Vector2.One;
             lastTrailTime = -1000;
-            // 텍스처는 캐시되어 있으므로 재로드 불필요 — Load()에서 다시 로드
+            // 스킨 경로의 텍스처는 TextureManager 캐시가 소유하므로 버리기만 한다.
+            // 커서팩 경로는 CreateFromBitmap이라 캐시에 안 들어가고 우리가 소유자다.
+            // 해제하지 않으면 Reload마다 최대 3텍스처가 샌다 (B2).
+            DisposePackTextures();
             cursorTexture = null;
             cursorMiddleTexture = null;
             cursorTrailTexture = null;
@@ -132,6 +151,8 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
                 cursorTexture = LoadTextureFromFolder(packFolder, "cursor");
                 cursorMiddleTexture = LoadTextureFromFolder(packFolder, "cursormiddle");
                 cursorTrailTexture = LoadTextureFromFolder(packFolder, "cursortrail");
+                // CreateFromBitmap으로 새로 만든 것들 — 캐시에 없으므로 우리가 해제해야 한다
+                packTexturesOwned = true;
             }
             else
             {
@@ -145,6 +166,8 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
                 cursorMiddleTexture = textureManager.Load("cursormiddle", cursorSource);
                 // cursortrail은 Skin|Osu fallback 허용 (cursor middle과 달리 독립적으로 로드)
                 cursorTrailTexture = textureManager.Load("cursortrail", SkinSource.Skin | SkinSource.Osu);
+                // 캐시가 소유하는 텍스처다 — 여기서 해제하면 다른 사용자의 텍스처를 깨뜨린다
+                packTexturesOwned = false;
             }
 
             cursorCentre = SkinManager.Current != null ? SkinManager.Current.CursorCentre : true;
