@@ -33,6 +33,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         protected pAnimation spriteHitCircleOverlay;
         protected List<pSprite> spriteHitCircleText = new List<pSprite>(); // 콤보 번호 (폰트 이미지)
 
+        // 스프라이트를 추가한 SpriteManager — 콤보 번호를 재생성할 때 옛 것을 도로 빼려면
+        // 어디에 넣었는지 알아야 한다 (B3). Add/Remove에서 갱신.
+        SpriteManager addedTo;
+
         public bool IsArmed { get; protected set; }
         public bool IsHit { get; protected set; }
         public int ArmTime { get; protected set; }
@@ -103,6 +107,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// </summary>
         void CreateComboNumberSprites(TextureManager texManager, string fontPrefix, float overlap)
         {
+            // 리스트만 비우면 이미 SpriteManager에 들어간 옛 숫자가 화면에 남는다 (B3).
+            // 난이도 슬라이더를 조작하면 노트가 떠 있는 상태로 여기 다시 들어온다.
+            if (addedTo != null)
+                foreach (pSprite old in spriteHitCircleText)
+                    if (addedTo.Contains(old)) addedTo.Remove(old);
             spriteHitCircleText.Clear();
 
             string text = ComboNumber > 0 ? ComboNumber.ToString() : "";
@@ -175,6 +184,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 spriteHitCircleText.Add(digitSprite);
             }
+
+            // 이미 SpriteManager에 올라간 상태로 재생성됐다면 새 숫자도 그 자리에 넣는다.
+            // HOM.UpdateSpriteWindow는 `inWindow && !IsSpriteAdded`일 때만 AddToSpriteManager를
+            // 부르므로, 여기서 안 넣으면 노트가 윈도우를 벗어날 때까지 숫자가 아예 안 보인다.
+            if (addedTo != null)
+                foreach (pSprite digit in spriteHitCircleText)
+                    if (!addedTo.Contains(digit)) addedTo.Add(digit);
         }
 
         /// <summary>
@@ -597,6 +613,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// </summary>
         public virtual void AddToSpriteManager(SpriteManager sm)
         {
+            addedTo = sm;
             if (spriteApproachCircle != null && !sm.Contains(spriteApproachCircle)) sm.Add(spriteApproachCircle);
             if (spriteHitCircle != null && !sm.Contains(spriteHitCircle)) sm.Add(spriteHitCircle);
             if (spriteHitCircleOverlay != null && !sm.Contains(spriteHitCircleOverlay)) sm.Add(spriteHitCircleOverlay);
@@ -612,6 +629,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// </summary>
         public virtual void RemoveFromSpriteManager(SpriteManager sm)
         {
+            addedTo = null;
             if (spriteApproachCircle != null && sm.Contains(spriteApproachCircle)) sm.Remove(spriteApproachCircle);
             if (spriteHitCircle != null && sm.Contains(spriteHitCircle)) sm.Remove(spriteHitCircle);
             if (spriteHitCircleOverlay != null && sm.Contains(spriteHitCircleOverlay)) sm.Remove(spriteHitCircleOverlay);

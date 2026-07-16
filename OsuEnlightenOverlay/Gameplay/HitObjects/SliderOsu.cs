@@ -20,7 +20,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
     /// enlighten 핵심: 항상 nomod 타이밍 사용 (hidden 타이밍 무시).
     /// 추측 없이 소스코드 그대로 포팅.
     /// </summary>
-    internal class SliderOsu
+    internal class SliderOsu : IDisposable
     {
         HitObjectData data;
         public HitObjectData Data { get { return data; } }
@@ -642,6 +642,23 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (sliderBallSpec != null && !sm.Contains(sliderBallSpec)) sm.Add(sliderBallSpec);
             // 슬라이더 팔로워
             if (sliderFollower != null && !sm.Contains(sliderFollower)) sm.Add(sliderFollower);
+        }
+
+        /// <summary>
+        /// 바디 FBO 해제 — 슬라이더를 버리기 전에 반드시 호출할 것.
+        /// MmSliderRenderer.Draw는 RenderTarget2D를 새로 만들고 "호출자가 Dispose 책임"이라
+        /// 명시하는데, RenderTarget2D에는 파이널라이저가 없어서 그냥 버리면 GL 텍스처와
+        /// 프레임버퍼가 영구히 샌다 (B1).
+        /// </summary>
+        public void Dispose()
+        {
+            if (cachedFbo != null)
+            {
+                cachedFbo.Dispose();
+                cachedFbo = null;
+            }
+            cachedBodySprite = null;
+            cachedProgress = -1;
         }
 
         /// <summary>

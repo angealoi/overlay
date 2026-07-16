@@ -54,7 +54,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             this.beatmap = beatmap;
             this.difficulty = difficulty;
 
-            // 기존 HitObject 제거
+            // 기존 HitObject 제거 — 슬라이더 바디 FBO는 GC가 못 걷으므로 먼저 해제 (B1)
+            foreach (SliderOsu s in sliders)
+                s.Dispose();
             hitCircles.Clear();
             sliders.Clear();
             spinners.Clear();
