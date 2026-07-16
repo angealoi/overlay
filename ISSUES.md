@@ -27,6 +27,7 @@
 | 2026-07-16 | **H2 + H22**: 리턴 패스 틱(세그먼트 리셋·스티키 skipTick·경계 미러) + 틱 소멸 일괄화 | `3bc67c8` | 실제 커브로 수정 전/후 대조 — 리턴 틱 복구 205개(2.8%), 위치 변경 496개(6.7%), 미러 대칭 207/207. 실기 확인 대기 |
 | 2026-07-16 | **C1/H23 + H20**: 스택 시 슬라이더 전체 이동 (+ 재로드 커브 뒤틀림 · HitBurst 부호 버그 함께 수정) | `8384faf` | 커브 28438개 머리 정렬 불변식 확인. 영향 실측 0.4%(111개). 실기 확인 대기 |
 | 2026-07-16 | **C2/H24**: 리버스 화살표가 SpriteManager에 영구 잔류 (`RemoveFromSpriteManager`가 virtual이 아니었음) | `9db56f9` | Add/Remove 짝 전수 확인. 잔류 실측 중앙값 24개·최대 3071개(투명이라 순회 비용만) |
+| 2026-07-16 | **B1+B2+B3**: 슬라이더 바디 FBO · 커서팩 텍스처 · 콤보 숫자 유령 누수 | `952c5e8` | 세 곳 다 코드로 경로 확인. B1은 맵당 평균 211개 FBO+텍스처. 실기 확인 대기 |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -93,27 +94,27 @@
 
 ## B. 리소스 누수
 
-### B1. 슬라이더 바디 FBO 누수 — 맵 바뀔 때마다 ⚠️ 최우선
+### ~~B1. 슬라이더 바디 FBO 누수 — 맵 바뀔 때마다~~ ✅ 해결 (`952c5e8`)
 | | |
 |---|---|
-| 위치 | `Gameplay/HitObjects/SliderOsu.cs:66 (cachedFbo), 747-751 (rebuild시만 Dispose)` + `Gameplay/HitObjects/HitObjectManagerOsu.cs:59 (리스트만 Clear)` |
-| 증상 | 맵 전환 시 그려졌던 **모든 슬라이더의 FBO+텍스처가 Dispose 없이 드롭** |
-| 규모 | 슬라이더 200개 맵 × 10판 = FBO/텍스처 수천 개. `RenderTarget2D`에 파이널라이저 없음 → 영구 누수 |
-| 비고 | `MmSliderRenderer.Draw` 주석에 "호출자가 Dispose 책임"이라 적혀 있는데 호출자가 안 지킴 |
+| ~~증상~~ | ~~맵 전환 시 그려졌던 모든 슬라이더의 FBO+텍스처가 Dispose 없이 드롭~~ → `SliderOsu`에 `Dispose()` 추가(`IDisposable`), `LoadBeatmap`의 `Clear()` 앞에서 호출 |
+| 규모 | **실측 맵당 평균 211개** 슬라이더 (라이브러리 28438개/135맵). `RenderTarget2D`에 파이널라이저 없음 → GC가 못 걷는 영구 누수였음 |
+| 비고 | `MmSliderRenderer.Draw` 주석의 "호출자가 Dispose 책임"을 호출자가 안 지키던 것. 이제 지킴 |
 
-### B2. 커서팩 텍스처 누수 — 맵 바뀔 때마다
+### ~~B2. 커서팩 텍스처 누수 — 맵 바뀔 때마다~~ ✅ 해결 (`952c5e8`)
 | | |
 |---|---|
-| 위치 | `Gameplay/Cursor/CursorRenderer.cs:210 (CreateFromBitmap — 무캐시)` + `Overlay/OverlayForm.cs:699 (비트맵 적용마다 Reload)` |
-| 증상 | 커서팩 켜면 맵당 최대 3텍스처(cursor/middle/trail) 누수 |
-| 비고 | `CursorRenderer.cs:95` 주석 *"텍스처는 캐시되어 있으므로"*는 스킨 경로만 참 — 팩 경로는 `CreateFromBitmap`이라 캐시에 안 들어감 |
+| ~~증상~~ | ~~커서팩 켜면 맵당 최대 3텍스처 누수~~ → `packTexturesOwned`로 소유권을 추적해 **팩 텍스처만** 해제 |
+| 확인 | `Reload()`는 `OverlayForm.cs:691`의 **맵 전환 블록 안**에 있어 맵마다 호출된다 — 주장 확인됨 |
+| 주의 | 스킨 텍스처는 `TextureManager` 캐시가 소유하므로 **절대 해제하면 안 된다** (다른 사용자의 텍스처가 깨짐). 그래서 provenance 추적이 필요했다 |
+| 남은 것 | 앱 종료 시 팩 텍스처 해제 경로는 없으나 프로세스 종료가 회수 — [G6](#g-견고성--기타)과 같은 성격, 실해 없음 |
 
-### B3. 콤보 숫자 유령 스프라이트
+### ~~B3. 콤보 숫자 유령 스프라이트~~ ✅ 해결 (`952c5e8`)
 | | |
 |---|---|
-| 위치 | `Gameplay/HitObjects/HitCircleOsu.cs:106 (리스트만 Clear)` |
-| 증상 | `CreateComboNumberSprites`가 자기 리스트만 비우고 SpriteManager에 이미 추가된 옛 숫자는 제거 안 함 |
-| 트리거 | 화면에 노트가 떠 있는 상태에서 난이도 슬라이더 조작 → `UpdateDifficulty` → 옛 숫자가 화면에 잔류 (맵 리로드 전까지) |
+| ~~증상~~ | ~~자기 리스트만 비우고 SpriteManager의 옛 숫자는 제거 안 함~~ → `addedTo`로 어느 SpriteManager에 넣었는지 추적해 제거 |
+| 함정 | **제거만 하면 숫자가 아예 사라진다.** `HOM.UpdateSpriteWindow`는 `inWindow && !IsSpriteAdded`일 때만 `AddToSpriteManager`를 부르므로, 재생성한 숫자를 그 자리에서 다시 넣어줘야 한다 |
+| 확인 | `UpdateDifficulty`가 재생성하는 건 콤보 숫자뿐 — 나머지 스프라이트는 같은 객체의 Transformation만 교체하므로 같은 문제가 없다 |
 
 ---
 
