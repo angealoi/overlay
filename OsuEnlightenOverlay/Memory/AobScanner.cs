@@ -78,6 +78,13 @@ namespace OsuEnlightenOverlay.Memory
             byte[] hasFirstByte = new byte[256];
             List<AobScanRequest> wildcardFirst = null;
 
+            // 2바이트 프리필터 — 모든 요청의 첫 두 바이트가 고정일 때만 쓸 수 있다.
+            // 첫 바이트만 보면 실행 영역에서 7.83%가 걸려 매번 전체 대조에 들어가는데,
+            // 두 바이트를 보면 0.28%로 떨어진다(실측, 진입 28배 감소). 첫 바이트가
+            // 와일드카드거나 둘째 바이트가 와일드카드인 패턴이 하나라도 있으면 안전하게 끈다.
+            bool[] hasFirstTwo = new bool[65536];
+            bool twoByteUsable = true; // 아래 루프에서 예외가 하나라도 나오면 꺼진다
+
             for (int r = 0; r < requests.Count; r++)
             {
                 AobScanRequest req = requests[r];
@@ -87,16 +94,24 @@ namespace OsuEnlightenOverlay.Memory
                     if (byFirstByte[b] == null) byFirstByte[b] = new List<AobScanRequest>();
                     byFirstByte[b].Add(req);
                     hasFirstByte[b] = 1;
+
+                    if (req.Compare.Length > 1 && req.Compare[1])
+                        hasFirstTwo[req.Pattern[0] | (req.Pattern[1] << 8)] = true;
+                    else
+                        twoByteUsable = false; // 둘째 바이트가 와일드카드 → 2바이트 필터 불가
                 }
                 else
                 {
                     // 첫 바이트가 와일드카드면 버킷팅이 안 되므로 매 위치에서 검사해야 한다
                     if (wildcardFirst == null) wildcardFirst = new List<AobScanRequest>();
                     wildcardFirst.Add(req);
+                    twoByteUsable = false;
                 }
             }
 
-            foreach (ProcessMemory.MemoryRegion region in pm.EnumerateReadableRegions())
+            // 코드 시그니처는 실행 가능 페이지에만 있으므로 데이터/GC 힙은 훑지 않는다 (D1 후속).
+            // 실측: 읽기 가능 전부(809MB) → 실행 가능만(250MB), 매치 누락 0.
+            foreach (ProcessMemory.MemoryRegion region in pm.EnumerateExecutableRegions())
             {
                 // 남은 요청이 없으면 더 읽을 이유가 없다
                 bool anyPending = false;
@@ -112,7 +127,34 @@ namespace OsuEnlightenOverlay.Memory
                 if (!pm.ReadBytes(region.BaseAddress, buffer, regionSize))
                     continue;
 
-                ScanBuffer(buffer, regionSize, region.BaseAddress, byFirstByte, hasFirstByte, wildcardFirst);
+                if (twoByteUsable)
+                    ScanBufferTwoByte(buffer, regionSize, region.BaseAddress, byFirstByte, hasFirstTwo);
+                else
+                    ScanBuffer(buffer, regionSize, region.BaseAddress, byFirstByte, hasFirstByte, wildcardFirst);
+            }
+        }
+
+        /// <summary>
+        /// 2바이트 프리필터 버전 — 모든 패턴의 첫 두 바이트가 고정일 때만 호출된다.
+        /// 위치마다 16비트 하나로 기각하므로 TryMatch 진입이 크게 줄어든다.
+        /// </summary>
+        static unsafe void ScanBufferTwoByte(byte[] buffer, int regionSize, IntPtr baseAddress,
+            List<AobScanRequest>[] byFirstByte, bool[] hasFirstTwo)
+        {
+            int last = regionSize - 2;
+            fixed (byte* pBuf = buffer)
+            fixed (bool* pHas = hasFirstTwo)
+            {
+                for (int i = 0; i <= last; i++)
+                {
+                    if (!pHas[pBuf[i] | (pBuf[i + 1] << 8)]) continue;
+
+                    // 드물게만 도달 — 첫 두 바이트가 어떤 패턴과 일치한 경우
+                    List<AobScanRequest> bucket = byFirstByte[pBuf[i]];
+                    if (bucket != null)
+                        for (int k = 0; k < bucket.Count; k++)
+                            TryMatch(buffer, regionSize, baseAddress, i, bucket[k]);
+                }
             }
         }
 
