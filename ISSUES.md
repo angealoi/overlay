@@ -28,6 +28,7 @@
 | 2026-07-16 | **C1/H23 + H20**: 스택 시 슬라이더 전체 이동 (+ 재로드 커브 뒤틀림 · HitBurst 부호 버그 함께 수정) | `8384faf` | 커브 28438개 머리 정렬 불변식 확인. 영향 실측 0.4%(111개). 실기 확인 대기 |
 | 2026-07-16 | **C2/H24**: 리버스 화살표가 SpriteManager에 영구 잔류 (`RemoveFromSpriteManager`가 virtual이 아니었음) | `9db56f9` | Add/Remove 짝 전수 확인. 잔류 실측 중앙값 24개·최대 3071개(투명이라 순회 비용만) |
 | 2026-07-16 | **B1+B2+B3**: 슬라이더 바디 FBO · 커서팩 텍스처 · 콤보 숫자 유령 누수 | `952c5e8` | 세 곳 다 코드로 경로 확인. B1은 맵당 평균 211개 FBO+텍스처. 실기 확인 대기 |
+| 2026-07-16 | **D1~D5 전부**: AOB 9패스→1패스 · HOM syscall 폭발 · 스네이킹 FBO 재사용 · SpriteManager 제거 · 에러바 할당 | `f4d21e0` `f13a42a` `2595e40` | 빌드 통과. **실측 미완 — osu! 실행 필요(D1 전후 비교)** |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -156,23 +157,35 @@
 
 ## D. 성능
 
-### D1. AOB 스캔 — 스캔마다 수백 MB 재할당 ⚠️ 실측 증거 있음
-- **위치**: `Memory/AobScanner.cs:24, 59` — 리전마다 `new byte[최대 100MB]`, 시그니처마다 전체 패스 반복 (기동 시 8회+)
-- **실측**: 커서 재스캔이 걸린 세션에서 렌더 스레드 **~1초 정지** (overlay.log의 MODE 전환→스캔 완료 간격 4회 확인)
-- **방향**: 버퍼 재사용 + 여러 시그니처 일괄 스캔
+> **D 섹션 5건 전부 해결** (`f4d21e0`, `f13a42a`, `2595e40`). **실측은 osu! 실행이 필요해 아직 못 했다** — D1 전후 비교 대기.
 
-### D2. HOM 오프셋 브루트포스가 매 프레임
-- **위치**: `Memory/OsuMemoryReader.cs:691-738` (~127×40 조합 × ReadProcessMemory syscall), `:784` (미감지 동안 매 프레임 재시도)
-- **증상**: 맵 시작/리트라이 직후 감지 성공 전까지 프레임당 수십 ms 가능
+### ~~D1. AOB 스캔 — 스캔마다 수백 MB 재할당~~ ✅ 해결 (`f4d21e0`)
+- ~~시그니처마다 전체 패스 반복(기동 시 8회+), 리전마다 `new byte[최대 100MB]`~~
+- **실측 증거였던 것**: 커서 재스캔이 걸린 세션에서 렌더 스레드 **~1초 정지** (overlay.log 4회 확인)
+- **수정**: `AobScanRequest` + `ScanBatch` — 모든 패턴을 **한 번의 메모리 패스**로. 기동 시 **9패스 → 1패스**
+  - 리전 버퍼 재사용(ThreadStatic) — 할당 제거
+  - 마스크를 `string` → `bool[]` — 내부 루프가 바이트마다 string 인덱싱을 하고 있었다
+  - `CurrentBeatmap`/`PlayMode`는 **패턴이 같고 OperandSkip만 다름**(-0xC/-0x33) → 요청 하나로 둘 다
+- **함께**: 배선 후 죽은 코드 6건 제거 (`ScanSlot`, `ScanPlayerInstanceSlot`, `ScoreReader`/`ResolutionReader.ScanSlots`, `AobScanner.Scan`/`ScanAll`/`ResolveSlot(2인자)`)
 
-### D3. 스네이킹 중 FBO 생성/파괴 ~30회/슬라이더
-- **위치**: `Graphics/Renderers/MmSliderRenderer.cs:340` (매 rebuild마다 new RenderTarget2D) + `SliderOsu.cs:737` (1/30 양자화)
+### ~~D2. HOM 오프셋 브루트포스가 매 프레임~~ ✅ 해결 (`2595e40`)
+- ~~오프셋마다 개별 ReadProcessMemory — 프레임당 127 + (후보수 × 40) syscall~~
+- **수정**: Player 객체 0x200B, 후보 객체 0xA4B를 각각 한 번의 `ReadBytes`로 → **syscall 127 + N×40 → 1 + N**. 버퍼는 필드로 재사용
+- **함정**: `ReadBytes`는 범위 안에 못 읽는 페이지가 하나라도 있으면 **통째로 실패**한다. 그냥 바꾸면 객체가 세그먼트 끝에 걸린 경우 후보를 놓친다 → 실패 시 개별 읽기로 폴백(`ReadPtrCached`)
 
-### D4. SpriteManager.Remove가 O(n)
-- **위치**: `Rendering/SpriteManager.cs:77` — `List.Remove` 선형 탐색. 윈도우 이탈로 다발 제거 시 O(n²)
+### ~~D3. 스네이킹 중 FBO 생성/파괴 ~30회/슬라이더~~ ✅ 해결 (`f13a42a`)
+- ~~FBO 크기를 스네이킹된 선분 기준으로 잡아 진행도마다 크기가 달라짐 → 1/30마다 RenderTarget2D 재생성~~
+- **수정**: FBO 영역을 **전체 커브 기준**으로 고정(`ComputeBodyBounds`) → FBO와 pSprite 재사용. **슬라이더당 FBO 생성 ~30회 → 1회**
+- **왜 안전한가**: 병합된 선분은 커브 점들을 잇는 직선이라 항상 전체 커브 박스 안(볼록껍질). 내용은 `Bind` 직후 `GL.Clear`로 지우므로 잔상 없음. 스프라이트의 위치·크기·페이드는 전부 진행도와 무관해 재생성이 불필요했다
+- 해상도/CS 변경, 스택 이동, Dispose 시에만 재생성
 
-### D5. 히트에러바 중앙값 — 프레임당 할당+정렬
-- **위치**: `Rendering/HudRenderer.cs:521` — `new List<int>(errors)` + `Sort()` 매 프레임 (300fps면 초당 300회)
+### ~~D4. SpriteManager.Remove가 O(n)~~ ✅ 해결 (`f4d21e0`)
+- **Remove**: `spriteSet`(HashSet)으로 먼저 걸러 **없으면 O(1) 종료**. 트레일 스프라이트는 `Update`의 자동 Discard로 이미 빠진 뒤 `CursorRenderer`가 다시 `Remove`를 불러서 **헛도는 전체 스캔이 매 프레임** 발생했다
+- **Update**: 항목마다 `RemoveAt`(제거 1건당 O(n) 시프트)하던 것을 **단일 O(n) 압축 패스**로. 순서 보존
+
+### ~~D5. 히트에러바 중앙값 — 프레임당 할당+정렬~~ ✅ 해결 (`f4d21e0`)
+- `errors`는 최근 **30개**로 제한되므로 정렬 자체는 싸다 — 순수하게 `new List<int>`의 GC 압박이었다. 스크래치 재사용
+- 규모는 작다. "정렬이 비싸다"는 뉘앙스는 과장이었음
 
 ---
 
