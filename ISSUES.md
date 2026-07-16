@@ -31,6 +31,7 @@
 | 2026-07-16 | **G10**: 기동 시 좌상단 흰 사각형 (사용자 제보 — 목록에 없던 항목) | `e2e630d` | 첫 프레임 전까지 알파 0. 실기 확인 대기 |
 | 2026-07-16 | **D1~D5 전부**: AOB 매칭 버킷팅+unsafe · HOM syscall 폭발 · 스네이킹 FBO 재사용 · SpriteManager 제거 · 에러바 할당 | `f4d21e0` `f13a42a` `2595e40` `77aa70d` | **실측**: 기동 스캔 2568→1117ms(2.3배), 커서 재스캔 1505→753ms(2.0배), gen0 128→3회. slot 주소 구버전과 완전 일치 |
 | 2026-07-16 | **D1 3탄**: 실행 영역 한정 + 2바이트 프리필터 | `1fbf691` | Initialize 15배·커서 재스캔 8배 누적(원본 대비). slot 주소 완전 일치 |
+| 2026-07-17 | **E1~E7 전부**: 잠복 결함 7건 (버퍼 스레드안전·AOB slot 검증·QuadBatch 셰이더·Fields enum 충돌·GameField 경합·낡은 파싱 폐기·문자열 캐시) | `68de5ad` | 감사 정독 → 적대적 리뷰(설계 14 + 구현 4 에이전트, fable5) 전수 검증. 리뷰가 실결함 3건 잡아 반영(모드 범위 오탈락·GameField float 절단·폐기 시 영구 blank). 빌드 통과(경고 0) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -208,31 +209,34 @@
 
 ## E. 잠복 결함 (지금은 안 터지지만 한 발짝 거리)
 
-### E1. ProcessMemory 재사용 버퍼가 스레드 비안전
-- **위치**: `Memory/ProcessMemory.cs:76-82` — `bytesRead`/`buf4`/`buf8`이 인스턴스 필드
-- **현황**: 현재 모든 호출이 UI 스레드라 무해 (검증함). 그러나 누가 Task에서 `pm.Read*` 하나만 불러도 조용한 값 섞임. **경고 주석조차 없음**
+> **E1~E7 전부 해결** (`68de5ad`). 감사(전 지점 정독) → 적대적 리뷰 워크플로(설계 검증 14 에이전트 + 구현 검증 4 에이전트, **fable5**)로 전수 검증. 리뷰가 잡은 실결함을 반영: 모드 범위 `[0,15]`가 stable OsuModes 16~23(Tourney=22 등)을 오탈락 → `[0,30]`, `GameField.Width`는 float인데 int 스냅샷이면 절단, 낡은 파싱 폐기 시 folder만 검사하면 찢어진 read로 영구 blank. 빌드 통과(경고 0).
 
-### E2. AOB 첫-매치 무검증
-- **위치**: `Memory/AobScanner.cs:40` (첫 매치 즉시 반환), `:96` (오퍼랜드 무검증 신뢰)
-- **이력**: 커서 40% 버그의 뿌리가 이 설계. 커서·해상도는 개별 방어를 얻었지만 `timeSlot`/`modeSlot`/`modsSlot`은 여전히 무방비 — 패턴 충돌 시 조용히 쓰레기 값
+### ~~E1. ProcessMemory 재사용 버퍼가 스레드 비안전~~ ✅ 해결 (`68de5ad`)
+- ~~`bytesRead`/`buf4`/`buf8`이 인스턴스 필드 → 다른 스레드 호출 시 조용한 값 섞임~~ → 버퍼를 `[ThreadStatic] static` + 지연 초기화로(스레드마다 독립), `bytesRead`는 각 메서드 로컬로. `AobScanner.sharedBuffer`와 동일 패턴. 무할당 최적화 유지
+- **범위(정직)**: "동시 read가 서로의 버퍼를 오염시키지 않음"까지. `Handle`/`Dispose` 경합은 별개이며 현재 UI 스레드 전용이라 무해
 
-### E3. QuadBatch 오버플로 시 `Flush(null)`
-- **위치**: `Rendering/Batches/QuadBatch.cs:46` — 셰이더 바인딩 중인데 fixed-function 폴백 경로로 그림
-- **트리거**: 한 배치에 ~10,900쿼드 초과 시에만 — 현실적으론 드묾
+### ~~E2. AOB 첫-매치 무검증~~ ✅ 해결 (`68de5ad`)
+- ~~`timeSlot`/`modeSlot`/`modsSlot`이 첫 매치를 무검증 신뢰 → 패턴 충돌 시 조용히 쓰레기~~ → time/mode/mods를 AllMatches로(커서가 이미 전체 패스라 추가 비용 ~0), 값-도메인 검증 + 충돌 로깅
+- **선택 규칙(회귀 0 우선)**: 첫 매치가 검증 통과면 그대로(예전 동작). 첫 매치가 실패**할 때만** 서로 다른 slot 중 **유일하게** 통과하는 대체로 교정. 그 외엔 첫 매치 유지 + 경고. 서로 다른 해석 slot이 2개 이상이면 충돌 경고(같은 slot 다중매치는 정상 — JIT 중복 방출)
+- **검증 범위**: Mode ∈ `[0,30]`(OsuModes 0~23 전부 포함), Time `|t|<24h` + AudioState∈`[0,2]`, **Mods는 상한을 안전히 못 잡아**(Mirror=bit30 등) 읽기 가능성만 구조 검증(값 검증 아님을 명시)
+- **한계(정직)**: 0을 읽는 임포스터는 모든 검증을 통과 → 올바른 slot보다 먼저 스캔되면 못 거른다. 이 경우 충돌 로깅으로 가시성만 확보(자동 교정 불가). "조용한 실패 → 로깅"이 핵심
 
-### E4. Fields enum 값 충돌
-- **위치**: `Rendering/Sprites/pSprite.cs:12-29` — `TopCentre==Gamefield(1)`, `TopRight==GamefieldWide(2)`, `Centre==StoryboardCentre(4)`, `BottomLeft==NativeStandardScale(6)` 등 6쌍
-- **현황**: 충돌 멤버는 현재 미사용임을 확인. 그러나 누가 `Fields.Centre`를 쓰는 순간 Gamefield 좌표 변환을 타는 지뢰
+### ~~E3. QuadBatch 오버플로 시 `Flush(null)`~~ ✅ 해결 (`68de5ad`)
+- ~~배치 초과 자동 flush가 `Flush(null)` → 셰이더 바인딩 중에도 fixed-function 경로로 그림~~ → `SetActiveShader`로 현재 패스 셰이더를 배치에 알려 오버플로 flush도 같은 셰이더 사용. 기본 null이면 예전과 동일(폴백). `SpriteManager`가 유일 소유자 확인
 
-### E5. 파싱 Task ↔ 렌더 스레드 경합 읽기
-- **위치**: `Overlay/OverlayForm.cs:471` — Task에서 `renderer.GameField.Width/Ratio` 읽는 동안 렌더 스레드가 Resize 가능 → 찢어진 쌍 (새 Width + 옛 Ratio)
-- **참고**: `pendingBeatmapApply` volatile 플래그의 쓰기/읽기 순서 자체는 **올바름** (검증함)
+### ~~E4. Fields enum 값 충돌~~ ✅ 해결 (`68de5ad`)
+- ~~`TopCentre==Gamefield(1)` 등 6쌍이 값 충돌 (쓰는 멤버끼리는 우연히 안 겹쳐 동작)~~ → stable `Fields` enum의 값(`Gamefield=1`…`NativeStandardScale=16`)으로 재정렬. 충돌 제거 + **stable과 값 일치(충실도 보너스)**
+- **안전**: 전 사용이 심볼릭(`(int)`/`(Fields)` 캐스트 0건, 리뷰 grep 확인), 기본값 0은 오직 명시적 `Fields.TopLeft`로만 도달(→ 이제 `TopLeft=6`, 심볼릭이라 투명). `pSprite` 생성자가 Field를 항상 요구
 
-### E6. 낡은 파싱 결과 잠깐 적용
-- 맵 A 파싱 완료가 맵 B 전환 직후 도착하면 몇 프레임 A가 표시. 다음 프레임 감지로 자가 치유 — 낮은 우선순위
+### ~~E5. 파싱 Task ↔ 렌더 스레드 경합 읽기~~ ✅ 해결 (`68de5ad`)
+- ~~Task에서 `renderer.GameField.Width/Ratio` 읽는 동안 렌더 스레드 Resize → 찢어진 쌍~~ → 렌더 스레드에서 **float**으로 스냅샷 후 클로저에 캡처(Width/Ratio 둘 다 float — int 스냅샷은 절단). Task는 더 이상 `GameField`를 만지지 않음
 
-### E7. 비트맵 문자열 캐시가 포인터 주소로 동일성 판정
-- **위치**: `Memory/OsuMemoryReader.cs:469-487` — GC 주소 재사용 시 이론상 다른 맵의 폴더명 잔류. 확률 극히 낮음
+### ~~E6. 낡은 파싱 결과 잠깐 적용~~ ✅ 해결 (`68de5ad`)
+- ~~맵 A 파싱이 맵 B 전환 후 도착하면 몇 프레임 A 표시~~ → 파싱 시작 시 맵 키(folder/filename)를 실어 보내고, 적용 시 현재 맵 키와 다르면 폐기. **별도 분기**라 화면의 현재 맵/난이도를 지우지 않고, **folder·filename 둘 다 유효**할 때만 판정(한쪽만 보면 찢어진 read로 유효 결과를 오폐기해 영구 blank)
+
+### ~~E7. 비트맵 문자열 캐시가 포인터 주소로 동일성 판정~~ ✅ 해결 (`68de5ad`)
+- ~~GC 주소 재사용 시 다른 맵의 폴더명 잔류~~ → 문자열 포인터-동일성 캐시(`lastFolderPtr` 등) 제거, 맵 전환(beatmapPtr 변경)마다 세 문자열 무조건 재읽기. 맵 전환은 사람 조작 빈도라 무비용. read 실패 시 null로 덮지 않아 기존 값 유지(E6가 이 stickiness에 의존)
+- **잔여(정직)**: `beatmapPtr` 자체의 객체-동일성 가정은 유지(리더 전반이 같은 가정 — `lastBeatmapObj` 등 — 을 쓰고, osu! Beatmap 객체는 세션 수명이라 실질 도달 불가)
 
 ---
 
@@ -433,7 +437,7 @@
 | 3 | B2+B3 (커서팩/콤보숫자) | 같은 계열 누수, 함께 처리 |
 | 4 | D1 (AOB 버퍼 재사용) | 실측 1초 스톨, 전후 비교 검증 가능 |
 | 5 | F 전체 (죽은 코드 일괄 삭제) | 싸고, 이후 모든 분석의 정확도를 올림 |
-| 6 | 나머지 E/G | 증거·재현 확보 후 |
+| ~~6~~ | ~~E 전부~~ (해결) / 나머지 G | E1~E7 해결 (`68de5ad`). G는 증거·재현 확보 후 |
 
 **포팅 충실도 축** (프로젝트 핵심 목표)
 
