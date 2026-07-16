@@ -688,6 +688,25 @@ namespace OsuEnlightenOverlay.Memory
             return total;
         }
 
+        // HOM 오프셋 탐색용 블록 읽기 버퍼 (D2) — 매 프레임 할당 방지
+        byte[] homPlayerBuf = new byte[0x200];
+        byte[] homCandBuf = new byte[0xA4];
+
+        /// <summary>
+        /// 블록 버퍼가 유효하면 거기서, 아니면 개별 syscall로 포인터를 읽는다.
+        /// ReadBytes는 범위 안에 못 읽는 페이지가 하나라도 있으면 통째로 실패하므로,
+        /// 블록 읽기가 실패한 경우에도 예전과 같은 결과가 나오도록 폴백을 둔다.
+        /// </summary>
+        bool ReadPtrCached(byte[] buf, bool bufValid, IntPtr baseAddr, int off, out IntPtr val)
+        {
+            if (bufValid)
+            {
+                val = ProcessMemory.GetPointer(buf, off);
+                return true;
+            }
+            return pm.ReadPointer(baseAddr + off, out val);
+        }
+
         // HOM 오프셋 자동 감지 (Player.Instance → HOM → hitObjects List)
         bool DetectHomOffsets(IntPtr playerObj)
         {
@@ -698,16 +717,23 @@ namespace OsuEnlightenOverlay.Memory
             int osuSt0 = parsedStartTimes.Count > 0 ? parsedStartTimes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].StartTime : -1);
             int osuTy0 = parsedTypes.Count > 0 ? parsedTypes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].Type : -1);
 
+            // Player 객체의 후보 슬롯 범위를 한 번에 읽는다 — 예전에는 오프셋마다 syscall이라
+            // 미검출 동안 프레임당 127 + (후보수 × 40)번의 ReadProcessMemory가 돌았다 (D2).
+            bool playerBufOk = pm.ReadBytes(playerObj, homPlayerBuf, homPlayerBuf.Length);
+
             for (int off = 0x04; off <= 0x1FC; off += 4)
             {
                 IntPtr homCand;
-                if (!pm.ReadPointer(playerObj + off, out homCand)) continue;
+                if (!ReadPtrCached(homPlayerBuf, playerBufOk, playerObj, off, out homCand)) continue;
                 if (!LooksLikeHeapPtr((uint)homCand.ToInt32())) continue;
+
+                // 후보 객체의 리스트 슬롯 범위도 한 번에
+                bool candBufOk = pm.ReadBytes(homCand, homCandBuf, homCandBuf.Length);
 
                 for (int listOff = 0x04; listOff <= 0xA0; listOff += 4)
                 {
                     IntPtr listCand;
-                    if (!pm.ReadPointer(homCand + listOff, out listCand)) continue;
+                    if (!ReadPtrCached(homCandBuf, candBufOk, homCand, listOff, out listCand)) continue;
                     if (!LooksLikeHeapPtr((uint)listCand.ToInt32())) continue;
 
                     IntPtr items;
