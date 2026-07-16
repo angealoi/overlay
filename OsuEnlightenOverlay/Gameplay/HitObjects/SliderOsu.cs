@@ -211,6 +211,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
             for (int i = 0; i < segmentCount; i++)
             {
+                // 세그먼트마다 리셋 — osu! stable SliderOsu.cs:818-819.
+                // distanceToEnd는 한 번 통과하는 경로 길이에서 시작한다. curveLength는 data.Length로
+                // 잘린 뒤의 실제 커브 길이라 stable의 total과 같은 값이다.
+                // skipTick은 세그먼트 내내 유지 — 한 번 서면 그 세그먼트의 남은 틱은 전부 생략된다.
+                double distanceToEnd = curveLength;
+                bool skipTick = false;
+                List<pSprite> segmentDots = new List<pSprite>();
+
                 bool reverse = (i % 2) == 1;
                 Vector2 circlePos = reverse ? data.Position : EndPosition;
 
@@ -246,9 +254,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     scoringDistance += distance;
 
                     // 슬라이더 틱 (scoring points) — osu! stable UpdateCalculations 포팅
-                    double distanceToEnd = data.Length * (segmentCount - i) - scoringLengthTotal - scoringDistance;
-                    bool skipTick = false;
-
                     while (scoringDistance >= tickDistance && !skipTick)
                     {
                         scoringLengthTotal += tickDistance;
@@ -294,19 +299,38 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                                     TransformationType.Scale, 1.2f, 1f, displayStartTime - 50, displayStartTime + 150, EasingTypes.Out));
                             }
 
-                            // 볼 도착 시 사라짐
-                            scoringDot.Transformations.Add(new Transformation(
-                                TransformationType.Fade, 0f, 0f, scoreTime, scoreTime, EasingTypes.None));
-
                             // osu! stable: 시작원/끝원 HitObjectRadius 반경 내 틱은 제외
                             float radiusSquared = difficulty.HitObjectRadius * difficulty.HitObjectRadius;
                             float distToStart = (adjustedPos - data.Position).LengthSquared;
                             float distToEnd = (adjustedPos - EndPosition).LengthSquared;
                             if (distToStart >= radiusSquared && distToEnd >= radiusSquared)
+                            {
                                 sliderScorePoints.Add(scoringDot);
+                                segmentDots.Add(scoringDot);
+                            }
                         }
                     }
                 }
+
+                // 세그먼트 경계 보정 — osu! stable SliderOsu.cs:921-931.
+                // 다음 세그먼트의 첫 틱이 리버스 지점을 기준으로 이 세그먼트의 마지막 틱과
+                // 대칭이 되도록 남은 거리를 미러링한다.
+                scoringLengthTotal += scoringDistance;
+                if (skipTick)
+                {
+                    // 끝에 마지막 틱이 아예 없었으면 미러링할 대상도 없다
+                    scoringDistance = 0;
+                }
+                else
+                {
+                    scoringLengthTotal -= tickDistance - scoringDistance;
+                    scoringDistance = tickDistance - scoringDistance;
+                }
+
+                // 틱은 볼이 지나갈 때가 아니라 세그먼트가 끝날 때 일괄로 사라진다 — stable :933-935 (H22)
+                foreach (pSprite dot in segmentDots)
+                    dot.Transformations.Add(new Transformation(
+                        TransformationType.Fade, 0f, 0f, (int)currentTime, (int)currentTime, EasingTypes.None));
 
                 // segment duration (전체) — end circle 타이밍용
                 // currentTime이 이미 각 선분마다 누적됨
