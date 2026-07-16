@@ -113,9 +113,12 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>ConfigManager Dictionary static slot 스캔 (tosu configurationAddr 방식).</summary>
-        public void ScanSlots()
+        /// <summary>
+        /// 기동 시 배치 스캔(D1) 결과를 받아 slot 해석 — 전체 메모리를 다시 읽지 않는다.
+        /// </summary>
+        public void ApplyScan(AobScanRequest req)
         {
-            configDictSlot = AobScanner.ResolveSlot(pm, Signatures.ConfigDictionary);
+            configDictSlot = AobScanner.ResolveSlot(pm, Signatures.ConfigDictionary, req);
         }
 
         // ────────────────────── Dictionary 접근 (캐싱 없음) ──────────────────────

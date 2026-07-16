@@ -24,6 +24,9 @@ namespace OsuEnlightenOverlay.Rendering
         OverlaySettings settings;
         OsuMemoryReader reader;
 
+        // 히트에러바 중앙값 계산용 스크래치 — 매 프레임 할당 방지 (D5)
+        readonly List<int> medianScratch = new List<int>(32);
+
         // FPS 계산
         long fpsAccumTicks = 0;
         int fpsAccumCount = 0;
@@ -518,9 +521,12 @@ namespace OsuEnlightenOverlay.Rendering
             // 중앙값 화살표
             if (errors.Count > 0)
             {
-                List<int> sorted = new List<int>(errors);
-                sorted.Sort();
-                double median = sorted[sorted.Count / 2];
+                // 스크래치 재사용 — 매 프레임 new List<int>는 순수 GC 압박이다 (D5).
+                // errors는 최근 30개로 제한되므로 정렬 자체는 싸다.
+                medianScratch.Clear();
+                medianScratch.AddRange(errors);
+                medianScratch.Sort();
+                double median = medianScratch[medianScratch.Count / 2];
 
                 float arrowX = centerX + (float)median * pxPerMs;
                 Color arrowCol;
