@@ -606,8 +606,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         /// <summary>
         /// SpriteManager에서 스프라이트 제거.
+        /// AddToSpriteManager를 override해 스프라이트를 더 추가하는 파생 클래스는
+        /// 반드시 이쪽도 override해서 짝을 맞출 것 (osu! stable은 SpriteCollection을
+        /// 통째로 관리해 애초에 짝이 어긋날 수 없다).
         /// </summary>
-        public void RemoveFromSpriteManager(SpriteManager sm)
+        public virtual void RemoveFromSpriteManager(SpriteManager sm)
         {
             if (spriteApproachCircle != null && sm.Contains(spriteApproachCircle)) sm.Remove(spriteApproachCircle);
             if (spriteHitCircle != null && sm.Contains(spriteHitCircle)) sm.Remove(spriteHitCircle);
@@ -802,6 +805,15 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             base.AddToSpriteManager(sm);
             if (spriteReverseArrow != null && !sm.Contains(spriteReverseArrow))
                 sm.Add(spriteReverseArrow);
+        }
+
+        // reverse arrow도 함께 제거 — 없으면 시간 윈도우를 벗어난 뒤에도
+        // SpriteManager에 남아 맵 끝까지 누적된다 (C2/H24)
+        public override void RemoveFromSpriteManager(SpriteManager sm)
+        {
+            base.RemoveFromSpriteManager(sm);
+            if (spriteReverseArrow != null && sm.Contains(spriteReverseArrow))
+                sm.Remove(spriteReverseArrow);
         }
     }
 }
