@@ -108,18 +108,23 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             int startTime = data.StartTime;
             int p = difficulty.PreEmpt;
 
-            // 커브 계산 — osu! stable SliderOsu 생성자 로직 정확히 포팅
+            // 커브 계산 — osu! stable SliderOsu 생성자 로직 정확히 포팅.
+            // 머리 좌표는 data.Position이 아니라 BasePosition을 쓴다. UpdateStacking이
+            // data.Position을 스택 위치로 변형하는데 data.CurvePoints는 원본 그대로라,
+            // 같은 BeatmapData로 재로드되면 머리만 밀린 뒤틀린 커브가 나온다.
+            // stable처럼 기하는 base 좌표로 만들고 UpdateStackedPosition에서 통째로 옮긴다.
+            Vector2 headPos = data.BasePosition;
             List<Vector2> controlPoints = new List<Vector2>();
             if (data.CurvePoints != null && data.CurvePoints.Count > 0)
             {
                 controlPoints.AddRange(data.CurvePoints);
-                // 첫 점이 Position과 다르면 Position을 앞에 삽입
-                if (controlPoints[0] != data.Position)
-                    controlPoints.Insert(0, data.Position);
+                // 첫 점이 머리와 다르면 머리를 앞에 삽입
+                if (controlPoints[0] != headPos)
+                    controlPoints.Insert(0, headPos);
             }
             else
             {
-                controlPoints.Add(data.Position);
+                controlPoints.Add(headPos);
             }
 
             curvePath = SliderCurve.CalculateCurve(controlPoints, data.CurveType, data.Length);
@@ -135,7 +140,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (curvePath.Count > 0)
                 EndPosition = curvePath[curvePath.Count - 1].p2;
             else
-                EndPosition = data.Position;
+                EndPosition = headPos;
 
             // HitBurst 위치 — osu-stable HitObjectManager.Hit()에서 h.EndPosition 사용.
             // osu-stable SliderOsu.cs:957: EndPosition = p2 (마지막 segment의 p2)
@@ -151,7 +156,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     HitBurstEndPosition = curvePath[curvePath.Count - 1].p2;  // 곡선 끝점
             }
             else
-                HitBurstEndPosition = data.Position;
+                HitBurstEndPosition = headPos;
 
             // VirtualEndTime — osu! stable 공식
             // SpatialLength * BeatLengthAt(StartTime) * SegmentCount * 0.01 / DifficultySliderMultiplier + StartTime
@@ -220,7 +225,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 List<pSprite> segmentDots = new List<pSprite>();
 
                 bool reverse = (i % 2) == 1;
-                Vector2 circlePos = reverse ? data.Position : EndPosition;
+                Vector2 circlePos = reverse ? headPos : EndPosition;
 
                 // segment 시작 시간
                 int reverseStartTime = (int)currentTime;
@@ -301,7 +306,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                             // osu! stable: 시작원/끝원 HitObjectRadius 반경 내 틱은 제외
                             float radiusSquared = difficulty.HitObjectRadius * difficulty.HitObjectRadius;
-                            float distToStart = (adjustedPos - data.Position).LengthSquared;
+                            float distToStart = (adjustedPos - headPos).LengthSquared;
                             float distToEnd = (adjustedPos - EndPosition).LengthSquared;
                             if (distToStart >= radiusSquared && distToEnd >= radiusSquared)
                             {
@@ -399,7 +404,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (sliderBallTextures.Length > 0)
             {
                 sliderBall = new pAnimation(sliderBallTextures, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                    data.Position, 0.99f, false, usingDefault ? SkinManager.LoadColour("SliderBall") : Color.White);
+                    headPos, 0.99f, false, usingDefault ? SkinManager.LoadColour("SliderBall") : Color.White);
                 sliderBall.SetFramerateFromSkin();
                 sliderBall.TrackRotation = true;
                 // osu! stable: FrameDelay = Math.Max((150 / Velocity) * SIXTY_FRAME_TIME, SIXTY_FRAME_TIME)
@@ -421,7 +426,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     if (texSpec != null)
                     {
                         sliderBallSpec = new pSprite(texSpec, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                            data.Position, 1.0f, false, Color.White);
+                            headPos, 1.0f, false, Color.White);
                         sliderBallSpec.Additive = true;
                         sliderBallSpec.Alpha = 0f;
                         sliderBallSpec.Transformations.Add(new Transformation(
@@ -432,7 +437,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     if (texNd != null)
                     {
                         sliderBallNd = new pSprite(texNd, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                            data.Position, 0.98f, false, Color.FromArgb(5, 5, 5));
+                            headPos, 0.98f, false, Color.FromArgb(5, 5, 5));
                         sliderBallNd.Alpha = 0f;
                         sliderBallNd.Transformations.Add(new Transformation(
                             TransformationType.Fade, 0f, 1f, startTime, startTime + 1, EasingTypes.None));
@@ -447,7 +452,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (sliderFollowerTextures.Length > 0)
             {
                 sliderFollower = new pAnimation(sliderFollowerTextures, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                    data.Position, 0.99f, true, Color.White);
+                    headPos, 0.99f, true, Color.White);
                 sliderFollower.SetFramerateFromSkin();
                 sliderFollower.Alpha = 0f;
                 // transformation 없음 — AddToSpriteManager에서 tracking 상태에 따라 동적 제어
@@ -542,20 +547,39 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         /// <summary>
         /// 스택 적용 후 위치 업데이트 — UpdateStacking 호출 후.
-        /// 슬라이더 시작원 위치만 업데이트.
+        /// osu! stable SliderOsu.ModifyPosition(:1395-1436)처럼 **슬라이더 전체**를 옮긴다.
+        /// 기하는 생성자에서 base 좌표로 만들어졌고, 스택 오프셋은 여기서 한 번만 적용된다.
         /// </summary>
         public void UpdateStackedPosition()
         {
+            // 시작 원은 부모와 data를 공유하므로 스택된 data.Position을 그대로 읽는다.
             if (startCircle != null)
                 startCircle.UpdateStackedPosition();
-        }
 
-        /// <summary>
-        /// HitBurstEndPosition에 스택 오프셋 적용.
-        /// </summary>
-        public void ApplyStackOffsetToHitBurstEndPosition(Vector2 offset)
-        {
-            HitBurstEndPosition += offset;
+            Vector2 change = data.Position - data.BasePosition;
+            if (change == Vector2.Zero) return;
+
+            // 커브 경로 — 바디/볼/틱 위치 계산이 전부 여기서 나오므로 이것만 옮기면 셋 다 따라온다.
+            // (길이는 평행이동에 불변이라 cumulativeLengths는 그대로)
+            for (int i = 0; i < curvePath.Count; i++)
+            {
+                curvePath[i].p1 += change;
+                curvePath[i].p2 += change;
+            }
+
+            EndPosition += change;
+            HitBurstEndPosition += change;
+
+            // 틱 스프라이트는 생성 시 좌표가 굳어 있다
+            foreach (pSprite dot in sliderScorePoints)
+                dot.Position += change;
+
+            // 끝 원 + 리버스 화살표 — 자기 HitObjectData를 따로 가지므로 스택 오프셋이 닿지 않는다
+            foreach (HitCircleSliderEnd endCircle in endCircles)
+                endCircle.ModifyPosition(change);
+
+            // 바디 FBO는 커브 좌표로 구워져 있다 — 무효화해서 다시 굽게 한다
+            cachedProgress = -1;
         }
 
         /// <summary>

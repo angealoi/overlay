@@ -128,9 +128,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     // SetScaleRatios 후 콤보 번호 재설정 — 스프라이트 재생성 트리거
                     slider.SetComboNumber(comboNumber);
                     sliders.Add(slider);
-                    // HitObjectData.BaseEndPosition 설정 — HitBurst 표시 위치.
-                    // repeat 슬라이더의 마지막 segment가 홀수(reverse)면 곡선 시작점, 짝수면 곡선 끝점.
-                    h.BaseEndPosition = slider.HitBurstEndPosition;
+                    // BaseEndPosition은 스택 적용 후에 설정한다 (아래 UpdateStackedPosition 루프)
                 }
                 else if ((h.Type & HitObjectType.Spinner) != 0)
                 {
@@ -147,12 +145,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 c.UpdateStackedPosition();
             foreach (SliderOsu s in sliders)
             {
+                // 슬라이더 전체(커브·볼·틱·끝원)를 스택 위치로 이동
                 s.UpdateStackedPosition();
-                // 스택 오프셋을 BaseEndPosition/HitBurstEndPosition에도 적용 — HitBurst 위치.
-                // osu-stable: h.EndPosition은 스택 적용된 끝 위치.
-                Vector2 stackOffset = new Vector2(difficulty.StackOffset, difficulty.StackOffset);
-                s.Data.BaseEndPosition += s.Data.StackCount * stackOffset;
-                s.ApplyStackOffsetToHitBurstEndPosition(s.Data.StackCount * stackOffset);
+                // HitBurst 위치 — osu-stable의 h.EndPosition은 스택이 적용된 끝 위치다.
+                // 이동 후 값을 그대로 받는다. 오프셋을 여기서 따로 더하던 코드는 부호가 반대여서
+                // (UpdateStacking은 basePosition '−' StackCount*stackVector) HitBurst가 반대로 밀렸다.
+                s.Data.BaseEndPosition = s.HitBurstEndPosition;
             }
 
             // Followpoint 생성 — osu! stable AddFollowPoints
@@ -692,12 +690,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 }
             }
 
-            // 스택 오프셋 적용
+            // 스택 오프셋 적용 — osu! stable HitObjectManager.cs:1761-1765는 범위 내 전 객체에
+            // 무조건 ModifyPosition을 건다 (H20). StackCount==0을 건너뛰면 Position이 낡은 값으로
+            // 남을 수 있고, UpdateStackedPosition이 쓰는 `Position - BasePosition` 불변식이 깨진다.
             for (int i = 0; i < count; i++)
             {
                 StackEntry e = entries[i];
-                if (e.data.StackCount != 0)
-                    e.data.Position = e.basePosition - e.data.StackCount * stackVector;
+                e.data.Position = e.basePosition - e.data.StackCount * stackVector;
             }
         }
 
