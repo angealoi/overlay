@@ -69,6 +69,33 @@ namespace OsuEnlightenOverlay.Memory
         {
             if (requests == null || requests.Count == 0) return;
 
+            // 첫 고정 바이트로 버킷팅.
+            // 실측(osu! 441MB): 전체 메모리 읽기는 ~24ms인데 패턴 하나를 훑는 매칭이 ~260ms다.
+            // 즉 비용은 읽기가 아니라 매칭이 지배한다. 바이트 위치마다 패턴을 전부 검사하면
+            // 패턴 수에 비례해 느려지므로, 첫 바이트가 다른 패턴은 아예 보지 않는다.
+            List<AobScanRequest>[] byFirstByte = new List<AobScanRequest>[256];
+            // 핫 루프용 빠른 기각 테이블 — byte[]가 List<>[]보다 캐시에 잘 맞고 로드가 싸다
+            byte[] hasFirstByte = new byte[256];
+            List<AobScanRequest> wildcardFirst = null;
+
+            for (int r = 0; r < requests.Count; r++)
+            {
+                AobScanRequest req = requests[r];
+                if (req.Compare.Length > 0 && req.Compare[0])
+                {
+                    int b = req.Pattern[0];
+                    if (byFirstByte[b] == null) byFirstByte[b] = new List<AobScanRequest>();
+                    byFirstByte[b].Add(req);
+                    hasFirstByte[b] = 1;
+                }
+                else
+                {
+                    // 첫 바이트가 와일드카드면 버킷팅이 안 되므로 매 위치에서 검사해야 한다
+                    if (wildcardFirst == null) wildcardFirst = new List<AobScanRequest>();
+                    wildcardFirst.Add(req);
+                }
+            }
+
             foreach (ProcessMemory.MemoryRegion region in pm.EnumerateReadableRegions())
             {
                 // 남은 요청이 없으면 더 읽을 이유가 없다
@@ -85,46 +112,71 @@ namespace OsuEnlightenOverlay.Memory
                 if (!pm.ReadBytes(region.BaseAddress, buffer, regionSize))
                     continue;
 
-                for (int r = 0; r < requests.Count; r++)
+                ScanBuffer(buffer, regionSize, region.BaseAddress, byFirstByte, hasFirstByte, wildcardFirst);
+            }
+        }
+
+        /// <summary>
+        /// 버퍼 하나를 모든 패턴에 대해 한 번에 훑는다.
+        /// 버퍼는 재사용이라 regionSize보다 클 수 있으므로 유효 범위를 명시적으로 받는다.
+        ///
+        /// 핫 루프는 수백 MB를 바이트 단위로 도는 곳이라 배열 경계 검사가 그대로 비용이 된다.
+        /// unsafe 포인터로 검사를 없앤다 — 인덱스는 [0, regionSize)와 [0,255]로 이미 갇혀 있다.
+        /// </summary>
+        static unsafe void ScanBuffer(byte[] buffer, int regionSize, IntPtr baseAddress,
+            List<AobScanRequest>[] byFirstByte, byte[] hasFirstByte, List<AobScanRequest> wildcardFirst)
+        {
+            // 첫 바이트가 와일드카드인 패턴이 있으면 빠른 기각을 쓸 수 없다
+            if (wildcardFirst != null)
+            {
+                for (int i = 0; i < regionSize; i++)
                 {
-                    AobScanRequest req = requests[r];
-                    if (req.Done) continue;
-                    ScanBuffer(buffer, regionSize, region.BaseAddress, req);
+                    List<AobScanRequest> bucket = byFirstByte[buffer[i]];
+                    if (bucket != null)
+                        for (int k = 0; k < bucket.Count; k++)
+                            TryMatch(buffer, regionSize, baseAddress, i, bucket[k]);
+                    for (int k = 0; k < wildcardFirst.Count; k++)
+                        TryMatch(buffer, regionSize, baseAddress, i, wildcardFirst[k]);
+                }
+                return;
+            }
+
+            fixed (byte* pBuf = buffer)
+            fixed (byte* pHas = hasFirstByte)
+            {
+                for (int i = 0; i < regionSize; i++)
+                {
+                    if (pHas[pBuf[i]] == 0) continue;
+
+                    // 여기부터는 드물게만 온다 — 첫 바이트가 어떤 패턴과 일치한 경우
+                    List<AobScanRequest> bucket = byFirstByte[pBuf[i]];
+                    for (int k = 0; k < bucket.Count; k++)
+                        TryMatch(buffer, regionSize, baseAddress, i, bucket[k]);
                 }
             }
         }
 
         /// <summary>
-        /// 버퍼 하나를 한 패턴으로 훑는다.
-        /// 버퍼는 재사용이라 regionSize보다 클 수 있으므로 유효 범위를 명시적으로 받는다.
+        /// 위치 i에서 패턴 전체를 대조. 버킷으로 들어온 경우 j=0은 이미 일치가 보장된다.
         /// </summary>
-        static void ScanBuffer(byte[] buffer, int regionSize, IntPtr baseAddress, AobScanRequest req)
+        static void TryMatch(byte[] buffer, int regionSize, IntPtr baseAddress, int i, AobScanRequest req)
         {
+            if (req.Done) return;
+
             byte[] pattern = req.Pattern;
             bool[] compare = req.Compare;
             int patLen = pattern.Length;
-            int last = regionSize - patLen;
+            if (i + patLen > regionSize) return;
 
-            for (int i = 0; i <= last; i++)
+            for (int j = 0; j < patLen; j++)
             {
-                bool found = true;
-                for (int j = 0; j < patLen; j++)
-                {
-                    if (compare[j] && buffer[i + j] != pattern[j])
-                    {
-                        found = false;
-                        break;
-                    }
-                }
-                if (!found) continue;
-
-                req.Results.Add(baseAddress + i);
-                if (!req.AllMatches)
-                {
-                    req.Done = true;
+                if (compare[j] && buffer[i + j] != pattern[j])
                     return;
-                }
             }
+
+            req.Results.Add(baseAddress + i);
+            if (!req.AllMatches)
+                req.Done = true;
         }
 
         /// <summary>
