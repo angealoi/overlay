@@ -150,6 +150,9 @@ namespace OsuEnlightenOverlay.Rendering
                 shader.SetColour(System.Drawing.Color.White);
             }
 
+            // 배치가 가득 차 Add 중간에 자동 flush될 때도 이 셰이더를 쓰게 한다 (E3).
+            quadBatch.SetActiveShader(shader);
+
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Texture2D);
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Blend);
             GL.BlendFunc(OpenTK.Graphics.OpenGL.BlendingFactor.SrcAlpha, OpenTK.Graphics.OpenGL.BlendingFactor.OneMinusSrcAlpha);

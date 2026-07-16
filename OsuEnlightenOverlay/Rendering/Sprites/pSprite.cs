@@ -11,21 +11,27 @@ namespace OsuEnlightenOverlay.Rendering.Sprites
     /// </summary>
     public enum Fields
     {
-        TopLeft = 0,
-        TopCentre,
-        TopRight,
-        CentreLeft,
-        Centre,
-        CentreRight,
-        BottomLeft,
-        BottomCentre,
-        BottomRight,
-        Gamefield = 1, // 기본값
+        // osu! stable Graphics/Sprites/SpriteManager.cs의 Fields enum과 값까지 1:1로 맞춘다.
+        // 예전엔 TopLeft=0,TopCentre=1,... 을 먼저 나열해 Gamefield(1)/GamefieldWide(2)/
+        // Native(5)/NativeStandardScale(6)과 값이 겹쳤다(6쌍). 지금 쓰는 멤버끼리는 우연히
+        // 겹치지 않아 동작했지만, 누가 Fields.Centre 등을 쓰는 순간 좌표계가 뒤바뀌는
+        // 지뢰였다(E4). stable 순서/값으로 정렬해 충돌을 제거한다(충실도도 함께 확보).
+        Gamefield = 1,           // 게임필드(512x384) — 히트오브젝트 등
         GamefieldWide = 2,
         Storyboard = 3,
         StoryboardCentre = 4,
-        Native = 5,
-        NativeStandardScale = 6 // osu! 내부 800x600 좌표 → 실제 창 크기로 스케일링
+        Native = 5,              // 네이티브 화면 해상도
+        TopLeft = 6,
+        TopCentre = 7,
+        TopRight = 8,
+        CentreLeft = 9,
+        Centre = 10,
+        CentreRight = 11,
+        BottomLeft = 12,
+        BottomCentre = 13,
+        BottomRight = 14,
+        // stable엔 StandardGamefieldScale=15, NativeRight=17 등이 더 있으나 오버레이 미사용.
+        NativeStandardScale = 16 // 네이티브 해상도 + 1024x768 스프라이트 스케일
     }
 
     /// <summary>
