@@ -66,6 +66,9 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
                         case "TimingPoints":
                             ParseTimingPoint(line, data);
                             break;
+                        case "Events":
+                            ParseEvent(line, data);
+                            break;
                         case "Colours":
                             ParseColour(line, data);
                             break;
@@ -79,6 +82,9 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             // AR 기본값 처리 — osu! stable: AR이 명시되지 않았으면 OD 사용
             if (!data.HasApproachRate)
                 data.ApproachRate = data.OverallDifficulty;
+
+            // 콤보 할당의 브레이크 순회가 오름차순을 전제 — stable은 EventManager.Add마다 Sort
+            data.Breaks.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
 
             return data;
         }
@@ -179,6 +185,33 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             data.TimingPoints.Add(tp);
         }
 
+        /// <summary>
+        /// [Events] 파싱 — 브레이크만. 스토리보드/배경/샘플은 오버레이가 쓰지 않으므로 무시.
+        /// osu! stable HitObjectManager_LoadSave.cs:467-478.
+        /// </summary>
+        static void ParseEvent(string line, BeatmapData data)
+        {
+            string[] split = line.Trim().Split(',');
+            if (split.Length < 3) return;
+
+            // stable은 Enum.Parse라 숫자("2")와 이름("Break")을 모두 받는다. 실제 맵은 "2"만 쓴다.
+            string type = split[0].Trim();
+            if (type != "2" && type != "Break") return;
+
+            int start, end;
+            if (!int.TryParse(split[1].Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out start)) return;
+            if (!int.TryParse(split[2].Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out end)) return;
+
+            EventBreak br = new EventBreak();
+            br.StartTime = start + data.VersionOffset;
+            br.EndTime = end + data.VersionOffset;
+
+            // 너무 짧은 브레이크는 stable이 아예 등록하지 않는다 (EventManager.Add 호출 전 필터)
+            if (br.Length < EventBreak.MIN_BREAK_LENGTH) return;
+
+            data.Breaks.Add(br);
+        }
+
         static void ParseColour(string line, BeatmapData data)
         {
             string[] parts = line.Split(new[] { ':' }, 2);
@@ -226,7 +259,6 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             HitObjectType type = (HitObjectType)(typeRaw & ~(int)HitObjectType.ColourHax);
 
             int comboOffset = (typeRaw >> 4) & 7;
-            bool newCombo = (type & HitObjectType.NewCombo) != 0;
 
             int soundType = 0;
             if (split.Length > 4 && int.TryParse(split[4], out ival))
@@ -239,7 +271,6 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             h.EndTime = time;
             h.Type = type;
             h.SoundType = soundType;
-            h.NewCombo = newCombo;
             h.ComboOffset = comboOffset;
 
             if ((type & HitObjectType.Normal) != 0)

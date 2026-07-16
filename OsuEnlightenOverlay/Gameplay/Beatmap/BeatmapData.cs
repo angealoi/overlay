@@ -51,6 +51,20 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
     }
 
     /// <summary>
+    /// 브레이크 — osu! stable EventBreak. 에디터 전용 로직은 제외하고 시간만 보유.
+    /// </summary>
+    public class EventBreak
+    {
+        /// <summary>유효한 최소 브레이크 길이 — osu! stable EventBreak.MIN_BREAK_LENGTH.</summary>
+        public const int MIN_BREAK_LENGTH = 650;
+
+        public int StartTime;
+        public int EndTime;
+
+        public int Length { get { return EndTime - StartTime; } }
+    }
+
+    /// <summary>
     /// 비트맵 데이터 — .osu 파일에서 파싱된 정보.
     /// </summary>
     public class BeatmapData
@@ -84,6 +98,9 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
         // [Colours]
         public List<System.Drawing.Color> ComboColours = new List<System.Drawing.Color>();
 
+        // [Events] — 브레이크만. StartTime 오름차순.
+        public List<EventBreak> Breaks = new List<EventBreak>();
+
         // [HitObjects]
         public List<HitObjectData> HitObjects = new List<HitObjectData>();
 
@@ -108,8 +125,21 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
         public int EndTime;
         public HitObjectType Type;
         public int SoundType;
-        public bool NewCombo;
         public int ComboOffset;
+
+        /// <summary>
+        /// 새 콤보 시작 여부 — osu! stable HitObjectBase.cs:114-124와 동일하게 Type 비트의 파생값.
+        /// 별도 필드로 두면 브레이크가 강제한 NewCombo가 Type을 검사하는 쪽에 반영되지 않는다.
+        /// </summary>
+        public bool NewCombo
+        {
+            get { return (Type & HitObjectType.NewCombo) != 0; }
+            set
+            {
+                if (value) Type |= HitObjectType.NewCombo;
+                else Type &= ~HitObjectType.NewCombo;
+            }
+        }
 
         // Slider 전용
         public CurveTypes CurveType;
