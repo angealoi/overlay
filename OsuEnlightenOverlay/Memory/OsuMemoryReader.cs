@@ -151,9 +151,13 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         bool ScanStaticSlots()
         {
-            var time = new AobScanRequest(Signatures.AudioEngineTime.Pattern, false);
-            var mode = new AobScanRequest(Signatures.GameBaseMode.Pattern, false);
-            var mods = new AobScanRequest(Signatures.MenuMods.Pattern, false);
+            // time/mode/mods는 전체 매치를 모은다 — 예전엔 첫 매치를 무검증 신뢰했는데(E2),
+            // 패턴이 충돌하면 조용히 쓰레기 slot을 잡았다. 전체 매치를 모아 값-도메인으로
+            // 검증하고 충돌을 로깅한다. 커서가 이미 AllMatches라 스캔 패스는 어차피 전체
+            // 실행영역을 훑으므로 추가 비용은 사실상 없다.
+            var time = new AobScanRequest(Signatures.AudioEngineTime.Pattern, true);
+            var mode = new AobScanRequest(Signatures.GameBaseMode.Pattern, true);
+            var mods = new AobScanRequest(Signatures.MenuMods.Pattern, true);
             // CurrentBeatmap과 PlayMode는 패턴이 같고 OperandSkip만 다르다 — 요청 하나로 둘 다 해결
             var beatmap = new AobScanRequest(Signatures.CurrentBeatmap.Pattern, false);
             var ruleset = new AobScanRequest(Signatures.Ruleset.Pattern, false);
@@ -164,15 +168,15 @@ namespace OsuEnlightenOverlay.Memory
 
             AobScanner.ScanBatch(pm, new[] { time, mode, mods, beatmap, ruleset, player, config, cursor });
 
-            timeSlot = AobScanner.ResolveSlot(pm, Signatures.AudioEngineTime, time);
+            timeSlot = ResolveVerifiedSlot(Signatures.AudioEngineTime, time, IsPlausibleTimeSlot, "AudioEngine.Time");
             if (timeSlot == IntPtr.Zero)
                 return false;
 
-            modeSlot = AobScanner.ResolveSlot(pm, Signatures.GameBaseMode, mode);
+            modeSlot = ResolveVerifiedSlot(Signatures.GameBaseMode, mode, IsPlausibleModeSlot, "GameBase.Mode");
             if (modeSlot == IntPtr.Zero)
                 return false;
 
-            modsSlot = AobScanner.ResolveSlot(pm, Signatures.MenuMods, mods);
+            modsSlot = ResolveVerifiedSlot(Signatures.MenuMods, mods, IsPlausibleModsSlot, "MenuMods");
             if (modsSlot == IntPtr.Zero)
                 return false;
 
@@ -188,6 +192,87 @@ namespace OsuEnlightenOverlay.Memory
             resolution.ApplyScan(config);
 
             return timeSlot != IntPtr.Zero;
+        }
+
+        // ── E2: AOB slot 검증 (time/mode/mods) ──
+        // 첫 매치를 무검증 신뢰하던 것을 방어한다. 규칙(올바른 첫 매치는 절대 밀어내지 않음):
+        //  1) 첫 매치가 해석되고 검증을 통과하면 그대로 쓴다 (= 예전 동작, 회귀 0).
+        //  2) 첫 매치가 검증 실패일 때만, 서로 다른 slot 중 "유일하게" 통과하는 대체가
+        //     있으면 그쪽으로 교정한다.
+        //  3) 그 외엔 첫 매치를 유지하되 경고를 남긴다 (조용한 실패를 로깅으로 전환).
+        // 서로 다른 해석 slot이 2개 이상이면 충돌 경고 (JIT가 같은 slot을 여러 코드 사이트에
+        // 방출하는 정상 다중매치는 slot이 동일하므로 경고 대상이 아니다).
+        IntPtr ResolveVerifiedSlot(AobSignature sig, AobScanRequest req, Func<IntPtr, bool> isValid, string name)
+        {
+            IntPtr primary = req.Results.Count > 0
+                ? AobScanner.ResolveSlotAt(pm, sig, req.Results[0])
+                : IntPtr.Zero;
+
+            // 서로 다른 해석 slot 수집 (충돌 가시화 + 대체 탐색)
+            var distinct = new List<IntPtr>();
+            foreach (IntPtr match in req.Results)
+            {
+                IntPtr slot = AobScanner.ResolveSlotAt(pm, sig, match);
+                if (slot != IntPtr.Zero && !distinct.Contains(slot))
+                    distinct.Add(slot);
+            }
+            if (distinct.Count > 1)
+                Console.WriteLine("[AOB] " + name + " 서로 다른 slot " + distinct.Count
+                    + "개 — 패턴 충돌 가능, 값 검증으로 선택");
+
+            // 1) 첫 매치가 유효 → 그대로 (예전 동작)
+            if (primary != IntPtr.Zero && isValid(primary))
+                return primary;
+
+            // 2) 첫 매치가 무효 → 유일하게 유효한 다른 slot이 있으면 교정
+            IntPtr uniqueValid = IntPtr.Zero;
+            int validCount = 0;
+            foreach (IntPtr slot in distinct)
+            {
+                if (isValid(slot)) { validCount++; uniqueValid = slot; }
+            }
+            if (validCount == 1 && uniqueValid != primary)
+            {
+                Console.WriteLine("[AOB] " + name
+                    + (primary == IntPtr.Zero ? " 첫 매치 해석 실패" : " 첫 매치 검증 실패")
+                    + " → 유효 slot으로 교정");
+                return uniqueValid;
+            }
+
+            // 3) 유일 대체 없음 → 첫 매치 유지(무검증, 예전과 동일). 첫 매치가 아예
+            //    해석 안 되면 Zero 반환 → Initialize 실패(재시도 유도).
+            if (primary != IntPtr.Zero)
+                Console.WriteLine("[AOB] " + name + " slot 값 검증 실패 — 첫 매치 유지(무검증)");
+            return primary;
+        }
+
+        // Mode(OsuModes enum): stable에 0~23까지 실제 값이 있다(Tourney=22 등 세션 지속 상태
+        // 포함). 넉넉히 [0,30]로 잡아 올바른 slot은 절대 탈락시키지 않으면서 0이 아닌 쓰레기를
+        // 거른다. (0은 어차피 통과하므로 상한을 넓혀도 방어력 손실 없음.)
+        bool IsPlausibleModeSlot(IntPtr slot)
+        {
+            int v;
+            return pm.ReadInt32(slot, out v) && v >= 0 && v <= 30;
+        }
+
+        // Mods bitmask: 상한을 안전하게 못 잡는다(Mirror=bit30 등 상위 비트 사용). 따라서
+        // 값이 아니라 읽기 가능 여부만 구조적으로 확인한다 — 정직하게 값 검증이 아님을 명시.
+        bool IsPlausibleModsSlot(IntPtr slot)
+        {
+            uint v;
+            return pm.ReadUInt32(slot, out v);
+        }
+
+        // Time(오디오 ms) + AudioState(slot+0x30, 0/1/2). 올바른 slot은 기동 시에도 항상
+        // 이 범위 안이다(정수 시간 + 유효 상태). 24시간 상한으로 포인터류 쓰레기를 배제한다.
+        bool IsPlausibleTimeSlot(IntPtr slot)
+        {
+            int t;
+            if (!pm.ReadInt32(slot, out t)) return false;
+            if (t < -86400000 || t > 86400000) return false;
+            int st;
+            if (!pm.ReadInt32(slot + Offsets.AudioState_FromTimeSlot, out st)) return false;
+            return st >= 0 && st <= 2;
         }
 
         /// <summary>
@@ -454,9 +539,6 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         IntPtr lastBeatmapPtr = IntPtr.Zero;
-        IntPtr lastFolderPtr = IntPtr.Zero;
-        IntPtr lastFilenamePtr = IntPtr.Zero;
-        IntPtr lastDiffNamePtr = IntPtr.Zero;
 
         void RefreshBeatmap()
         {
@@ -486,25 +568,31 @@ namespace OsuEnlightenOverlay.Memory
             BeatmapHP = hp;
             BeatmapOD = od;
 
+            // 문자열은 맵(beatmapPtr)이 바뀔 때만 여기 도달한다 — 위 early-return이 같은
+            // 포인터를 이미 걸러냈다. 예전엔 folderPtr==lastFolderPtr면 재읽기를 스킵했는데,
+            // GC가 해제된 주소를 재사용하면 "다른 맵인데 옛 폴더명이 남는" 잠복 결함(E7)이 있었다.
+            // 포인터 동일성 캐시를 없애고 맵 전환마다 세 문자열을 무조건 다시 읽는다 —
+            // 맵 전환은 사람 조작 빈도라 비용이 무의미하다. 다만 일시적 read 실패로 null이
+            // 나오면(부분 페이지 미매핑 등) 기존 값을 유지한다(덮어쓰지 않음).
             IntPtr folderPtr;
-            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_Folder, out folderPtr) && folderPtr != lastFolderPtr)
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_Folder, out folderPtr))
             {
-                BeatmapFolder = pm.ReadSharpString(folderPtr);
-                lastFolderPtr = folderPtr;
+                string s = pm.ReadSharpString(folderPtr);
+                if (s != null) BeatmapFolder = s;
             }
 
             IntPtr filenamePtr;
-            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_OsuFilename, out filenamePtr) && filenamePtr != lastFilenamePtr)
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_OsuFilename, out filenamePtr))
             {
-                BeatmapOsuFilename = pm.ReadSharpString(filenamePtr);
-                lastFilenamePtr = filenamePtr;
+                string s = pm.ReadSharpString(filenamePtr);
+                if (s != null) BeatmapOsuFilename = s;
             }
 
             IntPtr diffNamePtr;
-            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_DifficultyName, out diffNamePtr) && diffNamePtr != lastDiffNamePtr)
+            if (pm.ReadPointer(beatmapPtr + Offsets.Beatmap_DifficultyName, out diffNamePtr))
             {
-                BeatmapDifficultyName = pm.ReadSharpString(diffNamePtr);
-                lastDiffNamePtr = diffNamePtr;
+                string s = pm.ReadSharpString(diffNamePtr);
+                if (s != null) BeatmapDifficultyName = s;
             }
         }
 

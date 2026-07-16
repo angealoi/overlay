@@ -76,6 +76,9 @@ namespace OsuEnlightenOverlay.Overlay
         volatile bool pendingBeatmapApply = false;
         BeatmapData pendingBeatmapData;
         DifficultyValues pendingDifficultyData;
+        // E6: 이 파싱이 대상으로 삼은 맵 키(folder/filename). 완료 시점에 맵이 이미 바뀌었으면
+        //     낡은 결과를 버린다. pendingBeatmapData와 동일하게 volatile 플래그 앞에서 쓴다.
+        string pendingBeatmapKey;
 
         public void ApplyFpsCap()
         {
@@ -450,18 +453,26 @@ namespace OsuEnlightenOverlay.Overlay
             string path = beatmapPath;
             bool verticalFlip = reader.IsHR;
             lastHR = verticalFlip;
+            // E5: GameField 크기/비율은 렌더 스레드에서 스냅샷해 캡처한다 — Task 안에서 직접
+            //     renderer.GameField를 읽으면 렌더 스레드의 Resize와 찢어진 쌍(새 Width+옛 Ratio)을
+            //     볼 수 있다. Width/Ratio 모두 float이므로 float으로 받는다(int면 절단됨).
+            float gfWidth = renderer.GameField.Width;
+            float gfRatio = renderer.GameField.Ratio;
+            // E6: 이 파싱이 어떤 맵을 위한 것인지 키를 함께 캡처 — 완료 시 맵이 바뀌었으면 폐기.
+            string parseKey = reader.BeatmapFolder + "/" + reader.BeatmapOsuFilename;
 
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
                     var parsed = BeatmapParser.Parse(path, verticalFlip);
-                    var diff = DifficultyCalculator.Calculate(parsed, renderer.GameField.Width, renderer.GameField.Ratio);
+                    var diff = DifficultyCalculator.Calculate(parsed, gfWidth, gfRatio);
 
                     // 렌더 스레드에서 적용 — Invoke 대신 pendingBeatmap 데이터 전달
                     // (렌더 스레드가 GL 컨텍스트를 소유하므로 Invoke로 UI 스레드에서 GL 작업 불가)
                     pendingBeatmapData = parsed;
                     pendingDifficultyData = diff;
+                    pendingBeatmapKey = parseKey;
                     pendingBeatmapApply = true;
                 }
                 catch (Exception ex)
@@ -648,7 +659,21 @@ namespace OsuEnlightenOverlay.Overlay
             if (pendingBeatmapApply)
             {
                 pendingBeatmapApply = false;
-                if (pendingBeatmapData != null)
+                // E6: 파싱 중 맵이 바뀌었으면(현재 맵 키 ≠ 파싱 대상 키) 낡은 결과를 버린다.
+                //     folder·filename 둘 다 유효할 때만 판정한다 — 찢어진 read로 한쪽이 비면
+                //     같은 맵의 유효 결과를 오폐기해 영구 blank가 될 수 있다.
+                string currentKey = reader.BeatmapFolder + "/" + reader.BeatmapOsuFilename;
+                bool staleParse = !string.IsNullOrEmpty(reader.BeatmapFolder)
+                                  && !string.IsNullOrEmpty(reader.BeatmapOsuFilename)
+                                  && pendingBeatmapKey != currentKey;
+                if (staleParse)
+                {
+                    // 맵 전환됨 — 적용하지 않는다(화면의 현재 맵/난이도는 그대로 유지).
+                    // lastBeatmapFolder가 아직 옛 맵이라 다음 틱에 새 맵이 재파싱된다(자가 치유).
+                    Console.WriteLine("[Beatmap] 낡은 파싱 결과 폐기 (파싱=" + pendingBeatmapKey
+                        + " 현재=" + currentKey + ")");
+                }
+                else if (pendingBeatmapData != null)
                 {
                     currentBeatmap = pendingBeatmapData;
                     // Difficulty Changer 오버라이드 + 현재 mod를 반영해 계산한다.

@@ -47,13 +47,20 @@ namespace OsuEnlightenOverlay.Memory
         public int ProcessId { get; private set; }
         public bool IsOpen { get { return Handle != IntPtr.Zero; } }
 
-        int bytesRead; // out _ 대체용
-
-        // 재사용 버퍼 — 매번 new byte[] 할당 방지
-        byte[] buf4 = new byte[4];
-        byte[] buf2 = new byte[2];
-        byte[] buf1 = new byte[1];
-        byte[] buf8 = new byte[8];
+        // 재사용 버퍼 — 매번 new byte[] 할당 방지.
+        // [ThreadStatic]로 스레드마다 독립 버퍼를 준다: 여러 스레드가 동시에 Read*를 불러도
+        // 서로의 버퍼를 덮어쓰지 않는다 (E1 — 잠복 결함). 현재는 모든 호출이 UI 스레드지만,
+        // 누가 Task에서 Read* 하나만 불러도 조용히 값이 섞이던 위험을 구조적으로 제거한다.
+        // (인스턴스 필드엔 [ThreadStatic]가 안 먹으므로 static + 지연 초기화 — AobScanner의
+        //  sharedBuffer와 동일 패턴. out 카운트(bytesRead)는 각 메서드의 로컬로 옮겼다.)
+        [ThreadStatic] static byte[] tBuf4;
+        [ThreadStatic] static byte[] tBuf2;
+        [ThreadStatic] static byte[] tBuf1;
+        [ThreadStatic] static byte[] tBuf8;
+        static byte[] Buf4 { get { return tBuf4 ?? (tBuf4 = new byte[4]); } }
+        static byte[] Buf2 { get { return tBuf2 ?? (tBuf2 = new byte[2]); } }
+        static byte[] Buf1 { get { return tBuf1 ?? (tBuf1 = new byte[1]); } }
+        static byte[] Buf8 { get { return tBuf8 ?? (tBuf8 = new byte[8]); } }
 
         /// <summary>
         /// 커밋된 **실행 가능** 영역만 순회 — AOB 코드 시그니처 스캔 전용.
@@ -155,7 +162,8 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadBytes(IntPtr address, byte[] buffer, int size)
         {
-            return ReadProcessMemory(Handle, address, buffer, size, out bytesRead);
+            int read;
+            return ReadProcessMemory(Handle, address, buffer, size, out read);
         }
 
         public static int GetInt32(byte[] buf, int offset)
@@ -193,12 +201,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadInt32(IntPtr address, out int value)
         {
-            if (!ReadProcessMemory(Handle, address, buf4, 4, out bytesRead))
+            byte[] b = Buf4;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 4, out read))
             {
                 value = 0;
                 return false;
             }
-            value = BitConverter.ToInt32(buf4, 0);
+            value = BitConverter.ToInt32(b, 0);
             return true;
         }
 
@@ -207,12 +217,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadUInt32(IntPtr address, out uint value)
         {
-            if (!ReadProcessMemory(Handle, address, buf4, 4, out bytesRead))
+            byte[] b = Buf4;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 4, out read))
             {
                 value = 0;
                 return false;
             }
-            value = BitConverter.ToUInt32(buf4, 0);
+            value = BitConverter.ToUInt32(b, 0);
             return true;
         }
 
@@ -221,12 +233,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadFloat(IntPtr address, out float value)
         {
-            if (!ReadProcessMemory(Handle, address, buf4, 4, out bytesRead))
+            byte[] b = Buf4;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 4, out read))
             {
                 value = 0f;
                 return false;
             }
-            value = BitConverter.ToSingle(buf4, 0);
+            value = BitConverter.ToSingle(b, 0);
             return true;
         }
 
@@ -235,12 +249,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadDouble(IntPtr address, out double value)
         {
-            if (!ReadProcessMemory(Handle, address, buf8, 8, out bytesRead))
+            byte[] b = Buf8;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 8, out read))
             {
                 value = 0.0;
                 return false;
             }
-            value = BitConverter.ToDouble(buf8, 0);
+            value = BitConverter.ToDouble(b, 0);
             return true;
         }
 
@@ -249,12 +265,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadUInt16(IntPtr address, out ushort value)
         {
-            if (!ReadProcessMemory(Handle, address, buf2, 2, out bytesRead))
+            byte[] b = Buf2;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 2, out read))
             {
                 value = 0;
                 return false;
             }
-            value = BitConverter.ToUInt16(buf2, 0);
+            value = BitConverter.ToUInt16(b, 0);
             return true;
         }
 
@@ -263,12 +281,14 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadByte(IntPtr address, out byte value)
         {
-            if (!ReadProcessMemory(Handle, address, buf1, 1, out bytesRead))
+            byte[] b = Buf1;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 1, out read))
             {
                 value = 0;
                 return false;
             }
-            value = buf1[0];
+            value = b[0];
             return true;
         }
 
@@ -277,13 +297,15 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public bool ReadPointer(IntPtr address, out IntPtr value)
         {
-            if (!ReadProcessMemory(Handle, address, buf4, 4, out bytesRead))
+            byte[] b = Buf4;
+            int read;
+            if (!ReadProcessMemory(Handle, address, b, 4, out read))
             {
                 value = IntPtr.Zero;
                 return false;
             }
             // unchecked: 0x80000000+ 주소가 Int32.MaxValue 초과로 오버플로 방지
-            value = new IntPtr(unchecked((int)BitConverter.ToUInt32(buf4, 0)));
+            value = new IntPtr(unchecked((int)BitConverter.ToUInt32(b, 0)));
             return true;
         }
 

@@ -228,7 +228,16 @@ namespace OsuEnlightenOverlay.Memory
         /// </summary>
         public static IntPtr ResolveSlot(ProcessMemory pm, AobSignature sig, AobScanRequest req)
         {
-            IntPtr match = req.First;
+            return ResolveSlotAt(pm, sig, req.First);
+        }
+
+        /// <summary>
+        /// 특정 매치 위치에서 static field slot을 해석. ResolveSlot과 동일한 수식이지만
+        /// 첫 매치가 아니라 임의 매치를 대상으로 한다 — 다중 매치를 검증해 올바른 slot을
+        /// 고르는 E2 방어에서 사용.
+        /// </summary>
+        public static IntPtr ResolveSlotAt(ProcessMemory pm, AobSignature sig, IntPtr match)
+        {
             if (match == IntPtr.Zero)
                 return IntPtr.Zero;
 

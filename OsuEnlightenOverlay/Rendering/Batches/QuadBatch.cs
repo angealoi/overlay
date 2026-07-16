@@ -20,6 +20,18 @@ namespace OsuEnlightenOverlay.Rendering.Batches
         int vboId;
         bool vboInitialized;
 
+        // 현재 드로우 패스에서 쓰는 셰이더. 배치가 가득 차 Add 중간에 자동 flush될 때(E3)
+        // Flush(null)이면 셰이더가 바인딩돼 있어도 fixed-function 경로로 그려 ~10,900쿼드
+        // 초과분이 잘못 렌더된다. 소비자(SpriteManager)가 패스 시작에 이 값을 세팅해
+        // 오버플로 flush도 같은 셰이더를 쓰게 한다. 기본 null이면 예전과 동일(폴백).
+        Shader activeShader;
+
+        /// <summary>드로우 패스에서 사용할 셰이더 지정 — 오버플로 자동 flush가 이를 사용.</summary>
+        public void SetActiveShader(Shader shader)
+        {
+            activeShader = shader;
+        }
+
         public QuadBatch()
         {
             vertexData = new float[MAX_VERTICES * 8];
@@ -43,7 +55,8 @@ namespace OsuEnlightenOverlay.Rendering.Batches
         {
             if (vertexCount + 6 > MAX_VERTICES)
             {
-                Flush(null);
+                // 셰이더 바인딩 상태를 보존하며 flush (E3) — null이면 fixed-function 폴백.
+                Flush(activeShader);
             }
 
             float scale = spriteScale;
