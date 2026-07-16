@@ -63,11 +63,55 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
-        /// 여러 패턴을 **한 번의 메모리 패스**로 스캔. 결과는 각 request.Results에 담긴다.
+        /// 여러 패턴을 스캔. 결과는 각 request.Results에 담긴다.
+        ///
+        /// 2단계 폴백(D1 후속):
+        ///   1단계 — PRIVATE(JIT 코드 힙) 실행 영역만 스캔. osu!는 이 메서드들을 런타임 JIT하므로
+        ///           보통 여기서 전부 찾는다. 실행 영역 전체 대비 크게 줄어 ~40배 빠르다.
+        ///   2단계 — 1단계에서 **하나도 못 찾은 패턴**만, 나머지 실행 영역(IMAGE/MAPPED = ngen/
+        ///           ReadyToRun 네이티브 이미지)에서 다시 찾는다.
+        /// 두 단계의 합집합은 "실행 가능한 모든 영역"이라, ngen되어 코드가 IMAGE로 가더라도
+        /// 침묵 실패하지 않는다("PRIVATE만 스캔"의 41배는 취하되 정답성은 물리 법칙에 의존).
         /// </summary>
         public static void ScanBatch(ProcessMemory pm, IList<AobScanRequest> requests)
         {
             if (requests == null || requests.Count == 0) return;
+
+            // VirtualQueryEx는 한 번만 — 두 단계가 같은 영역 목록을 공유한다.
+            var regions = new List<ProcessMemory.MemoryRegion>(pm.EnumerateExecutableRegions());
+
+            // 1단계: PRIVATE(JIT) 영역만
+            ScanPass(pm, requests, regions, wantPrivate: true);
+
+            // 1단계에서 매치가 하나도 없는 요청만 추린다.
+            // (첫-매치 요청이면 Done, 전체-매치 요청이면 Results가 채워졌는지로 판정 — 둘 다 Results.Count.)
+            List<AobScanRequest> unresolved = null;
+            for (int r = 0; r < requests.Count; r++)
+            {
+                if (requests[r].Results.Count == 0)
+                {
+                    if (unresolved == null) unresolved = new List<AobScanRequest>();
+                    unresolved.Add(requests[r]);
+                }
+            }
+
+            if (unresolved == null)
+                return; // 흔한 경로 — 전부 PRIVATE에서 찾음, IMAGE는 안 훑는다
+
+            // 2단계: 나머지 실행 영역(IMAGE/MAPPED)에서 미해결 패턴만
+            Console.WriteLine("[AOB] PRIVATE 스캔 후 미해결 " + unresolved.Count + "/" + requests.Count
+                + " → IMAGE/MAPPED 폴백");
+            ScanPass(pm, unresolved, regions, wantPrivate: false);
+        }
+
+        /// <summary>
+        /// 요청들을 지정한 영역 종류(PRIVATE 또는 그 외)에서 한 패스로 스캔.
+        /// 버킷·프리필터는 넘겨받은 요청 집합에서만 만든다 — 폴백 시 미해결 패턴만 대상.
+        /// </summary>
+        static void ScanPass(ProcessMemory pm, IList<AobScanRequest> requests,
+            List<ProcessMemory.MemoryRegion> regions, bool wantPrivate)
+        {
+            if (requests.Count == 0) return;
 
             // 첫 고정 바이트로 버킷팅.
             // 실측(osu! 441MB): 전체 메모리 읽기는 ~24ms인데 패턴 하나를 훑는 매칭이 ~260ms다.
@@ -111,8 +155,13 @@ namespace OsuEnlightenOverlay.Memory
 
             // 코드 시그니처는 실행 가능 페이지에만 있으므로 데이터/GC 힙은 훑지 않는다 (D1 후속).
             // 실측: 읽기 가능 전부(809MB) → 실행 가능만(250MB), 매치 누락 0.
-            foreach (ProcessMemory.MemoryRegion region in pm.EnumerateExecutableRegions())
+            // 이 패스는 그중 wantPrivate로 지정된 종류(PRIVATE 또는 IMAGE/MAPPED)만 훑는다.
+            for (int ri = 0; ri < regions.Count; ri++)
             {
+                ProcessMemory.MemoryRegion region = regions[ri];
+                if (region.IsPrivate != wantPrivate)
+                    continue;
+
                 // 남은 요청이 없으면 더 읽을 이유가 없다
                 bool anyPending = false;
                 for (int r = 0; r < requests.Count; r++)

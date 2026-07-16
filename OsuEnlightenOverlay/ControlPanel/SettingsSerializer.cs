@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -30,8 +31,17 @@ namespace OsuEnlightenOverlay.ControlPanel
         public static void Load(OverlaySettings settings)
         {
             string path = ConfigPath;
-            if (!File.Exists(path)) return;
+            // 파일이 없으면 GetPrivateProfileString이 기본값을 돌려주므로 읽기는 그대로 진행해도
+            // 무해하다 — 값은 defaults 그대로 남고, 마지막 Normalize()가 항상 돈다.
+            if (File.Exists(path))
+                LoadFromFile(settings, path);
 
+            // 손상/범위 밖/비정상 값을 안전 범위로 강제 — 이게 없으면 ini 값 하나로 기동 불능 (A1).
+            settings.Normalize();
+        }
+
+        static void LoadFromFile(OverlaySettings settings, string path)
+        {
             // [Overlay]
             settings.Enabled = ReadBool(path, "Overlay", "Enabled", settings.Enabled);
             settings.CaptureBlocked = ReadBool(path, "Overlay", "CaptureBlocked", settings.CaptureBlocked);
@@ -135,17 +145,30 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         static int ReadInt(string path, string section, string key, int defaultVal)
         {
-            string val = ReadString(path, section, key, defaultVal.ToString());
+            // InvariantCulture 고정 — settings.ini는 기계 데이터라 로케일과 무관해야 한다 (A4).
+            string val = ReadString(path, section, key, defaultVal.ToString(CultureInfo.InvariantCulture));
             int result;
-            if (int.TryParse(val, out result)) return result;
+            if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out result)) return result;
             return defaultVal;
         }
 
         static float ReadFloat(string path, string section, string key, float defaultVal)
         {
-            string val = ReadString(path, section, key, defaultVal.ToString("F2"));
+            // 1차: InvariantCulture + NumberStyles.Float 고정 (A4). 이게 없으면 ',' 소수점 로케일에서
+            // "9.20"이 920으로 읽혀 범위를 벗어난다. '.'로 쓰인 값은 어느 로케일에서든 여기서 맞게 읽힌다.
+            string val = ReadString(path, section, key, defaultVal.ToString("F2", CultureInfo.InvariantCulture));
             float result;
-            if (float.TryParse(val, out result)) return result;
+            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out result)
+                && !float.IsNaN(result) && !float.IsInfinity(result))
+                return result;
+
+            // 2차(하위호환): 구버전이 현재 로케일로 저장한 ini(예: de-DE의 "1,50")를 복구한다.
+            // NumberStyles.Float(천단위 구분자 불허)를 유지하므로 '.' 로케일에서 "9,20"이 920으로
+            // 오독되지 않고 그냥 실패해 기본값으로 간다 — A4 수정을 되돌리지 않는다.
+            if (float.TryParse(val, NumberStyles.Float, CultureInfo.CurrentCulture, out result)
+                && !float.IsNaN(result) && !float.IsInfinity(result))
+                return result;
+
             return defaultVal;
         }
 
@@ -161,12 +184,13 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         static void WriteInt(string path, string section, string key, int val)
         {
-            WritePrivateProfileString(section, key, val.ToString(), path);
+            WritePrivateProfileString(section, key, val.ToString(CultureInfo.InvariantCulture), path);
         }
 
         static void WriteFloat(string path, string section, string key, float val)
         {
-            WritePrivateProfileString(section, key, val.ToString("F2"), path);
+            // InvariantCulture 고정 — 로케일과 무관하게 항상 '.' 소수점으로 기록 (A4).
+            WritePrivateProfileString(section, key, val.ToString("F2", CultureInfo.InvariantCulture), path);
         }
     }
 }
