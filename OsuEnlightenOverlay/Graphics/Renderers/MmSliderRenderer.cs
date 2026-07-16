@@ -289,11 +289,19 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
         /// FBO에 blend OFF로 렌더링 → pSprite로 반환 (SpriteManager가 합성).
         /// out fboTarget: 생성된 RenderTarget2D (호출자가 Dispose 책임).
         /// </summary>
+        /// <summary>
+        /// 바디를 FBO에 그린다.
+        /// drawLeft/Top/Width/Height는 **전체 커브 기준 고정 영역**이라 스네이킹 중에도 변하지 않는다.
+        /// 덕분에 fboTarget과 bodySprite를 재사용할 수 있다 — 예전에는 진행도 1/30마다 FBO를
+        /// 새로 만들고 부숴서 VRAM 할당/해제가 초당 수백 번 일어났다 (D3).
+        /// fboTarget/bodySprite가 null이면 만들고, 아니면 내용만 다시 그린다.
+        /// </summary>
         public pSprite Draw(List<Line> lineList, float globalRadius, int colourIndex,
             Matrix4 projectionMatrix, int startTime, int endTime, int preEmpt, int fadeIn,
-            out RenderTarget2D fboTarget)
+            float drawLeft, float drawTop, float drawWidth, float drawHeight,
+            ref RenderTarget2D fboTarget, pSprite bodySprite)
         {
-            if (lineList.Count == 0) { fboTarget = null; return null; }
+            if (lineList.Count == 0) return bodySprite;
 
             // 색상 인덱스 → 텍스처
             Color colour;
@@ -311,31 +319,18 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
                 textureCache[cacheKey] = texId;
             }
 
-            // ── bounding box 계산 — osu! stable SliderOsu.Draw() ──
-            float minX = float.MaxValue, minY = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue;
-
-            foreach (Line l in lineList)
-            {
-                minX = Math.Min(minX, Math.Min(l.p1.X, l.p2.X));
-                minY = Math.Min(minY, Math.Min(l.p1.Y, l.p2.Y));
-                maxX = Math.Max(maxX, Math.Max(l.p1.X, l.p2.X));
-                maxY = Math.Max(maxY, Math.Max(l.p1.Y, l.p2.Y));
-            }
-
-            float excess = globalRadius * 1.15f;
-
-            float drawLeft = minX - excess;
-            float drawTop = minY - excess;
-            float drawWidth = (maxX - minX) + globalRadius * 2.3f;
-            float drawHeight = (maxY - minY) + globalRadius * 2.3f;
+            // bounding box는 호출자가 전체 커브 기준으로 계산해서 넘긴다 (D3).
+            // 여기서 lineList로 계산하면 스네이킹마다 크기가 달라져 FBO를 재사용할 수 없다.
 
             // NPOT 텍스처 — desktop GL 지원, POT 불필요
             int fboWidth = Math.Max(1, (int)Math.Ceiling(drawWidth));
             int fboHeight = Math.Max(1, (int)Math.Ceiling(drawHeight));
 
             // FBO 생성 (depth buffer 포함) — osu! stable: new RenderTarget2D(texture, DepthComponent16)
-            RenderTarget2D target = new RenderTarget2D(fboWidth, fboHeight, true, false);
+            // 이미 있으면 재사용 — 크기가 고정이라 내용만 다시 그리면 된다.
+            if (fboTarget == null)
+                fboTarget = new RenderTarget2D(fboWidth, fboHeight, true, false);
+            RenderTarget2D target = fboTarget;
 
             target.Bind();
 
@@ -352,6 +347,11 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             DrawOGL(lineList, globalRadius, texId, fboProj);
 
             target.Unbind();
+
+            // 스프라이트는 위치·크기·페이드가 전부 고정이라 한 번만 만들면 된다.
+            // FBO 텍스처 id도 그대로이므로 내용만 갱신되면 화면에 반영된다 (D3).
+            if (bodySprite != null)
+                return bodySprite;
 
             // ── pSprite 생성 — osu! stable: sliderBody.Texture = FBO 텍스처 ──
             // pTexture 래퍼 생성 — Width/Height를 drawWidth/drawHeight로 설정
@@ -399,7 +399,6 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
                     EasingTypes.None));
             }
 
-            fboTarget = target;
             return sliderBody;
         }
 

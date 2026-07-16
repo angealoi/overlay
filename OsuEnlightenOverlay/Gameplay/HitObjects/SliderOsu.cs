@@ -60,10 +60,47 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         int comboColourIndex;
         Color comboColour;
 
-        // FBO 캐싱 — snaking progress가 변경되었을 때만 재생성
+        // FBO 캐싱 — snaking progress가 변경되었을 때만 내용 재생성
         float cachedProgress = -1;
         pSprite cachedBodySprite;
         RenderTarget2D cachedFbo;
+
+        // 바디 FBO 영역 — **전체 커브 기준**이라 스네이킹 중 변하지 않는다.
+        // 진행도마다 크기가 달라지면 FBO를 매번 새로 만들어야 하고, 그러면 VRAM
+        // 할당/해제가 초당 수백 번 일어난다 (D3).
+        bool bodyBoundsValid;
+        float bodyDrawLeft, bodyDrawTop, bodyDrawWidth, bodyDrawHeight;
+        float bodyBoundsRatio = -1, bodyBoundsRadius = -1;
+
+        /// <summary>
+        /// 전체 커브를 감싸는 화면 좌표 박스. 병합된 선분은 커브 점들을 잇는 직선이라
+        /// 언제나 이 박스 안에 들어간다(볼록껍질) — 스네이킹 진행도와 무관하게 안전한 상한.
+        /// </summary>
+        void ComputeBodyBounds(GameField gameField, float radius)
+        {
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+
+            foreach (Line l in curvePath)
+            {
+                Vector2 a = gameField.FieldToDisplay(l.p1);
+                Vector2 b = gameField.FieldToDisplay(l.p2);
+                minX = Math.Min(minX, Math.Min(a.X, b.X));
+                minY = Math.Min(minY, Math.Min(a.Y, b.Y));
+                maxX = Math.Max(maxX, Math.Max(a.X, b.X));
+                maxY = Math.Max(maxY, Math.Max(a.Y, b.Y));
+            }
+
+            float excess = radius * 1.15f;
+            bodyDrawLeft = minX - excess;
+            bodyDrawTop = minY - excess;
+            bodyDrawWidth = (maxX - minX) + radius * 2.3f;
+            bodyDrawHeight = (maxY - minY) + radius * 2.3f;
+
+            bodyBoundsRatio = gameField.Ratio;
+            bodyBoundsRadius = radius;
+            bodyBoundsValid = true;
+        }
 
         public Vector2 EndPosition { get; private set; }
 
@@ -578,8 +615,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             foreach (HitCircleSliderEnd endCircle in endCircles)
                 endCircle.ModifyPosition(change);
 
-            // 바디 FBO는 커브 좌표로 구워져 있다 — 무효화해서 다시 굽게 한다
+            // 바디 FBO는 커브 좌표로 구워져 있다 — 무효화해서 다시 굽게 한다.
+            // 커브가 옮겨졌으니 FBO 영역(bodyDraw*)도 다시 계산해야 한다.
             cachedProgress = -1;
+            bodyBoundsValid = false;
         }
 
         /// <summary>
@@ -659,6 +698,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
             cachedBodySprite = null;
             cachedProgress = -1;
+            bodyBoundsValid = false;
         }
 
         /// <summary>
@@ -790,23 +830,26 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // lineList 구성 — snaking progress까지의 선분만
             // FBO 캐싱: progress가 변경되었을 때만 재생성
             // 스터터링 방지: progress를 1/30 단위로 양자화 — FBO 재생성 빈도 대폭 감소
+            // 반경 — HitObjectRadius * GameField.Ratio (화면 좌표)
+            float bodyRadius = difficulty.HitObjectRadius * gameField.Ratio;
+
+            // FBO 영역은 전체 커브 기준으로 한 번만 계산한다. 해상도(Ratio)나 CS(radius)가
+            // 바뀌면 크기가 달라지므로 그때만 FBO/스프라이트를 버리고 다시 만든다 (D3).
+            if (!bodyBoundsValid || bodyBoundsRatio != gameField.Ratio || bodyBoundsRadius != bodyRadius)
+            {
+                if (cachedBodySprite != null) { sm.Remove(cachedBodySprite); cachedBodySprite = null; }
+                if (cachedFbo != null) { cachedFbo.Dispose(); cachedFbo = null; }
+                cachedProgress = -1;
+                ComputeBodyBounds(gameField, bodyRadius);
+            }
+
             float quantizedProgress = (float)Math.Round(progress * 30) / 30f;
             bool needsRebuild = cachedProgress != quantizedProgress || cachedBodySprite == null;
 
             if (needsRebuild)
             {
-                // 이전 스프라이트를 SpriteManager에서 제거 (cachedBodySprite가 null이 되기 전에)
-                if (cachedBodySprite != null)
-                    sm.Remove(cachedBodySprite);
-
-                // 이전 FBO 삭제 — RenderTarget2D가 텍스처/FBO/렌더버퍼 모두 정리
-                if (cachedFbo != null)
-                {
-                    cachedFbo.Dispose();
-                    cachedFbo = null;
-                }
-                cachedBodySprite = null;
-
+                // FBO와 스프라이트는 그대로 두고 내용만 다시 그린다 — 예전에는 여기서
+                // 스프라이트를 SpriteManager에서 빼고 FBO를 Dispose한 뒤 새로 만들었다.
                 cachedProgress = quantizedProgress;
 
                 // osu! stable: 선분 병합 최적화 + cumulativeLengths 기반 분할
@@ -887,9 +930,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 screenLines.Add(new Graphics.Primitives.Line(p1Screen, p2Screen));
             }
 
-            // 반경 — HitObjectRadius * GameField.Ratio (화면 좌표)
-            float radius = difficulty.HitObjectRadius * gameField.Ratio;
-
             // 색상 인덱스 — SliderTrackOverride 확인
             int colourIndex;
             Color trackOverride = SkinManager.LoadColour("SliderTrackOverride");
@@ -904,8 +944,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
 
             // osu! stable: FBO에 렌더링 → pSprite 반환 → SpriteManager가 합성
-                cachedBodySprite = renderer.Draw(screenLines, radius, colourIndex, projectionMatrix,
-                    data.StartTime, virtualEndTime, difficulty.PreEmpt, difficulty.FadeIn, out cachedFbo);
+                cachedBodySprite = renderer.Draw(screenLines, bodyRadius, colourIndex, projectionMatrix,
+                    data.StartTime, virtualEndTime, difficulty.PreEmpt, difficulty.FadeIn,
+                    bodyDrawLeft, bodyDrawTop, bodyDrawWidth, bodyDrawHeight,
+                    ref cachedFbo, cachedBodySprite);
             }
 
             // 캐시된 pSprite를 SpriteManager에 추가
