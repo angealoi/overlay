@@ -32,6 +32,8 @@
 | 2026-07-16 | **D1~D5 전부**: AOB 매칭 버킷팅+unsafe · HOM syscall 폭발 · 스네이킹 FBO 재사용 · SpriteManager 제거 · 에러바 할당 | `f4d21e0` `f13a42a` `2595e40` `77aa70d` | **실측**: 기동 스캔 2568→1117ms(2.3배), 커서 재스캔 1505→753ms(2.0배), gen0 128→3회. slot 주소 구버전과 완전 일치 |
 | 2026-07-16 | **D1 3탄**: 실행 영역 한정 + 2바이트 프리필터 | `1fbf691` | Initialize 15배·커서 재스캔 8배 누적(원본 대비). slot 주소 완전 일치 |
 | 2026-07-17 | **D1 4탄**: PRIVATE(JIT) 우선 스캔 + IMAGE/MAPPED 폴백 (2단계) | `cc6323a` | 실기 확인 — 폴백 로그 미발생(=PRIVATE에서 전량 해결). ngen돼도 IMAGE 폴백이 받아 침묵 실패 없음 |
+| 2026-07-17 | **A1**: 손상된 settings.ini 값 하나로 기동 불능 (범위 밖 `.Value`·NaN 캐스트·경로 문자·null 스킨 폴더·쓰기 불가 폴더) | `fcfc0ff` | 감사+적대적 리뷰 워크플로 전수 검증. **실기 확인** — 전 트리거 동시 주입 ini로 정상 기동(값 살균 확인) |
+| 2026-07-17 | **A4**: 문화권 의존 직렬화 → InvariantCulture 고정 (+ 구파일 현재-로케일 폴백) | `fcfc0ff` | 적대적 리뷰로 로케일 라운드트립·구파일 회귀 검증 |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -54,15 +56,14 @@
 
 ## A. 크래시 가능
 
-### A1. settings.ini 값 하나로 기동 불능 ⚠️ 최우선
+### ~~A1. settings.ini 값 하나로 기동 불능~~ ✅ 해결 (`fcfc0ff`)
 | | |
 |---|---|
-| 위치 | `ControlPanel/ControlPanelForm.cs:451, 460, 136, 217, 581` |
-| 증상 | 범위 밖 INI 값이 있으면 생성자에서 예외 → 패널이 메인 폼이라 **앱이 아예 안 뜸** |
-| 트리거 | `AR=15`, `FpsCap=-1`, `Size=0`, `AR=NaN` 등 손편집/손상된 INI. `:581 CreateDirectory`는 쓰기 불가 폴더에서 동일 |
-| 비고 | INI를 지우기 전까지 복구 불가. A4(문화권)와 결합하면 사용자 잘못 없이도 발생 |
-
-`tb.Value = (int)(value * 10)` — TrackBar/NumericUpDown의 Min/Max 밖 값 대입은 예외를 던진다. 로드 직후 클램프가 없다.
+| ~~증상~~ | ~~범위 밖/손상 INI 값이 생성자에서 예외 → 패널이 메인 폼이라 앱이 아예 안 뜸~~ → `OverlaySettings.Normalize()`가 로드값을 안전 범위로 강제(`Load()` 끝에서 **항상** 호출) + 컨트롤 대입·IO 방어 |
+| ~~트리거~~ | ~~`FpsCap=-1`, `Size=0/NaN`, `AR=NaN`, `DtAR=Infinity`, `Name=bad\|name`, 쓰기 불가 폴더~~ → 전부 무해화 |
+| 수정 | ① 범위 클램프 + NaN/Infinity 살균 ② 컨트롤 Min/Max를 `OverlaySettings` 상수로 일원화(Normalize와 동일 출처 — 분리되면 재발) ③ `nudFpsCap`/`nudCursorSize`/`AddValueRow`의 `(decimal)` 캐스트 방어(NaN은 `Math.Min/Max`를 통과해 캐스트에서 OverflowException) ④ 스킨/커서팩 이름 경로안전화(불법 문자·`.`/`..` 거부) ⑤ `CreateDirectory`/`GetDirectories` try/catch ⑥ `SkinManager.LoadSkin` null 폴더 → 임베디드 기본 |
+| 비고 | `d79570d`가 난이도 행(451·460)만 선(先)클램프했었고, 이번에 FpsCap·CursorSize·NaN·경로·IO·null 스킨 폴더까지 완결. A4와 함께라 사용자 잘못 없이도 나던 경로도 차단 |
+| 검증 | 감사 워크플로(전 크래시 지점 열거) → 적대적 리뷰 워크플로(verify 포함)로 3건 추가 발견·수정: null 스킨 폴더 크래시·`..` 경로탈출·구파일 로케일 회귀. **실기 확인 완료** |
 
 ### A2. 텍스처 없는 스킨에서 판정 오는 순간 NullReferenceException
 | | |
@@ -80,12 +81,12 @@
 | 트리거 | sliderb / sliderfollowcircle이 유저 스킨에도 임베디드 기본 스킨에도 없는 경우 |
 | 비고 | followpoint 호출부(`HitObjectManagerOsu.cs:463`)만 null 체크함 — 호출부마다 다름 |
 
-### A4. 문화권 의존 직렬화
+### ~~A4. 문화권 의존 직렬화~~ ✅ 해결 (`fcfc0ff`)
 | | |
 |---|---|
-| 위치 | `ControlPanel/SettingsSerializer.cs:146, 169` |
-| 증상 | `float.TryParse`/`ToString("F2")`가 현재 로케일 사용. 소수점이 `,`인 로케일에서 `"9.20"` → **920**으로 읽힘 → A1 크래시 직행 |
-| 비고 | 한국어 로케일(`.`)에서는 무증상. `CultureInfo.InvariantCulture`로 통일해야 함 (BeatmapParser는 이미 Invariant 사용 중 — 여기만 빠짐) |
+| ~~증상~~ | ~~`float.TryParse`/`ToString("F2")`가 현재 로케일 사용 → ',' 로케일에서 "9.20"이 920으로 읽혀 A1 직행~~ → SettingsSerializer의 float/int I/O 전부 `CultureInfo.InvariantCulture` + `NumberStyles` 고정. '.'로 쓰인 값은 어느 로케일에서든 맞게 읽힘 |
+| 하위호환 | 구버전이 현재 로케일로 저장한 ini(예: de-DE "1,50")는 **현재-로케일 폴백 파싱**으로 복구. `NumberStyles.Float`(천단위 불허) 유지 → '.' 로케일에서 "9,20"이 920으로 오독되지 않고 실패→기본값 (A4 수정을 되돌리지 않음) |
+| 비고 | NaN/Infinity도 거부. BeatmapParser는 원래 Invariant였고 이번에 SettingsSerializer만 맞춤. (적대적 리뷰가 폴백 없으면 구파일 침묵 초기화됨을 발견 → 폴백 추가) |
 
 ### A5. 비트맵 Combo 색상 범위 초과
 | | |
@@ -430,7 +431,7 @@
 
 | 순위 | 항목 | 이유 |
 |---|---|---|
-| 1 | A1+A4 (INI 검증+Invariant) | 기동 불능은 최악의 실패 모드, 수정 저렴 |
+| ~~1~~ | ~~A1+A4 (INI 검증+Invariant)~~ | ✅ 해결 (`fcfc0ff`) — `Normalize()` + InvariantCulture + 폴백 |
 | 2 | B1 (슬라이더 FBO 누수) | 규모가 가장 큰 누수, 장시간 세션에서 확실히 악화 |
 | 3 | B2+B3 (커서팩/콤보숫자) | 같은 계열 누수, 함께 처리 |
 | 4 | D1 (AOB 버퍼 재사용) | 실측 1초 스톨, 전후 비교 검증 가능 |
