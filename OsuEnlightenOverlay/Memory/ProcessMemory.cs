@@ -43,6 +43,12 @@ namespace OsuEnlightenOverlay.Memory
         const uint PAGE_EXECUTE_READ = 0x20;
         const uint PAGE_EXECUTE_READWRITE = 0x40;
 
+        // 메모리 영역 Type — JIT 코드는 PRIVATE, ngen/ReadyToRun 네이티브 이미지는 IMAGE.
+        // 스캐너가 "PRIVATE만 우선 → 못 찾으면 IMAGE 폴백"을 나누는 기준.
+        public const uint MEM_IMAGE = 0x1000000;
+        public const uint MEM_MAPPED = 0x40000;
+        public const uint MEM_PRIVATE = 0x20000;
+
         public IntPtr Handle { get; private set; }
         public int ProcessId { get; private set; }
         public bool IsOpen { get { return Handle != IntPtr.Zero; } }
@@ -92,7 +98,8 @@ namespace OsuEnlightenOverlay.Memory
                         yield return new MemoryRegion
                         {
                             BaseAddress = new IntPtr(baseAddr),
-                            Size = new IntPtr(regionSize)
+                            Size = new IntPtr(regionSize),
+                            Type = mbi.Type
                         };
                     }
                 }
@@ -113,6 +120,9 @@ namespace OsuEnlightenOverlay.Memory
         {
             public IntPtr BaseAddress;
             public IntPtr Size;
+            public uint Type; // MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE
+
+            public bool IsPrivate { get { return Type == MEM_PRIVATE; } }
         }
 
         /// <summary>
