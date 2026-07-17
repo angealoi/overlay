@@ -38,7 +38,7 @@
 | 2026-07-17 | **A2·A3·A5**: 크래시 방어 3건 (깨진 스킨 `Arm()` NRE · `LoadAll` null · 콤보색 범위 초과) | `67e6a7f` | 적대적 리뷰(3 에이전트, fable5) 전수 검증 — 남은 크래시 지점 0, 정상 경로 회귀 0. 유효 맵은 클램프 항등이라 무변화. 빌드 통과(경고 0) |
 | 2026-07-17 | **C5·C6** (+C3 오탐 확인): z-플리커 안정 정렬(=H21) · 슬라이더 틱 NaN/무한루프 방어 | `07c396e` | 적대적 리뷰(2 에이전트, fable5) — 둘 다 hold, 정상 맵 항등. C3은 stable과 byte 동일이라 오탐(코드 무변경). 빌드 통과(경고 0) + **실기: 정상 플레이 무이상(공통 경로 회귀 확인)**. C6 degenerate/에일리언 맵 트리거는 미노출 |
 | 2026-07-17 | **C4 분석 + C6 후속**: C4 동일 StartTime 오매칭(편차 실재·실측 영향 극소·document-only) · C6 잔여 NaN(슬라이더 길이 NaN/Inf 파싱 차단) | `6063c3f` | 설계+적대적 리뷰(opus) — C4는 std 랭크맵 0개라 코드 보류(안전 fix 경로만 기록), C6-ball 렌즈가 찾은 Length-NaN 가드 추가. 빌드 통과(경고 0) |
-| 2026-07-17 | **포팅 충실도 H 배치 7건**: H7(v<8 틱)·H8(v≤8 스피너콤보)·H9(HD 틱페이드)·H10(old-layout 리버스화살표)·H12(스피너 AC 조건)·H13(스피너 turnRatio)·H15(followpoint Movement) | `d877dc8` | **codegraph로 오버레이+stable 동시 인덱싱** 후 triage(13건)→설계→적대적 리뷰(opus) 3단. 전부 stable 조건에 게이트돼 모던 경로 무변화. **triage가 H19를 오탐, H6를 자기교정으로 확정**. H11·H14·H16·H18은 보류(사유 기록). 빌드 통과(경고 0). 실기 확인 대기 |
+| 2026-07-17 | **포팅 충실도 H 배치 8건**: H7(v<8 틱)·H8(v≤8 스피너콤보)·H9(HD 틱페이드)·H10(old-layout 리버스화살표)·H12(스피너 AC 조건)·H13(스피너 turnRatio)·H15(followpoint Movement)·**H18(AC 소멸 타이밍)** | `d877dc8` `f69e76c` | **codegraph로 오버레이+stable 동시 인덱싱** 후 triage(13건)→설계→적대적 리뷰(opus) 3단. 전부 stable 조건에 게이트돼 모던 경로 무변화. **triage가 H19를 오탐, H6를 자기교정으로 확정**. H18은 "단순 제거"가 컬링 모델상 악화라 타이밍 교정으로 재작업+검증. H11·H14·H16만 보류. 빌드 통과(경고 0). 실기 확인 대기 |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -366,7 +366,7 @@
 | ~~H15~~ ✅ (`d877dc8`) | ~~**followpoint 등장**~~ | `IsDefault`일 때만 Scale + **Movement**(posStart→pos, Out) — `HitObjectManager.cs:1887-1891` | ~~Scale 무조건 + Movement 누락, `posStart` 데드코드~~ → `IsDefault` 게이트 + Movement 추가(데드 `posStart` 사용) |
 | H16 📋보류 | **sliderBall 회전+FlipVertical** | 진행 방향 회전 + 곡선 시작 각도 상하반전 — `SliderOsu.cs:796-800` | 없음. **triage: 회전과 flip은 분리 불가(flip만 넣으면 좌향 슬라이더서 뒤집힘). 기본/원형 sliderb엔 사실상 불가시, 비대칭 커스텀 sliderb만 — moderate, 후속** |
 | ~~H17~~ ✅ | ~~**glow flash 복귀**~~ → 해결 (`8a2442e`) | `FlashColour(White, 200)` — 200ms 후 파란색 복귀 — `SpinnerOsu.cs:386` | ~~White로 바꾸고 복귀 없음~~ → glow 전용 수동 보간(`ApplyGlowColour`). pSprite에 Colour 변환 지원이 없어 인프라 추가 대신 국소 처리 |
-| H18 📋보류 | **어프로치서클 소멸** | 생성 시 fade **없음**, `Arm()`에서만 (히트 즉시/미스 60ms) — `HitCircleOsu.cs:245,264` | 생성 시 `0.9→0` 하드코딩 근사. **설계 완료했으나 verify 미완(토큰 한도): 오버레이 sprite 컬링 모델이 stable과 달라 검증 없이 보편 경로 변경은 위험 — 보류** |
+| ~~H18~~ ✅ (`f69e76c`) | ~~**어프로치서클 소멸**~~ | AC는 판정 순간까지 0.9 유지, 미스는 `StartTime+HitWindow50`에 60ms 페이드 — `HitCircleOsu.cs:245,264` | ~~생성 시 `0.9→0 @ startTime→+60`(startTime을 미스 마감으로 오인 → 늦은 히트/미스서 AC 조기 소멸)~~ → 페이드를 `StartTime+HitWindow50`로 교정, EndTime 확장으로 Arm 변환 컬링 방지. **단순 제거(보류했던 설계)는 컬링 모델상 AC를 startTime에 하드컬해 악화 확인 → 타이밍 교정으로 선회.** 적대적 리뷰 2렌즈(컬링·공존/HD) hold |
 | ~~H19~~ ❌오탐 | ~~**Disarm 후 Scale 리셋**~~ → 결함 아님 | Disarm에서 `Scale=1`, `Text.Scale=TEXT_SIZE` — `HitCircleOsu.cs:223-225` | **triage: retry는 인스턴스 전체 재생성, `UpdateDifficulty`는 `Transformations.Clear`로 스케일 복원 → 잔존 불가능. stable은 지속 Scale 필드라 필요했지만 우리는 매 프레임 무상태 평가라 불필요** |
 | ~~H20~~ ✅ | ~~**스택 위치 재적용**~~ → 해결 (`8384faf`) | 범위 내 **전 객체** 무조건 `ModifyPosition` — `HitObjectManager.cs:1761-1765` | ~~`StackCount != 0`인 것만~~ → 무조건 적용 (C1/H23과 함께) |
 | ~~H21~~ ✅ | ~~**정렬 안정성**~~ → 해결 (`07c396e`, =C5) | `ListHelper.StableSort` — `HitObjectManager.cs:1240` | ~~`List.Sort`(불안정)~~ → `(Depth, StableOrder)` 전순서로 안정화 (C5와 동일) |
