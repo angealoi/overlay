@@ -334,7 +334,7 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
             float trailDpi = cursorTrailTexture.DpiScale;
             float trailDisplayW = cursorTrailTexture.Width / trailDpi;
 
-            Origins origin = cursorCentre ? Origins.Centre : Origins.TopLeft;
+            // (미사용 지역변수 origin 제거 — 실제 origin은 AddTrailParticle에서 계산, I-감사 #22)
 
             if (hasMiddle)
             {

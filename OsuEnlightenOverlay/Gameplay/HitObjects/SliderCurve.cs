@@ -113,37 +113,8 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             return cumulative;
         }
 
-        /// <summary>
-        /// 경로에서 특정 거리에 해당하는 위치 반환.
-        /// </summary>
-        public static Vector2 PositionAt(List<Line> path, List<double> cumulativeLengths, double distance)
-        {
-            if (path.Count == 0) return Vector2.Zero;
-            if (distance <= 0) return path[0].p1;
-            if (distance >= cumulativeLengths[cumulativeLengths.Count - 1])
-                return path[path.Count - 1].p2;
-
-            // 이진 탐색으로 해당 위치 찾기
-            int lo = 0, hi = cumulativeLengths.Count - 1;
-            while (lo < hi)
-            {
-                int mid = (lo + hi) / 2;
-                if (cumulativeLengths[mid] < distance)
-                    lo = mid + 1;
-                else
-                    hi = mid;
-            }
-
-            // lo는 distance >= cumulativeLengths[lo-1] 인 첫 번째 인덱스
-            if (lo > 0) lo--;
-
-            double prevDist = lo > 0 ? cumulativeLengths[lo - 1] : 0;
-            double lineDist = cumulativeLengths[lo] - prevDist;
-            double t = lineDist > 0 ? (distance - prevDist) / lineDist : 0;
-
-            Line l = path[lo];
-            return l.p1 + (l.p2 - l.p1) * (float)t;
-        }
+        // (PositionAt 제거 — 호출자가 없는 죽은 코드였고 이진탐색 뒤 lo-- 로 잘못된 세그먼트를
+        //  가리키는 버그도 있었음, I-감사 #21. 실제 볼 위치는 SliderOsu.PositionAtLength가 계산한다.)
 
         // ── Catmull Rom ──
 

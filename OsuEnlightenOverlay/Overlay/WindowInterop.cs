@@ -64,17 +64,8 @@ namespace OsuEnlightenOverlay.Overlay
         public const int IDC_SIZEALL = 32649;
         public static readonly IntPtr IDC_SIZEALL_Handle = LoadCursor(IntPtr.Zero, IDC_SIZEALL);
 
-        /// <summary>LParam에서 signed x 좌표 추출 (GET_X_LPARAM 대용).</summary>
-        public static int GetXLParam(IntPtr lParam)
-        {
-            return (short)(lParam.ToInt64() & 0xFFFF);
-        }
-
-        /// <summary>LParam에서 signed y 좌표 추출 (GET_Y_LPARAM 대용).</summary>
-        public static int GetYLParam(IntPtr lParam)
-        {
-            return (short)((lParam.ToInt64() >> 16) & 0xFFFF);
-        }
+        // (GetXLParam/GetYLParam 제거 — 호출자 없는 죽은 코드, I-감사 #25.
+        //  edit 마우스 처리는 WndProc LParam 파싱이 아니라 GetAsyncKeyState+GetCursorPos 폴링으로 전환됐다.)
 
         public const int LWA_ALPHA = 0x2;
         public const int LWA_COLORKEY = 0x1;
@@ -196,14 +187,9 @@ namespace OsuEnlightenOverlay.Overlay
         public const int HTTRANSPARENT = -1;
         public const int HTCLIENT = 1;
 
-        // ── edit mode 마우스 메시지 ──
-        public const int WM_SETCURSOR = 0x0020;
-        public const int WM_MOUSEACTIVATE = 0x0021;
-        public const int WM_MOUSEMOVE = 0x0200;
-        public const int WM_LBUTTONDOWN = 0x0201;
-        public const int WM_LBUTTONUP = 0x0202;
-        public const int MA_NOACTIVATE = 3;
-        public const int HTCAPTION = 2;
+        // (edit mode 마우스 메시지 상수 블록 제거 — WM_SETCURSOR/WM_MOUSEACTIVATE/WM_MOUSEMOVE/
+        //  WM_LBUTTONDOWN/WM_LBUTTONUP/MA_NOACTIVATE/HTCAPTION 전부 참조 0, I-감사 #25.
+        //  edit 마우스는 GetAsyncKeyState+GetCursorPos 폴링으로 전환됐다. SetCursor/IDC_SIZEALL은 사용 중이라 유지.)
 
         /// <summary>
         /// 오버레이 창의 확장 스타일 설정.

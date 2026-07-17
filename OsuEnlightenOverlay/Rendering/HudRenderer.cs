@@ -392,7 +392,7 @@ namespace OsuEnlightenOverlay.Rendering
             for (int i = 0; i < 4; i++)
             {
                 RectangleF r = HudRects[i];
-                if (r.Width < 0.0f) continue;  // 미렌더링
+                if (r.Width <= 0.0f) continue;  // 미렌더링(0폭 default rect 포함, I-감사 #24)
 
                 bool selected = (settings.HudEditSelected == i);
                 float left = r.X - pad;

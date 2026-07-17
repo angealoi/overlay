@@ -36,7 +36,8 @@ namespace OsuEnlightenOverlay.Skinning
     public class SkinOsu
     {
         // ── originalColours — osu! stable SkinOsu.originalColours ──
-        // skin.ini에 없으면 이 기본값 사용. Combo5~8은 투명(0,0,0,0).
+        // skin.ini에 없으면 이 기본값 사용. Combo5는 투명(0,0,0,0).
+        // stable은 Combo1~5만 담는다(SkinOsu.cs:14-29). Combo6~8은 stable에 없는 잉여값이라 제거함(I-감사 #27).
         private static Dictionary<string, Color> originalColours = new Dictionary<string, Color>()
         {
             { "Combo1",                Color.FromArgb(255, 192, 0) },
@@ -44,9 +45,6 @@ namespace OsuEnlightenOverlay.Skinning
             { "Combo3",                Color.FromArgb(18, 124, 255) },
             { "Combo4",                Color.FromArgb(242, 24, 57) },
             { "Combo5",                Color.FromArgb(0, 0, 0, 0) },
-            { "Combo6",                Color.FromArgb(0, 0, 0, 0) },
-            { "Combo7",                Color.FromArgb(0, 0, 0, 0) },
-            { "Combo8",                Color.FromArgb(0, 0, 0, 0) },
             { "MenuGlow",              Color.FromArgb(128, 128, 160) },
             { "SliderBall",            Color.FromArgb(2, 170, 255) },
             { "SliderBorder",          Color.FromArgb(255, 255, 255) },
