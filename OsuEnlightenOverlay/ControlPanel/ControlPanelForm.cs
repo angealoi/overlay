@@ -1,14 +1,92 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using OsuEnlightenOverlay.Overlay;
 
 namespace OsuEnlightenOverlay.ControlPanel
 {
     /// <summary>
+    /// 다크 테마 팔레트 — osu! 계열 플럼 배경 + 시그니처 핑크 액센트.
+    /// </summary>
+    internal static class Theme
+    {
+        public static readonly Color Bg          = Color.FromArgb(24, 20, 27);    // 폼 배경 (다크 플럼)
+        public static readonly Color Card        = Color.FromArgb(37, 32, 43);    // 섹션 카드
+        public static readonly Color Input       = Color.FromArgb(52, 45, 60);    // 입력 컨트롤 배경
+        public static readonly Color InputBorder = Color.FromArgb(74, 65, 84);    // 버튼/입력 테두리
+        public static readonly Color Text        = Color.FromArgb(233, 227, 239); // 본문 텍스트
+        public static readonly Color Muted       = Color.FromArgb(148, 138, 160); // 보조 텍스트
+        public static readonly Color Accent      = Color.FromArgb(255, 102, 170); // osu! 핑크
+        public static readonly Color AccentHover = Color.FromArgb(255, 133, 190);
+        public static readonly Color Green       = Color.FromArgb(120, 224, 143); // 연결됨 상태
+        public static readonly Color Hint        = Color.FromArgb(222, 184, 96);  // 단축키 힌트 (구 180,140,0의 다크 대응)
+        public static readonly Color BtnHover    = Color.FromArgb(68, 59, 78);
+        public static readonly Color BtnDown     = Color.FromArgb(44, 38, 51);
+    }
+
+    /// <summary>
+    /// 섹션 카드 — GroupBox 대체. 둥근 모서리(Region 클립) + 핑크 타이틀.
+    /// BackColor를 통째로 칠하므로 자식 컨트롤 투명 배경 문제가 없다.
+    /// </summary>
+    internal class Card : Panel
+    {
+        static readonly Font TitleFont = new Font("Segoe UI", 9f, FontStyle.Bold);
+        readonly string title;
+
+        public Card(string title, int x, int y, int width, int height)
+        {
+            this.title = title;
+            Location = new Point(x, y);
+            Size = new Size(width, height);
+            BackColor = Theme.Card;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            UpdateRegion();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            UpdateRegion();
+        }
+
+        void UpdateRegion()
+        {
+            // 둥근 모서리 — 카드/배경이 둘 다 어두워 Region 클립의 계단 현상은 안 보인다.
+            const int r = 10;
+            using (GraphicsPath path = RoundedRect(new Rectangle(0, 0, Width, Height), r))
+                Region = new Region(path);
+        }
+
+        static GraphicsPath RoundedRect(Rectangle b, int r)
+        {
+            int d = r * 2;
+            GraphicsPath p = new GraphicsPath();
+            p.AddArc(b.X, b.Y, d, d, 180, 90);
+            p.AddArc(b.Right - d, b.Y, d, d, 270, 90);
+            p.AddArc(b.Right - d, b.Bottom - d, d, d, 0, 90);
+            p.AddArc(b.X, b.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            TextRenderer.DrawText(e.Graphics, title, TitleFont, new Point(14, 10), Theme.Accent);
+        }
+    }
+
+    /// <summary>
     /// 컨트롤 패널 — NEWNEWOVERLAY overlay_tab.cpp WinForms 포팅.
-    /// Overlay / Difficulty / Cursor / HUD / Skin 섹션.
+    /// Overlay / Difficulty / Cursor / HUD / Skin 섹션. 다크 테마 카드 레이아웃.
     /// </summary>
     public class ControlPanelForm : Form
     {
@@ -23,7 +101,6 @@ namespace OsuEnlightenOverlay.ControlPanel
         TrackBar tbAR, tbCS, tbDtAR, tbHtAR;
         NumericUpDown nudAR, nudCS, nudDtAR, nudHtAR;
         Button btnARAuto, btnCSAuto, btnDtARAuto, btnHtARAuto;
-
 
         // Cursor 섹션
         CheckBox chkCursorAutoSize;
@@ -40,6 +117,86 @@ namespace OsuEnlightenOverlay.ControlPanel
         ComboBox cmbSkin;
         Button btnRefreshSkin;
 
+        // ── 다크 타이틀바 (Win10 1809+) ──
+        // DWMWA_USE_IMMERSIVE_DARK_MODE — 20 (2004+) / 19 (1809~1909). 실패해도 무해(밝은 타이틀바 유지).
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                int on = 1;
+                if (DwmSetWindowAttribute(Handle, 20, ref on, 4) != 0)
+                    DwmSetWindowAttribute(Handle, 19, ref on, 4);
+            }
+            catch { /* dwmapi 없음(구버전 OS) — 테마 없이 진행 */ }
+        }
+
+        // ── 컨트롤 스타일 헬퍼 ──
+
+        static void StyleButton(Button b)
+        {
+            b.FlatStyle = FlatStyle.Flat;
+            b.FlatAppearance.BorderColor = Theme.InputBorder;
+            b.FlatAppearance.BorderSize = 1;
+            b.FlatAppearance.MouseOverBackColor = Theme.BtnHover;
+            b.FlatAppearance.MouseDownBackColor = Theme.BtnDown;
+            b.BackColor = Theme.Input;
+            b.ForeColor = Theme.Text;
+            b.Cursor = Cursors.Hand;
+        }
+
+        static void StyleAccentButton(Button b)
+        {
+            b.FlatStyle = FlatStyle.Flat;
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = Theme.AccentHover;
+            b.FlatAppearance.MouseDownBackColor = Theme.Accent;
+            b.BackColor = Theme.Accent;
+            b.ForeColor = Color.White;
+            b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            b.Cursor = Cursors.Hand;
+        }
+
+        static void StyleNud(NumericUpDown n)
+        {
+            n.BackColor = Theme.Input;
+            n.ForeColor = Theme.Text;
+            n.BorderStyle = BorderStyle.FixedSingle;
+        }
+
+        static void StyleCombo(ComboBox c)
+        {
+            c.FlatStyle = FlatStyle.Flat;
+            c.BackColor = Theme.Input;
+            c.ForeColor = Theme.Text;
+        }
+
+        static CheckBox MakeCheck(string text, int x, int y, int width)
+        {
+            CheckBox c = new CheckBox();
+            c.Text = text;
+            c.AutoSize = false;
+            c.Width = width;
+            c.Location = new Point(x, y);
+            c.ForeColor = Theme.Text;
+            c.Cursor = Cursors.Hand;
+            return c;
+        }
+
+        static Label MakeLabel(string text, int x, int y, int width, Color color)
+        {
+            Label l = new Label();
+            l.Text = text;
+            l.Location = new Point(x, y);
+            l.Width = width;
+            l.ForeColor = color;
+            l.TextAlign = ContentAlignment.MiddleLeft;
+            return l;
+        }
+
         public ControlPanelForm(OverlaySettings settings, OverlayForm overlay)
         {
             this.settings = settings;
@@ -51,49 +208,49 @@ namespace OsuEnlightenOverlay.ControlPanel
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
+            this.BackColor = Theme.Bg;
+            this.ForeColor = Theme.Text;
+            this.Font = new Font("Segoe UI", 9f);
 
             // 스크롤 가능한 컨텐츠 패널 — 모든 섹션을 담아 아래 잘림 방지.
             Panel contentPanel = new Panel();
             contentPanel.Dock = DockStyle.Fill;
             contentPanel.AutoScroll = true;
             contentPanel.BorderStyle = BorderStyle.None;
+            contentPanel.BackColor = Theme.Bg;
             this.Controls.Add(contentPanel);
 
-            int y = 10;
+            const int cardX = 10;
+            const int cardW = 338;
+            int y = 14;
 
             // ── 상태 표시 (맨 위) ──
             Label lblStatus = new Label();
             lblStatus.Text = "● Ready";
-            lblStatus.Location = new Point(10, y);
-            lblStatus.Width = 330;
-            lblStatus.Height = 20;
+            lblStatus.Location = new Point(cardX, y);
+            lblStatus.Width = cardW;
+            lblStatus.Height = 22;
             lblStatus.TextAlign = ContentAlignment.MiddleCenter;
-            lblStatus.Font = new Font(SystemFonts.DefaultFont.FontFamily, 9, FontStyle.Bold);
+            lblStatus.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
+            lblStatus.ForeColor = Theme.Green;
             contentPanel.Controls.Add(lblStatus);
-            y += lblStatus.Height + 3;
+            y += lblStatus.Height + 2;
 
             Label lblBeatmap = new Label();
             lblBeatmap.Text = "";
-            lblBeatmap.Location = new Point(10, y);
-            lblBeatmap.Width = 330;
-            lblBeatmap.Height = 18;
+            lblBeatmap.Location = new Point(cardX, y);
+            lblBeatmap.Width = cardW;
+            lblBeatmap.Height = 17;
             lblBeatmap.TextAlign = ContentAlignment.MiddleCenter;
-            lblBeatmap.ForeColor = Color.DimGray;
+            lblBeatmap.ForeColor = Theme.Muted;
+            lblBeatmap.Font = new Font("Segoe UI", 8.25f);
             contentPanel.Controls.Add(lblBeatmap);
-            y += lblBeatmap.Height + 10;
+            y += lblBeatmap.Height + 12;
 
             // ── Overlay ──
-            GroupBox grpOverlay = new GroupBox();
-            grpOverlay.Text = "Overlay";
-            grpOverlay.Location = new Point(10, y);
-            grpOverlay.Width = 330;
-            grpOverlay.Height = 120;
+            Card grpOverlay = new Card("OVERLAY", cardX, y, cardW, 126);
 
-            chkEnabled = new CheckBox();
-            chkEnabled.Text = "Enable Overlay";
-            chkEnabled.AutoSize = false;
-            chkEnabled.Width = 140;
-            chkEnabled.Location = new Point(15, 22);
+            chkEnabled = MakeCheck("Enable Overlay", 16, 36, 150);
             chkEnabled.Checked = settings.Enabled;
             chkEnabled.CheckedChanged += (s, e) =>
             {
@@ -103,34 +260,22 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpOverlay.Controls.Add(chkEnabled);
 
-            chkCaptureBlocked = new CheckBox();
-            chkCaptureBlocked.Text = "Capture Blocked";
-            chkCaptureBlocked.AutoSize = false;
-            chkCaptureBlocked.Width = 140;
-            chkCaptureBlocked.Location = new Point(170, 22);
+            chkCaptureBlocked = MakeCheck("Capture Blocked", 172, 36, 150);
             chkCaptureBlocked.Checked = settings.CaptureBlocked;
             chkCaptureBlocked.CheckedChanged += (s, e) => { settings.CaptureBlocked = chkCaptureBlocked.Checked; Save(); };
             grpOverlay.Controls.Add(chkCaptureBlocked);
 
-            chkHiddenOverride = new CheckBox();
-            chkHiddenOverride.Text = "Hidden Override";
-            chkHiddenOverride.AutoSize = false;
-            chkHiddenOverride.Width = 140;
-            chkHiddenOverride.Location = new Point(15, 42);
+            chkHiddenOverride = MakeCheck("Hidden Override", 16, 60, 200);
             chkHiddenOverride.Checked = settings.HiddenOverride;
             chkHiddenOverride.CheckedChanged += (s, e) => { settings.HiddenOverride = chkHiddenOverride.Checked; Save(); };
             grpOverlay.Controls.Add(chkHiddenOverride);
 
-            Label lblFps = new Label();
-            lblFps.Text = "FPS Cap:";
-            lblFps.Location = new Point(15, 70);
-            lblFps.Width = 55;
-            lblFps.TextAlign = ContentAlignment.MiddleLeft;
-            grpOverlay.Controls.Add(lblFps);
+            grpOverlay.Controls.Add(MakeLabel("FPS Cap:", 16, 90, 60, Theme.Text));
 
             nudFpsCap = new NumericUpDown();
-            nudFpsCap.Location = new Point(75, 68);
-            nudFpsCap.Width = 80;
+            nudFpsCap.Location = new Point(80, 87);
+            nudFpsCap.Width = 64;
+            StyleNud(nudFpsCap);
             nudFpsCap.Minimum = OverlaySettings.FpsCapMin;
             nudFpsCap.Maximum = OverlaySettings.FpsCapMax;
             // 방어: Normalize()가 이미 범위 안으로 맞추지만, 범위 밖 값이 새어들어와도 예외 없이.
@@ -143,45 +288,35 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpOverlay.Controls.Add(nudFpsCap);
 
-            Label lblFpsHint = new Label();
-            lblFpsHint.Text = "(0 = unlimited)";
-            lblFpsHint.Location = new Point(160, 70);
-            lblFpsHint.Width = 120;
-            lblFpsHint.ForeColor = Color.Gray;
-            lblFpsHint.TextAlign = ContentAlignment.MiddleLeft;
-            grpOverlay.Controls.Add(lblFpsHint);
+            grpOverlay.Controls.Add(MakeLabel("(0 = unlimited)", 152, 90, 130, Theme.Muted));
 
             contentPanel.Controls.Add(grpOverlay);
             y += grpOverlay.Height + 10;
 
             // ── Difficulty Changer ──
-            GroupBox grpDiff = new GroupBox();
-            grpDiff.Text = "Difficulty Changer";
-            grpDiff.Location = new Point(10, y);
-            grpDiff.Width = 330;
-            grpDiff.Height = 200;
+            Card grpDiff = new Card("DIFFICULTY CHANGER", cardX, y, cardW, 206);
 
             // NOMOD AR 상한 10 — osu! 실제 NOMOD AR이 10에서 막히고, 그 이상은 부자연스럽다.
             // min/max는 OverlaySettings 상수 — Normalize() 클램프와 동일 범위를 공유한다.
-            AddValueRow(grpDiff, 20, "AR",
+            AddValueRow(grpDiff, 36, "AR",
                 settings.ArValue, OverlaySettings.ArMin, OverlaySettings.ArMax, 2,
                 (v) => { settings.ArValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapAR() : 9.0f,
                 out tbAR, out nudAR, out btnARAuto);
-            AddValueRow(grpDiff, 60, "CS",
+            AddValueRow(grpDiff, 76, "CS",
                 settings.CsValue, OverlaySettings.CsMin, OverlaySettings.CsMax, 2,
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 // 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
                 () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
                 out tbCS, out nudCS, out btnCSAuto);
-            AddValueRow(grpDiff, 100, "DT",
+            AddValueRow(grpDiff, 116, "DT",
                 settings.ArDtValue, OverlaySettings.DtArMin, OverlaySettings.DtArMax, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
                 out tbDtAR, out nudDtAR, out btnDtARAuto);
             // HT AR 상한 10 — HT는 AR을 낮추는 mod라 10 이상은 의미가 없다.
             // (DT만 10 초과 유지: AR10 맵+DT의 체감 AR은 10을 넘는다.)
-            AddValueRow(grpDiff, 140, "HT",
+            AddValueRow(grpDiff, 156, "HT",
                 settings.ArHtValue, OverlaySettings.HtArMin, OverlaySettings.HtArMax, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
@@ -191,30 +326,19 @@ namespace OsuEnlightenOverlay.ControlPanel
             y += grpDiff.Height + 10;
 
             // ── Cursor ──
-            GroupBox grpCursor = new GroupBox();
-            grpCursor.Text = "Overlay Cursor";
-            grpCursor.Location = new Point(10, y);
-            grpCursor.Width = 330;
-            grpCursor.Height = 115;
+            Card grpCursor = new Card("OVERLAY CURSOR", cardX, y, cardW, 130);
 
-            chkCursorAutoSize = new CheckBox();
-            chkCursorAutoSize.Text = "Auto Cursor Size";
-            chkCursorAutoSize.Location = new Point(15, 20);
-            chkCursorAutoSize.AutoSize = false;
-            chkCursorAutoSize.Width = 140;
+            chkCursorAutoSize = MakeCheck("Auto Cursor Size", 16, 36, 160);
             chkCursorAutoSize.Checked = settings.CursorAutoSize;
             chkCursorAutoSize.CheckedChanged += (s, e) => { settings.CursorAutoSize = chkCursorAutoSize.Checked; Save(); };
             grpCursor.Controls.Add(chkCursorAutoSize);
 
-            Label lblCursorSize = new Label();
-            lblCursorSize.Text = "Cursor Size:";
-            lblCursorSize.Location = new Point(15, 48);
-            lblCursorSize.Width = 70;
-            grpCursor.Controls.Add(lblCursorSize);
+            grpCursor.Controls.Add(MakeLabel("Cursor Size:", 16, 66, 74, Theme.Text));
 
             nudCursorSize = new NumericUpDown();
-            nudCursorSize.Location = new Point(90, 45);
-            nudCursorSize.Width = 70;
+            nudCursorSize.Location = new Point(92, 63);
+            nudCursorSize.Width = 64;
+            StyleNud(nudCursorSize);
             nudCursorSize.Minimum = (decimal)OverlaySettings.CursorSizeMin;
             nudCursorSize.Maximum = (decimal)OverlaySettings.CursorSizeMax;
             nudCursorSize.DecimalPlaces = 2;
@@ -229,16 +353,13 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpCursor.Controls.Add(nudCursorSize);
 
             // Cursor Pack
-            Label lblCursorPack = new Label();
-            lblCursorPack.Text = "Cursor Pack:";
-            lblCursorPack.Location = new Point(15, 78);
-            lblCursorPack.Width = 70;
-            grpCursor.Controls.Add(lblCursorPack);
+            grpCursor.Controls.Add(MakeLabel("Cursor Pack:", 16, 96, 74, Theme.Text));
 
             cmbCursorPack = new ComboBox();
-            cmbCursorPack.Location = new Point(90, 75);
-            cmbCursorPack.Width = 145;
+            cmbCursorPack.Location = new Point(92, 93);
+            cmbCursorPack.Width = 146;
             cmbCursorPack.DropDownStyle = ComboBoxStyle.DropDownList;
+            StyleCombo(cmbCursorPack);
             RefreshCursorPacks();
             cmbCursorPack.SelectedIndexChanged += (s, e) =>
             {
@@ -260,8 +381,10 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             btnRefreshCursorPacks = new Button();
             btnRefreshCursorPacks.Text = "Refresh";
-            btnRefreshCursorPacks.Location = new Point(240, 75);
-            btnRefreshCursorPacks.Width = 65;
+            btnRefreshCursorPacks.Location = new Point(244, 92);
+            btnRefreshCursorPacks.Width = 78;
+            btnRefreshCursorPacks.Height = 25;
+            StyleButton(btnRefreshCursorPacks);
             btnRefreshCursorPacks.Click += (s, e) => { RefreshCursorPacks(); };
             grpCursor.Controls.Add(btnRefreshCursorPacks);
 
@@ -269,44 +392,34 @@ namespace OsuEnlightenOverlay.ControlPanel
             y += grpCursor.Height + 10;
 
             // ── HUD ──
-            GroupBox grpHud = new GroupBox();
-            grpHud.Text = "Gameplay HUD";
-            grpHud.Location = new Point(10, y);
-            grpHud.Width = 330;
-            grpHud.Height = 165;
+            Card grpHud = new Card("GAMEPLAY HUD", cardX, y, cardW, 196);
 
-            chkHudFps = new CheckBox();
-            chkHudFps.Text = "FPS";
-            chkHudFps.Location = new Point(15, 20);
+            chkHudFps = MakeCheck("FPS", 16, 36, 150);
             chkHudFps.Checked = settings.HudEnabled[0];
             chkHudFps.CheckedChanged += (s, e) => { settings.HudEnabled[0] = chkHudFps.Checked; Save(); };
             grpHud.Controls.Add(chkHudFps);
 
-            chkHudAcc = new CheckBox();
-            chkHudAcc.Text = "Accuracy";
-            chkHudAcc.Location = new Point(170, 20);
+            chkHudAcc = MakeCheck("Accuracy", 172, 36, 150);
             chkHudAcc.Checked = settings.HudEnabled[1];
             chkHudAcc.CheckedChanged += (s, e) => { settings.HudEnabled[1] = chkHudAcc.Checked; Save(); };
             grpHud.Controls.Add(chkHudAcc);
 
-            chkHudCombo = new CheckBox();
-            chkHudCombo.Text = "Combo";
-            chkHudCombo.Location = new Point(15, 45);
+            chkHudCombo = MakeCheck("Combo", 16, 60, 150);
             chkHudCombo.Checked = settings.HudEnabled[2];
             chkHudCombo.CheckedChanged += (s, e) => { settings.HudEnabled[2] = chkHudCombo.Checked; Save(); };
             grpHud.Controls.Add(chkHudCombo);
 
-            chkHudHitError = new CheckBox();
-            chkHudHitError.Text = "Hit Error Bar";
-            chkHudHitError.Location = new Point(170, 45);
+            chkHudHitError = MakeCheck("Hit Error Bar", 172, 60, 150);
             chkHudHitError.Checked = settings.HudEnabled[3];
             chkHudHitError.CheckedChanged += (s, e) => { settings.HudEnabled[3] = chkHudHitError.Checked; Save(); };
             grpHud.Controls.Add(chkHudHitError);
 
             btnEditLayout = new Button();
             btnEditLayout.Text = "Edit Layout";
-            btnEditLayout.Location = new Point(15, 75);
-            btnEditLayout.Width = 290;
+            btnEditLayout.Location = new Point(16, 90);
+            btnEditLayout.Width = 306;
+            btnEditLayout.Height = 30;
+            StyleAccentButton(btnEditLayout);
             btnEditLayout.Click += (s, e) =>
             {
                 settings.HudEditMode = !settings.HudEditMode;
@@ -318,39 +431,36 @@ namespace OsuEnlightenOverlay.ControlPanel
             // edit 모드 단축키 안내 (NEWNEWOVERLAY overlay_tab.cpp 힌트 텍스트)
             lblEditHint1 = new Label();
             lblEditHint1.Text = "Tab 순환 | Up/Down 크기 | Shift ×10";
-            lblEditHint1.Location = new Point(15, 103);
+            lblEditHint1.Location = new Point(16, 128);
             lblEditHint1.AutoSize = true;
-            lblEditHint1.ForeColor = Color.FromArgb(180, 140, 0);
+            lblEditHint1.ForeColor = Theme.Hint;
             grpHud.Controls.Add(lblEditHint1);
 
             lblEditHint2 = new Label();
             lblEditHint2.Text = "드래그로 이동 | Esc 저장+종료";
-            lblEditHint2.Location = new Point(15, 123);
+            lblEditHint2.Location = new Point(16, 146);
             lblEditHint2.AutoSize = true;
-            lblEditHint2.ForeColor = Color.FromArgb(180, 140, 0);
+            lblEditHint2.ForeColor = Theme.Hint;
             grpHud.Controls.Add(lblEditHint2);
 
             lblEditHint3 = new Label();
             lblEditHint3.Text = "S: 스냅 | X: 가로고정 | Y: 세로고정";
-            lblEditHint3.Location = new Point(15, 143);
+            lblEditHint3.Location = new Point(16, 164);
             lblEditHint3.AutoSize = true;
-            lblEditHint3.ForeColor = Color.FromArgb(180, 140, 0);
+            lblEditHint3.ForeColor = Theme.Hint;
             grpHud.Controls.Add(lblEditHint3);
 
             contentPanel.Controls.Add(grpHud);
             y += grpHud.Height + 10;
 
             // ── Skin ──
-            GroupBox grpSkin = new GroupBox();
-            grpSkin.Text = "Skin";
-            grpSkin.Location = new Point(10, y);
-            grpSkin.Width = 330;
-            grpSkin.Height = 105;
+            Card grpSkin = new Card("SKIN", cardX, y, cardW, 106);
 
             cmbSkin = new ComboBox();
-            cmbSkin.Location = new Point(15, 20);
-            cmbSkin.Width = 200;
+            cmbSkin.Location = new Point(16, 36);
+            cmbSkin.Width = 208;
             cmbSkin.DropDownStyle = ComboBoxStyle.DropDownList;
+            StyleCombo(cmbSkin);
             RefreshSkins();
             cmbSkin.SelectedIndexChanged += (s, e) =>
             {
@@ -364,16 +474,14 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             btnRefreshSkin = new Button();
             btnRefreshSkin.Text = "Refresh";
-            btnRefreshSkin.Location = new Point(225, 18);
-            btnRefreshSkin.Width = 80;
+            btnRefreshSkin.Location = new Point(232, 35);
+            btnRefreshSkin.Width = 90;
+            btnRefreshSkin.Height = 25;
+            StyleButton(btnRefreshSkin);
             btnRefreshSkin.Click += (s, e) => { RefreshSkins(); };
             grpSkin.Controls.Add(btnRefreshSkin);
 
-            CheckBox chkInstaFade = new CheckBox();
-            chkInstaFade.Text = "InstaFade (no hit animation)";
-            chkInstaFade.AutoSize = false;
-            chkInstaFade.Width = 250;
-            chkInstaFade.Location = new Point(15, 50);
+            CheckBox chkInstaFade = MakeCheck("InstaFade (no hit animation)", 16, 68, 280);
             chkInstaFade.Checked = settings.InstaFade;
             chkInstaFade.CheckedChanged += (s, e) =>
             { settings.InstaFade = chkInstaFade.Checked; Save(); };
@@ -384,12 +492,13 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // ── 하단 정보 ──
             Label lblInfo = new Label();
-            lblInfo.Text = "Close this panel to exit";
-            lblInfo.Location = new Point(10, y);
-            lblInfo.Width = 330;
+            lblInfo.Text = "F9 show/hide  ·  F10 quit  ·  close panel to exit";
+            lblInfo.Location = new Point(cardX, y);
+            lblInfo.Width = cardW;
             lblInfo.Height = 20;
             lblInfo.TextAlign = ContentAlignment.MiddleCenter;
-            lblInfo.ForeColor = Color.Gray;
+            lblInfo.ForeColor = Theme.Muted;
+            lblInfo.Font = new Font("Segoe UI", 8.25f);
             contentPanel.Controls.Add(lblInfo);
 
             // 스크롤 영역 하단 여백
@@ -413,7 +522,7 @@ namespace OsuEnlightenOverlay.ControlPanel
                     if (lblStatus.Text != overlayRef.StatusText)
                     {
                         lblStatus.Text = overlayRef.StatusText;
-                        lblStatus.ForeColor = overlayRef.StatusText.StartsWith("●") ? Color.FromArgb(0, 180, 0) : Color.Gray;
+                        lblStatus.ForeColor = overlayRef.StatusText.StartsWith("●") ? Theme.Green : Theme.Muted;
                     }
                     if (lblBeatmap.Text != overlayRef.BeatmapText)
                         lblBeatmap.Text = overlayRef.BeatmapText;
@@ -443,17 +552,13 @@ namespace OsuEnlightenOverlay.ControlPanel
         /// 슬라이더 값이 곧 적용되는 값이다. "Manual로 바꿔놨는데 원래 맵 값으로
         /// 되돌리고 싶다"에 쓰는 버튼.
         /// </summary>
-        void AddValueRow(GroupBox parent, int yPos, string label,
+        void AddValueRow(Control parent, int yPos, string label,
             float value, float min, float max, int decimals,
             Action<float> onValueChanged,
             Func<float> getMapValue,
             out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto)
         {
-            Label lbl = new Label();
-            lbl.Text = label + ":";
-            lbl.Location = new Point(15, yPos + 3);
-            lbl.Width = 35;
-            parent.Controls.Add(lbl);
+            parent.Controls.Add(MakeLabel(label, 16, yPos + 3, 34, Theme.Text));
 
             // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value/NumericUpDown.Value는 범위 밖
             // 대입 시 예외를 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생.)
@@ -470,15 +575,18 @@ namespace OsuEnlightenOverlay.ControlPanel
             value = clampedValue;
 
             TrackBar tb = new TrackBar();
-            tb.Location = new Point(55, yPos);
-            tb.Width = 140;
+            tb.Location = new Point(52, yPos);
+            tb.Width = 144;
+            tb.BackColor = Theme.Card;
+            tb.TickStyle = TickStyle.None;
             tb.Minimum = (int)(min * 10);
             tb.Maximum = (int)(max * 10);
             tb.Value = (int)(value * 10);
             tb.TickFrequency = 10;
             NumericUpDown nud = new NumericUpDown();
-            nud.Location = new Point(200, yPos);
-            nud.Width = 50;
+            nud.Location = new Point(202, yPos + 1);
+            nud.Width = 56;
+            StyleNud(nud);
             nud.Minimum = (decimal)min;
             nud.Maximum = (decimal)max;
             nud.DecimalPlaces = decimals;
@@ -500,10 +608,11 @@ namespace OsuEnlightenOverlay.ControlPanel
             parent.Controls.Add(nud);
 
             Button btnAuto = new Button();
-            btnAuto.Location = new Point(255, yPos);
-            btnAuto.Width = 55;
-            btnAuto.Height = 23;
+            btnAuto.Location = new Point(266, yPos);
+            btnAuto.Width = 56;
+            btnAuto.Height = 25;
             btnAuto.Text = "Auto";
+            StyleButton(btnAuto);
             btnAuto.Click += (s, e) =>
             {
                 float mapVal = getMapValue();
