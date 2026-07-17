@@ -229,7 +229,12 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
                         int.TryParse(rgb[1].Trim(), out g) &&
                         int.TryParse(rgb[2].Trim(), out b))
                     {
-                        data.ComboColours.Add(Color.FromArgb(r, g, b));
+                        // 범위 밖 값(예: `Combo1: 300,0,0`)은 Color.FromArgb에서 ArgumentException을
+                        // 던져 파싱 Task가 통째로 죽고 그 맵이 조용히 로드 실패한다 (A5). [0,255]로 클램프.
+                        data.ComboColours.Add(Color.FromArgb(
+                            Math.Max(0, Math.Min(255, r)),
+                            Math.Max(0, Math.Min(255, g)),
+                            Math.Max(0, Math.Min(255, b))));
                     }
                 }
             }
