@@ -246,9 +246,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
             // 슬라이더 틱 거리 — osu! stable: SliderScoringPointDistance
             // SliderScoringPointDistance = (100 * SliderMultiplier) / SliderTickRate
-            // BeatmapVersion >= 8: tickDistance / BpmMultiplierAt(StartTime)
+            // osu! stable SliderOsu.cs:673-674 (H7): v<8은 나누지 않고, v>=8만
+            // BpmMultiplierAt(StartTime)로 나눈다. 기본 BeatmapVersion=14는 else 경로 유지.
             double sliderScoringPointDistance = (100 * beatmap.SliderMultiplier) / beatmap.SliderTickRate;
-            double tickDistance = sliderScoringPointDistance / BeatmapParser.BpmMultiplierAt(beatmap, startTime);
+            double tickDistance = (beatmap.BeatmapVersion < 8)
+                ? sliderScoringPointDistance
+                : (sliderScoringPointDistance / BeatmapParser.BpmMultiplierAt(beatmap, startTime));
             if (tickDistance > data.Length) tickDistance = data.Length;
             double scoringDistance = 0;
             double scoringLengthTotal = 0;
@@ -338,6 +341,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                                 int dotEndTime = dotStartTime + 150;
                                 scoringDot.Transformations.Add(new Transformation(
                                     TransformationType.Fade, 0f, 1f, dotStartTime, dotEndTime, EasingTypes.None));
+                                // H9: HD(Hidden Override)에서 각 틱이 scoreTime에 맞춰 1→0 페이드
+                                // — stable SliderOsu.cs:895. 시작은 최대 1000ms 전. HiddenActive 아니면 무변화.
+                                if (HitCircleOsu.HiddenActive)
+                                    scoringDot.Transformations.Add(new Transformation(
+                                        TransformationType.Fade, 1f, 0f, Math.Max(dotEndTime, scoreTime - 1000), scoreTime, EasingTypes.None));
                                 scoringDot.Transformations.Add(new Transformation(
                                     TransformationType.Scale, 0.5f, 1.2f, dotStartTime, dotEndTime, EasingTypes.None));
                                 scoringDot.Transformations.Add(new Transformation(
@@ -348,6 +356,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                                 int displayStartTime = reverseStartTime + (scoreTime - reverseStartTime) / 2;
                                 scoringDot.Transformations.Add(new Transformation(
                                     TransformationType.Fade, 0f, 1f, displayStartTime - 200, displayStartTime, EasingTypes.None));
+                                // H9: HD(Hidden Override)에서 각 틱이 scoreTime에 맞춰 1→0 페이드
+                                // — stable SliderOsu.cs:903. 시작은 최대 1000ms 전. HiddenActive 아니면 무변화.
+                                if (HitCircleOsu.HiddenActive)
+                                    scoringDot.Transformations.Add(new Transformation(
+                                        TransformationType.Fade, 1f, 0f, Math.Max(displayStartTime, scoreTime - 1000), scoreTime, EasingTypes.None));
                                 scoringDot.Transformations.Add(new Transformation(
                                     TransformationType.Scale, 0.5f, 1.2f, displayStartTime - 200, displayStartTime - 50, EasingTypes.None));
                                 scoringDot.Transformations.Add(new Transformation(
