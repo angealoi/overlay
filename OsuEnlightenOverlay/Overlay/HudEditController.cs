@@ -114,7 +114,7 @@ namespace OsuEnlightenOverlay.Overlay
             for (int i = 3; i >= 0; i--)
             {
                 RectangleF r = rects[i];
-                if (r.Width < 0.0f) continue;  // 미렌더링
+                if (r.Width <= 0.0f) continue;  // 미렌더링(0폭 default rect 포함, I-감사 #23)
                 if (clientPoint.X >= r.X - pad && clientPoint.X <= r.Right + pad &&
                     clientPoint.Y >= r.Y - pad && clientPoint.Y <= r.Bottom + pad)
                     return i;
