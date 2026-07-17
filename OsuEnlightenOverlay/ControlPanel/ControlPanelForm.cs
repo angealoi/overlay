@@ -107,7 +107,11 @@ namespace OsuEnlightenOverlay.ControlPanel
             // 2열 레이아웃 — 카드를 좌/우 열에 배치해 세로 스크롤 없이 한 화면에.
             // 폭은 좌우 여백 대칭 기준으로 유도: marginX*2 + cardW*2 + gapCol.
             // FormBorderStyle=None 이므로 클라이언트 폭 == Width.
-            this.Width = 874;  // 10*2 + 420*2 + 14
+            // 폼 폭 = 외곽선(Padding) + 좌우 여백 + 카드 2열 + 열 간격.
+            // BorderWidth(8)*2 + marginX(10)*2 + cardW(420)*2 + gapCol(14) = 890.
+            // Padding 을 빼면 contentPanel 폭 = 858... 이 아니라 890-16=874 가 되고,
+            // 우측 열 끝 col2X+cardW = 864 → 우측 여백 10 = marginX (대칭).
+            this.Width = 890;
             this.Height = 520;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.None;
