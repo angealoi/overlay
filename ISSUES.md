@@ -35,6 +35,7 @@
 | 2026-07-17 | **A1**: 손상된 settings.ini 값 하나로 기동 불능 (범위 밖 `.Value`·NaN 캐스트·경로 문자·null 스킨 폴더·쓰기 불가 폴더) | `fcfc0ff` | 감사+적대적 리뷰 워크플로 전수 검증. **실기 확인** — 전 트리거 동시 주입 ini로 정상 기동(값 살균 확인) |
 | 2026-07-17 | **A4**: 문화권 의존 직렬화 → InvariantCulture 고정 (+ 구파일 현재-로케일 폴백) | `fcfc0ff` | 적대적 리뷰로 로케일 라운드트립·구파일 회귀 검증 |
 | 2026-07-17 | **E1~E7 전부**: 잠복 결함 7건 (버퍼 스레드안전·AOB slot 검증·QuadBatch 셰이더·Fields enum 충돌·GameField 경합·낡은 파싱 폐기·문자열 캐시) | `68de5ad` | 감사 정독 → 적대적 리뷰(설계 14 + 구현 4 에이전트, fable5) 전수 검증. 리뷰가 실결함 3건 잡아 반영(모드 범위 오탈락·GameField float 절단·폐기 시 영구 blank). 빌드 통과(경고 0) + **실기: 정상 플레이 무이상(공통 경로 회귀 확인, E2 slot 오탈락 없음·E4 렌더 정상)**. E3 오버플로 등 희귀 트리거는 미노출 |
+| 2026-07-17 | **C5·C6** (+C3 오탐 확인): z-플리커 안정 정렬(=H21) · 슬라이더 틱 NaN/무한루프 방어 | `07c396e` | 적대적 리뷰(2 에이전트, fable5) — 둘 다 hold, 정상 맵 항등. C3은 stable과 byte 동일이라 오탐(코드 무변경). 빌드 통과(경고 0) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -142,21 +143,25 @@
 - **실제 영향**: **측정 — 맵 끝 시점 잔류 화살표 중앙값 24개**(무시할 수준). 다만 마라톤/연습 맵에서 **최대 3071개**까지 쌓인다. 화살표는 투명해서(`startTime`에 Fade 1→0) 보이지는 않았고, 매 프레임 자기 Transformation 전체를 순회하는 비용만 발생
 - **전수 확인**: Add/Remove override 짝은 이곳이 **유일한** 불일치였다
 
-### C3. HR flip이 clamp 뒤에 적용
-- **위치**: `Gameplay/Beatmap/BeatmapParser.cs:216-217` — y를 512까지 허용해놓고 `384-y`
-- **증상**: y∈(384,512] 객체가 HR에서 음수 좌표
+### ~~C3. HR flip이 clamp 뒤에 적용~~ ✅ 오탐 — stable과 동일 확인 (코드 변경 없음)
+- ~~**위치**: `Gameplay/Beatmap/BeatmapParser.cs` — y를 512까지 허용해놓고 `384-y`~~
+- ~~**증상**: y∈(384,512] 객체가 HR에서 음수 좌표~~
+- **결론**: **결함 아님.** stable `HitObjectManager_LoadSave.cs:815-817`이 우리와 **byte 단위로 동일**하게 `y = (int)Max(0, Min(512, y))` 후 `verticalFlip ? 384 - y : y`를 한다. 즉 y∈(384,512]에서 음수가 되는 건 stable의 동작 그대로이며 우리가 1:1이다. 초기 분석의 오탐 (stable 대조로 확정)
 
 ### C4. 동일 StartTime 객체 판정 오매칭 (2B/aspire 맵)
 - **위치**: `Gameplay/HitObjects/HitObjectManagerOsu.cs:836, 861, 893` (StartTime 동등 비교, 첫 매치) + `Gameplay/Scoring/HitBurst.cs:63` (Dictionary 첫 승)
 - **증상**: 동시 타이밍 객체가 있는 맵에서 판정/히트버스트가 엉뚱한 객체로 감
 
-### C5. 불안정 정렬 z-플리커 가능성
-- **위치**: `Rendering/SpriteManager.cs:126` — `List.Sort`는 불안정 정렬
-- **증상**: 동일 Depth 스프라이트의 앞뒤 순서가 재정렬 때마다 뒤바뀔 수 있음 (프레임 간 깜빡임)
+### ~~C5. 불안정 정렬 z-플리커 가능성~~ ✅ 해결 (`07c396e`) [= H21]
+- ~~**위치**: `Rendering/SpriteManager.cs` — `List.Sort`는 불안정 정렬~~ → Depth 동점 스프라이트가 프레임마다 앞뒤 뒤바뀜
+- **수정**: `pSprite`에 `long StableOrder`(오버플로 불가) 추가, `Add`에서 전역 삽입 순서 부여, 정렬을 `(Depth, StableOrder)` **전순서**로 → 결과가 유일하게 결정돼 불안정 정렬이어도 깜빡임 없음. stable `ListHelper.StableSort`와 동치. 캐싱된 `IComparer`로 매 호출 할당도 제거
+- **검증**: 적대적 리뷰로 전순서·프레임 간 결정성·distinct Depth 무영향·유일 정렬 지점 확인. HUD(모두 0.5f)·트레일 파티클(cursor.Depth-0.001f)·스피너 레이어의 동점군이 삽입 순서로 결정화됨
 
-### C6. 0 나눗셈 → NaN 좌표
-- **위치**: `Gameplay/HitObjects/SliderOsu.cs:273` (p1==p2인 선분에서 틱 위치), `:476` (zero-length 슬라이더에서 볼 위치)
-- **증상**: NaN 위치의 스프라이트 — 에일리언 맵에서만
+### ~~C6. 0 나눗셈 → NaN 좌표~~ ✅ 해결 (`07c396e`)
+- ~~**위치**: `SliderOsu.cs` 틱 위치(p1==p2 선분), 볼 위치(zero-length 슬라이더)~~
+- **수정**: 틱 위치 `scoringDistance / Vector2.Distance(p1,p2)`가 길이 0 선분(p1==p2, 중복 제어점 에일리언 맵)에서 NaN → 그 틱은 건너뛴다(stable도 radius 검사로 누락). 볼 위치 본경로(`GetBallPosition`/`PositionAtLength`)는 이미 가드돼 있어 무변화
+- **함께 강화** (적대적 리뷰가 같은 루프에서 발견한 동류 결함): ① `Length<=0` 슬라이더의 `tickDistance<=0` → **틱 무한루프(로더 행)** 를 `tickDistance > 0` 가드로 차단 ② `UpdateSprites`의 중복 ball-position 나눗셈 `0/0=NaN`(세그먼트 인덱스 뒤틀림) 가드
+- **검증**: 적대적 리뷰로 정상 선분 항등·잔여 NaN 지점 0 확인. 전부 degenerate/에일리언 맵 한정, 정상 맵 무변화
 
 ---
 
@@ -356,7 +361,7 @@
 | H18 | **어프로치서클 소멸** | 생성 시 소멸 fade **없음**. `Arm()`에서만 (히트: 즉시 / 미스: 60ms) — `HitCircleOsu.cs:245, 264` | 생성 시 `0.9→0 @ startTime→+60` **하드코딩** + Arm 것도 추가 → 근사이나 1:1 아님 |
 | H19 | **Disarm 후 Scale 리셋** | `SpriteHitCircle1.Scale = 1`, `Text.Scale = TEXT_SIZE` — `HitCircleOsu.cs:223-225` | 누락 |
 | ~~H20~~ ✅ | ~~**스택 위치 재적용**~~ → 해결 (`8384faf`) | 범위 내 **전 객체** 무조건 `ModifyPosition` — `HitObjectManager.cs:1761-1765` | ~~`StackCount != 0`인 것만~~ → 무조건 적용 (C1/H23과 함께) |
-| H21 | **정렬 안정성** | `ListHelper.StableSort` — `HitObjectManager.cs:1240` | `List.Sort`(불안정) → 동시각 객체 순서 흔들림 (= [C5](#c5-불안정-정렬-z-플리커-가능성)) |
+| ~~H21~~ ✅ | ~~**정렬 안정성**~~ → 해결 (`07c396e`, =C5) | `ListHelper.StableSort` — `HitObjectManager.cs:1240` | ~~`List.Sort`(불안정)~~ → `(Depth, StableOrder)` 전순서로 안정화 (C5와 동일) |
 | ~~H22~~ ✅ | ~~**틱 소멸 방식**~~ → 해결 (`3bc67c8`) | 세그먼트 끝에 일괄 `Fade(0,0)` — `SliderOsu.cs:933-935` | ~~각 틱의 scoreTime에 개별~~ → 세그먼트 끝 일괄로 변경 (H2와 함께) |
 
 ### H-3. 이미 A~G에 기재된 것 중 fidelity 위반이기도 한 것 (3건)
