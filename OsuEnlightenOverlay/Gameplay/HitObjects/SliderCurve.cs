@@ -61,14 +61,17 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     break;
             }
 
-            // SpatialLength에 맞춰 경로 자르기
+            // SpatialLength에 맞춰 경로 트림/연장
             if (path.Count > 0 && spatialLength > 0)
             {
                 double total = 0;
                 foreach (Line l in path)
                     total += l.Rho;
 
-                if (total > spatialLength)
+                // stable UpdateCalculations(SliderOsu.cs:704-723)와 동일하게 excess 부호 무관 처리:
+                // total>spatialLength면 마지막 선분을 트림, total<spatialLength면 |excess|만큼 연장한다.
+                // 예전엔 total>spatialLength 가드로 트림만 해서 '과길이' 슬라이더(제어점 경로<pixelLength)가
+                // stable보다 짧게 그려지고 볼 타이밍/끝 위치가 어긋났다 (I-감사 #11). 루프 본문은 stable과 동일.
                 {
                     double excess = total - spatialLength;
                     const float MIN_SEGMENT_LENGTH = 0.0001f;

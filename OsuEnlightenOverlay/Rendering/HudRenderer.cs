@@ -37,6 +37,11 @@ namespace OsuEnlightenOverlay.Rendering
         // 텍스트 스프라이트 캐시 — 매 프레임 재생성 방지
         List<pSprite> hudSprites = new List<pSprite>();
 
+        // HUD 텍스트 스프라이트 depth — 히트오브젝트(~0.8) 위, 커서(0.999) 아래.
+        // 예전엔 0.5라 히트서클/커서보다 뒤에 그려져 게임플레이가 HUD를 가렸다 (I-감사 #18).
+        // stable ScoreDisplay(~0.95)/HpBar(0.96~0.97)와 동일 계층.
+        const float kHudDepth = 0.95f;
+
         // 렌더링 영역 (창 크기)
         int viewportW, viewportH;
 
@@ -116,6 +121,21 @@ namespace OsuEnlightenOverlay.Rendering
             if (settings.HudEnabled[2] || editMode)
                 RenderCombo(editMode);
 
+            // Hit Error Bar / edit 하이라이트는 즉시모드(GL.Begin/End) 도형이라 여기서 그리면
+            // SpriteManager.Draw 이전이 되어 게임플레이 뒤에 깔린다. RenderOverlayShapes로 옮겨
+            // SpriteManager.Draw 이후(PostDrawCallback)에 그려 게임플레이 위에 오게 한다 (I-감사 #18).
+        }
+
+        /// <summary>
+        /// HUD 즉시모드 도형(에러바·에디트 하이라이트) — SpriteManager.Draw 이후 PostDrawCallback에서 호출.
+        /// 텍스트 스프라이트(fps/정확도/콤보)는 Render()가 depth 0.95로 추가해 스프라이트 파이프라인이 그린다.
+        /// </summary>
+        public void RenderOverlayShapes()
+        {
+            if (settings == null) return;
+
+            bool editMode = settings.HudEditMode;
+
             // Hit Error Bar
             if (settings.HudEnabled[3] || editMode)
                 RenderHitErrorBar(editMode);
@@ -140,7 +160,7 @@ namespace OsuEnlightenOverlay.Rendering
             if (tex == null) return;
 
             pSprite sprite = new pSprite(tex, Fields.Native, Origins.TopLeft, Clocks.Game,
-                new Vector2(x, y), 0.5f, true, Color.White);
+                new Vector2(x, y), kHudDepth, true, Color.White);
             sprite.Alpha = 1.0f;
             spriteManager.Add(sprite);
             hudSprites.Add(sprite);
@@ -547,7 +567,10 @@ namespace OsuEnlightenOverlay.Rendering
                     arrowCol);
             }
 
-            HudRects[3] = new RectangleF(posX, posY, totalW, barH + arrowSize + 2);
+            // 시각 경계는 [posY - arrowSize - 2 (화살표 상단), posY + barH (바 하단)]다.
+            // 예전엔 top을 posY로 잡아 히트영역/하이라이트가 통째로 arrowSize+2 아래로 밀려,
+            // 막대/화살표 위 클릭이 안 잡히고 막대 아래 빈 공간을 눌러야 했다 (I-감사 #17).
+            HudRects[3] = new RectangleF(posX, posY - arrowSize - 2, totalW, barH + arrowSize + 2);
         }
 
         public void Dispose()

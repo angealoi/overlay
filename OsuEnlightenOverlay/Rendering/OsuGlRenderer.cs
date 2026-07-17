@@ -99,6 +99,9 @@ namespace OsuEnlightenOverlay.Rendering
         public HitObjectManagerOsu HitObjectManager { get; set; }
         public Action<int> PostHomUpdateCallback { get; set; }
         public Action<int> PreDrawCallback { get; set; }
+        // SpriteManager.Draw 이후 호출 — HUD 즉시모드 도형(에러바·에디트 하이라이트)을 게임플레이
+        // 위에 그리기 위함 (I-감사 #18). PreDrawCallback은 스프라이트 추가 전용으로 남는다.
+        public Action<int> PostDrawCallback { get; set; }
         public List<OsuMemoryReader.HitObjectJudgement> PendingJudgements { get; set; }
 
         /// <summary>
@@ -134,6 +137,10 @@ namespace OsuEnlightenOverlay.Rendering
             // SpriteManager Update + Draw (shader pipeline)
             SpriteManager.Update(timeMs);
             SpriteManager.Draw();
+
+            // 게임플레이 스프라이트를 다 그린 뒤 HUD 즉시모드 도형을 위에 얹는다 (I-감사 #18).
+            if (PostDrawCallback != null)
+                PostDrawCallback(timeMs);
         }
 
         public void Dispose()
