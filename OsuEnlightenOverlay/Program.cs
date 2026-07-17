@@ -49,6 +49,23 @@ namespace OsuEnlightenOverlay
             Console.WriteLine("[OK] 메모리 리더 초기화 성공");
             Console.WriteLine();
 
+            // DPI 배율 경고 (G8) — 이 오버레이는 100% 배율에서만 osu! 위에 정확히 정렬된다.
+            // DPI-aware 상태(위 DpiAwareness.Enable)에서 시스템 DPI를 조회해 96(=100%)이 아니면
+            // 시작 시 경고한다. 차단이 아닌 안내 — 사용자가 계속 진행할 수 있다.
+            int sysDpi = DpiAwareness.GetSystemDpi();
+            if (sysDpi != 96)
+            {
+                int pct = (int)Math.Round(sysDpi * 100.0 / 96.0);
+                Console.WriteLine("[!] DPI 배율 " + pct + "% 감지 — 100% 권장");
+                MessageBox.Show(
+                    "Windows 디스플레이 배율이 100%가 아닙니다 (현재 약 " + pct + "%).\n" +
+                    "이 오버레이는 배율 100%에서만 osu! 위에 정확히 정렬됩니다.\n\n" +
+                    "설정 → 시스템 → 디스플레이 → '배율'을 100%로 변경한 뒤 다시 실행하세요.\n" +
+                    "(이대로 계속하면 오버레이가 어긋날 수 있습니다.)",
+                    "osu! Enlighten Overlay — DPI 경고",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
             // 설정 로드
             OverlaySettings settings = new OverlaySettings();
             SettingsSerializer.Load(settings);
@@ -121,6 +138,34 @@ namespace OsuEnlightenOverlay
             try { if (SetProcessDpiAwarenessContext(PerMonitorAwareV2)) return; } catch { }
             try { if (SetProcessDpiAwareness(2) == 0) return; } catch { }   // S_OK=0
             try { SetProcessDPIAware(); } catch { }
+        }
+
+        [DllImport("user32.dll")]
+        static extern uint GetDpiForSystem();  // Win10 1607+
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetDC(IntPtr hWnd);
+        [DllImport("gdi32.dll")]
+        static extern int GetDeviceCaps(IntPtr hdc, int nIndex);
+        [DllImport("user32.dll")]
+        static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+        const int LOGPIXELSX = 88;
+
+        /// <summary>
+        /// 시스템(주 모니터) DPI. 100% 배율 = 96. Enable() 이후(DPI-aware 상태)에 호출해야
+        /// 실제 값이 나온다(unaware면 항상 96). 알 수 없으면 96(=100%, 경고 안 함)을 반환.
+        /// </summary>
+        public static int GetSystemDpi()
+        {
+            try { uint d = GetDpiForSystem(); if (d > 0) return (int)d; } catch { }
+            IntPtr hdc = GetDC(IntPtr.Zero);
+            if (hdc != IntPtr.Zero)
+            {
+                int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+                ReleaseDC(IntPtr.Zero, hdc);
+                if (dpi > 0) return dpi;
+            }
+            return 96;
         }
     }
 }

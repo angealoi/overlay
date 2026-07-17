@@ -289,7 +289,7 @@
 | ~~G5~~ ✅ (`fcfc0ff`, A1) | (설정) | ~~`..\..` 경로 탈출 가능~~ → **A1의 `IsSafeFolderName`이 이미 `.`/`..`·경로 구분자 거부**. 별도 수정 불필요(문서만 갱신) |
 | ~~G6~~ ✅ (`af38a50`) | `ControlPanelForm.cs` | ~~`statusSync` 타이머 Dispose 안 됨~~ → 폼 종료 시 Stop+Dispose. (`syncTimer`는 F1에서 이미 제거됨) |
 | ~~G7~~ ✅ (`af38a50`) | `ProcessMemory.cs` | ~~`ReadSharpString` 호출당 `byte[]` 할당~~ → `[ThreadStatic]` 재사용 버퍼 + 길이 지정 디코드(잔여 바이트 혼입 방지) |
-| ~~G8~~ ✅ (`af38a50`) | `Program.cs` | ~~High-DPI 인식 미검증~~ → **검증 결과 매니페스트/코드 없어 DPI-unaware였음** → `DpiAwareness.Enable()`(PerMonitorV2→System 폴백) 추가. **정책상 DPI 100% 사용을 안내**하므로 스케일 경로는 미검증(테스트 생략) — 100%에선 DPI-aware==unaware라 no-op(무영향). 100% 세션은 정상 동작 확인. 스케일 지원이 필요해지면 `DpiAwareness.Enable()` 유지, 문제 시 1줄 롤백 |
+| ~~G8~~ ✅ (`af38a50`) | `Program.cs` | ~~High-DPI 인식 미검증~~ → **검증 결과 매니페스트/코드 없어 DPI-unaware였음** → `DpiAwareness.Enable()`(PerMonitorV2→System 폴백) + **기동 시 시스템 DPI가 96(=100%)이 아니면 경고 MessageBox**(차단 아님, 100% 배율 안내). **정책상 100% 배율 권장**이라 스케일 경로 자체는 미검증 — 100%에선 DPI-aware==unaware라 no-op(무영향), 100% 세션 정상 동작 확인. 문제 시 `DpiAwareness.Enable()` 1줄 롤백 |
 | ~~G9~~ ✅ (`af38a50`) | `OsuEnlightenOverlay.Tests` | ~~테스트 0개~~ → **자체 회귀 테스트 프로젝트**(nuget 무의존, InternalsVisibleTo): ParsePattern·난이도(AR→PreEmpt)·비트맵 파서 **15개 통과**. 포팅 충실도도 검증(AR5=1200·AR9=600·AR0=1800·AR10=450·FadeIn=400) |
 | ~~G10~~ ✅ | `Overlay/OverlayForm.cs:490` + `Program.cs:57` | ~~**기동 시 좌상단에 흰 사각형이 잠깐 뜸**~~ → 해결 (`e2e630d`). **사용자 제보로 발견 — 이 목록에 없던 항목**. `Show()`가 `StartOverlay()`(=`SyncToOsu`)보다 먼저라 그 사이 창이 `StartPosition=Manual` 기본값 (0,0) 300x300으로 떠 있었고, GL 서피스 미초기화라 창 전체가 흰색이었다 → 첫 SwapBuffers 전까지 알파 0 |
 
