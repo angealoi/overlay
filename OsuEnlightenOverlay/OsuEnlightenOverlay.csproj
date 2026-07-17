@@ -93,6 +93,8 @@
     <Compile Include="ControlPanel\SettingsSerializer.cs" />
     <Compile Include="ControlPanel\HotkeyManager.cs" />
     <Compile Include="ControlPanel\ControlPanelForm.cs" />
+    <Compile Include="ControlPanel\AbTheme.cs" />
+    <Compile Include="ControlPanel\AbControls.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -7,93 +7,177 @@ using OsuEnlightenOverlay.Overlay;
 namespace OsuEnlightenOverlay.ControlPanel
 {
     /// <summary>
-    /// 컨트롤 패널 — NEWNEWOVERLAY overlay_tab.cpp WinForms 포팅.
-    /// Overlay / Difficulty / Cursor / HUD / Skin 섹션.
+    /// 컨트롤 패널 — AByteCheat 의 커스텀 VGUI 메뉴 스타일을 WinForms owner-draw 컨트롤로 재현.
+    ///
+    /// 레이아웃/동작은 기존과 동일(세로 스크롤 + 5개 카드)하되, 컨트롤은 모두 AByteCheat
+    /// 원본 색상(28,28,28 다크 + 초록 액센트)과 owner-draw 스타일을 따른다.
+    /// 외부 접점(생성자 시그니처, OverlayForm API 호출, 설정 저장/로드)은 변경 없다.
     /// </summary>
     public class ControlPanelForm : Form
     {
         OverlaySettings settings;
 
         // Overlay 섹션
-        CheckBox chkEnabled, chkCaptureBlocked, chkHiddenOverride;
-        NumericUpDown nudFpsCap;
+        AbCheckBox chkEnabled, chkCaptureBlocked, chkHiddenOverride;
+        AbSlider slFpsCap;
         OverlayForm overlayRef;
 
         // Difficulty 섹션
-        TrackBar tbAR, tbCS, tbDtAR, tbHtAR;
-        NumericUpDown nudAR, nudCS, nudDtAR, nudHtAR;
-        Button btnARAuto, btnCSAuto, btnDtARAuto, btnHtARAuto;
-
+        AbSlider slAR, slCS, slDtAR, slHtAR;
+        AbButton btnARAuto, btnCSAuto, btnDtARAuto, btnHtARAuto;
 
         // Cursor 섹션
-        CheckBox chkCursorAutoSize;
-        NumericUpDown nudCursorSize;
-        ComboBox cmbCursorPack;
-        Button btnRefreshCursorPacks;
+        AbCheckBox chkCursorAutoSize;
+        AbSlider slCursorSize;
+        AbComboBox cmbCursorPack;
+        AbButton btnRefreshCursorPacks;
 
         // HUD 섹션
-        CheckBox chkHudFps, chkHudAcc, chkHudCombo, chkHudHitError;
-        Button btnEditLayout;
-        Label lblEditHint1, lblEditHint2, lblEditHint3;
+        AbCheckBox chkHudFps, chkHudAcc, chkHudCombo, chkHudHitError;
+        AbButton btnEditLayout;
+        Label lblEditHint1, lblEditHint2;
 
         // Skin 섹션
-        ComboBox cmbSkin;
-        Button btnRefreshSkin;
+        AbComboBox cmbSkin;
+        AbButton btnRefreshSkin;
+
+        // statusSync 타이머가 갱신할 컨트롤 — 로컬 변수로 잡히면 타이머 클로저에서 접근 불가.
+        Label lblStatus, lblBeatmap;
+
+        // ── FormBorderStyle=None 폼의 외곽선 ──
+        // 커스텀 타이틀바를 쓰므로 Windows 기본 테두리가 없다. 폼 자체 OnPaint 에서
+        // 1px 외곽선(GroupLight)을 그려 창 윤곽을 준다.
+        public ControlPanelForm()
+        {
+            // 기본 생성자 — 더블버퍼링으로 외곽선/배경 깜빡임 방지.
+            SetStyle(ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint |
+                     ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            // 폼 전체 외곽선 — (48,48,48) 단선.
+            using (Pen p = new Pen(AbTheme.GroupLight))
+            {
+                Rectangle r = ClientRectangle;
+                e.Graphics.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
+            }
+        }
+
+        // ── 라벨 팩토리 — AByteCheat CLabel 과 동일 (200,200,200 / 150,150,150) ──
+
+        static Label MakeLabel(string text, int x, int y, int width, Color color)
+        {
+            Label l = new Label();
+            l.Text = text;
+            l.Location = new Point(x, y);
+            l.Width = width;
+            l.ForeColor = color;
+            l.BackColor = AbTheme.GroupBg;
+            l.TextAlign = ContentAlignment.MiddleLeft;
+            l.Font = new Font("Verdana", 9f);
+            return l;
+        }
 
         public ControlPanelForm(OverlaySettings settings, OverlayForm overlay)
         {
             this.settings = settings;
             this.overlayRef = overlay;
             this.Text = "osu! Enlighten Overlay — Control Panel";
-            this.Width = 382;
-            this.Height = 680;
+            // 2열 레이아웃 — 카드를 좌/우 열에 배치해 세로 스크롤 없이 한 화면에.
+            // 폭: cardW(420)*2 + 여백(cardX*2 + 열간격 gapCol=14) + 외곽 ≈ 884.
+            this.Width = 900;
+            // 높이: 타이틀바(32) + 상태(약 50) + 좌측열 카드(126+144+104+간격) + 하단 여백.
+            this.Height = 520;
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.FixedSingle;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
+            // FormBorderStyle=None — Windows 기본 타이틀바를 버리고 AByteCheat 스타일
+            // 커스텀 헤더(AbTitleBar)를 직접 그린다. 레인보우 그라디언트 바 + 드래그 이동.
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.BackColor = AbTheme.Gray;            // (28,28,28) 메인 배경
+            this.ForeColor = AbTheme.TextRegular;     // (200,200,200)
+            this.Font = new Font("Verdana", 9f);
 
-            // 스크롤 가능한 컨텐츠 패널 — 모든 섹션을 담아 아래 잘림 방지.
+            // Dock 배치는 컨트롤 추가 '역순'으로 처리된다. Fill 패널을 먼저 추가하고
+            // 타이틀바(Top)를 나중에 추가해야 타이틀바가 위쪽 32px을 먼저 차지하고,
+            // Fill 패널이 그 아래 남은 공간을 채운다. (반대로 하면 Fill 이 폼 전체를
+            // 먹어서 타이틀바가 패널을 덮고, 패널 상단 lblStatus 가 타이틀바에 가려진다.)
             Panel contentPanel = new Panel();
             contentPanel.Dock = DockStyle.Fill;
-            contentPanel.AutoScroll = true;
+            contentPanel.AutoScroll = false;
             contentPanel.BorderStyle = BorderStyle.None;
+            contentPanel.BackColor = AbTheme.Gray;
             this.Controls.Add(contentPanel);
 
-            int y = 10;
+            // ── 커스텀 타이틀바 — AByteCheat 메뉴 상단 헤더 재현 (Top 도킹, 나중 추가) ──
+            AbTitleBar titleBar = new AbTitleBar();
+            titleBar.Title = "osu! Enlighten Overlay";
+            this.Controls.Add(titleBar);
 
-            // ── 상태 표시 (맨 위) ──
-            Label lblStatus = new Label();
+            // ── 레이아웃 상수 — 2열 배치 기준 ──
+            const int cardX = 10;          // 좌측 열 x
+            const int cardW = 420;         // 카드 폭 (열당 하나)
+            const int gapCol = 14;         // 좌/우 열 간격
+            const int col2X = cardX + cardW + gapCol;  // 우측 열 x
+            const int cardGapY = 10;       // 세로 카드 간격
+            const int pad = 20;            // 카드 내부 좌측 패딩
+            const int colL = pad;          // 카드 내 좌측 컬럼 x
+            const int colR = 230;          // 카드 내 우측 컬럼 x (2열 체크박스용)
+            const int ctrlW = cardW - pad - 24;        // 컨트롤 가용폭(우측 여유 24)
+            // ─ Difficulty 행: label(30) + gap(8) + slider + gap(10) + Auto(60) ─
+            const int labelW = 30;
+            const int labelGap = 8;
+            const int sliderX = pad + labelW + labelGap;     // 슬라이더 시작 x
+            const int autoW = 60;                            // Auto 버튼 폭
+            const int autoGap = 10;                          // 슬라이더-Auto 간격
+            const int autoX = pad + ctrlW - autoW;           // Auto 버튼 x (우측 정렬)
+            const int sliderW = autoX - sliderX - autoGap;   // 슬라이더 폭 (Auto와 안 겹치게)
+            // ─ 카드 내부 상/하 여백 규칙 (모든 카드 동일) ─
+            const int contentTopY = 40;
+            const int bottomPad = 12;
+            const int checkRowGap = 26;
+
+            // ── 상태 표시 바 — 폼 전체 폭, 타이틀바와 카드 사이 정중앙 ──
+            // 게임 모드(Playing/Menu 등) + 비트맵 정보를 가운데 정렬로 보여준다.
+            // 양쪽 카드 열은 이 바 아래 같은 y에서 시작한다.
+            int contentW = col2X + cardW - cardX;  // 전체 콘텐츠 폭
+            lblStatus = new Label();
             lblStatus.Text = "● Ready";
-            lblStatus.Location = new Point(10, y);
-            lblStatus.Width = 330;
-            lblStatus.Height = 20;
+            lblStatus.Location = new Point(cardX, 12);
+            lblStatus.Width = contentW;
+            lblStatus.Height = 22;
             lblStatus.TextAlign = ContentAlignment.MiddleCenter;
-            lblStatus.Font = new Font(SystemFonts.DefaultFont.FontFamily, 9, FontStyle.Bold);
+            lblStatus.Font = new Font("Tahoma", 10f, FontStyle.Bold);
+            lblStatus.BackColor = AbTheme.Gray;
+            lblStatus.ForeColor = AbTheme.Green;
             contentPanel.Controls.Add(lblStatus);
-            y += lblStatus.Height + 3;
 
-            Label lblBeatmap = new Label();
+            lblBeatmap = new Label();
             lblBeatmap.Text = "";
-            lblBeatmap.Location = new Point(10, y);
-            lblBeatmap.Width = 330;
+            lblBeatmap.Location = new Point(cardX, 36);
+            lblBeatmap.Width = contentW;
             lblBeatmap.Height = 18;
             lblBeatmap.TextAlign = ContentAlignment.MiddleCenter;
-            lblBeatmap.ForeColor = Color.DimGray;
+            lblBeatmap.BackColor = AbTheme.Gray;
+            lblBeatmap.ForeColor = AbTheme.TextOff;
+            lblBeatmap.Font = new Font("Verdana", 8.25f);
             contentPanel.Controls.Add(lblBeatmap);
-            y += lblBeatmap.Height + 10;
 
-            // ── Overlay ──
-            GroupBox grpOverlay = new GroupBox();
-            grpOverlay.Text = "Overlay";
-            grpOverlay.Location = new Point(10, y);
-            grpOverlay.Width = 330;
-            grpOverlay.Height = 120;
+            // 카드 시작 y — 상태 바(36+18=54) 아래 충분한 여백(18)을 두어 타이틀바와 분리.
+            int cardY0 = 54 + 18;
+            // 좌/우 열 모두 같은 y에서 시작 — yR 이 yL 과 어긋나던 문제 수정.
+            int yL = cardY0;
+            int yR = cardY0;
 
-            chkEnabled = new CheckBox();
-            chkEnabled.Text = "Enable Overlay";
-            chkEnabled.AutoSize = false;
-            chkEnabled.Width = 140;
-            chkEnabled.Location = new Point(15, 22);
+            // ── Overlay ── [좌측 열] 카드높이 = 마지막 객체 끝(114) + bottomPad(12) = 126
+            int overlayH = 114 + bottomPad;
+            AbCard grpOverlay = new AbCard("OVERLAY", cardX, yL, cardW, overlayH);
+
+            chkEnabled = new AbCheckBox { Text = "Enable Overlay" };
+            chkEnabled.Location = new Point(colL, contentTopY);
+            chkEnabled.Width = colR - colL;
             chkEnabled.Checked = settings.Enabled;
             chkEnabled.CheckedChanged += (s, e) =>
             {
@@ -103,152 +187,121 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpOverlay.Controls.Add(chkEnabled);
 
-            chkCaptureBlocked = new CheckBox();
-            chkCaptureBlocked.Text = "Capture Blocked";
-            chkCaptureBlocked.AutoSize = false;
-            chkCaptureBlocked.Width = 140;
-            chkCaptureBlocked.Location = new Point(170, 22);
+            chkCaptureBlocked = new AbCheckBox { Text = "Capture Blocked" };
+            chkCaptureBlocked.Location = new Point(colR, contentTopY);
+            chkCaptureBlocked.Width = ctrlW - colR + pad;
             chkCaptureBlocked.Checked = settings.CaptureBlocked;
             chkCaptureBlocked.CheckedChanged += (s, e) => { settings.CaptureBlocked = chkCaptureBlocked.Checked; Save(); };
             grpOverlay.Controls.Add(chkCaptureBlocked);
 
-            chkHiddenOverride = new CheckBox();
-            chkHiddenOverride.Text = "Hidden Override";
-            chkHiddenOverride.AutoSize = false;
-            chkHiddenOverride.Width = 140;
-            chkHiddenOverride.Location = new Point(15, 42);
+            chkHiddenOverride = new AbCheckBox { Text = "Hidden Override" };
+            chkHiddenOverride.Location = new Point(colL, contentTopY + checkRowGap);
+            chkHiddenOverride.Width = ctrlW;
             chkHiddenOverride.Checked = settings.HiddenOverride;
             chkHiddenOverride.CheckedChanged += (s, e) => { settings.HiddenOverride = chkHiddenOverride.Checked; Save(); };
             grpOverlay.Controls.Add(chkHiddenOverride);
 
-            Label lblFps = new Label();
-            lblFps.Text = "FPS Cap:";
-            lblFps.Location = new Point(15, 70);
-            lblFps.Width = 55;
-            lblFps.TextAlign = ContentAlignment.MiddleLeft;
-            grpOverlay.Controls.Add(lblFps);
+            // "FPS Cap:" 라벨에 (0 = unlimited) 힌트 통합 — 별도 라벨은 카드 밖으로 튀어나가는 문제가 있어 제거.
+            grpOverlay.Controls.Add(MakeLabel("FPS Cap (0 = unlimited):", colL, 96, 160, AbTheme.TextRegular));
 
-            nudFpsCap = new NumericUpDown();
-            nudFpsCap.Location = new Point(75, 68);
-            nudFpsCap.Width = 80;
-            nudFpsCap.Minimum = OverlaySettings.FpsCapMin;
-            nudFpsCap.Maximum = OverlaySettings.FpsCapMax;
+            // FPS Cap 은 정수 — AbSlider 를 정수 모드로. 0=unlimited 의미 살리기 위해
+            // Min=0, Max=FpsCapMax, DecimalPlaces=0.
+            slFpsCap = new AbSlider();
+            slFpsCap.Location = new Point(colL + 164, 94);
+            slFpsCap.Width = ctrlW - 164;
+            slFpsCap.Height = 22;
+            slFpsCap.DecimalPlaces = 0;
+            slFpsCap.Minimum = OverlaySettings.FpsCapMin;
+            slFpsCap.Maximum = OverlaySettings.FpsCapMax;
             // 방어: Normalize()가 이미 범위 안으로 맞추지만, 범위 밖 값이 새어들어와도 예외 없이.
-            nudFpsCap.Value = Math.Min(nudFpsCap.Maximum, Math.Max(nudFpsCap.Minimum, (decimal)settings.FpsCap));
-            nudFpsCap.ValueChanged += (s, e) =>
+            int fpsVal = (int)Math.Min(slFpsCap.Maximum, Math.Max(slFpsCap.Minimum, settings.FpsCap));
+            slFpsCap.Value = fpsVal;
+            settings.FpsCap = fpsVal;
+            slFpsCap.ValueChanged += (s, e) =>
             {
-                settings.FpsCap = (int)nudFpsCap.Value;
+                settings.FpsCap = (int)slFpsCap.Value;
                 if (overlayRef != null) overlayRef.ApplyFpsCap();
                 Save();
             };
-            grpOverlay.Controls.Add(nudFpsCap);
-
-            Label lblFpsHint = new Label();
-            lblFpsHint.Text = "(0 = unlimited)";
-            lblFpsHint.Location = new Point(160, 70);
-            lblFpsHint.Width = 120;
-            lblFpsHint.ForeColor = Color.Gray;
-            lblFpsHint.TextAlign = ContentAlignment.MiddleLeft;
-            grpOverlay.Controls.Add(lblFpsHint);
+            grpOverlay.Controls.Add(slFpsCap);
 
             contentPanel.Controls.Add(grpOverlay);
-            y += grpOverlay.Height + 10;
+            yL += grpOverlay.Height + cardGapY;
 
-            // ── Difficulty Changer ──
-            GroupBox grpDiff = new GroupBox();
-            grpDiff.Text = "Difficulty Changer";
-            grpDiff.Location = new Point(10, y);
-            grpDiff.Width = 330;
-            grpDiff.Height = 200;
+            // ── Difficulty Changer ── [우측 열] 최상단
+            // 행 간격 40, 첫 행 contentTopY(40) → 40/80/120/160. 마지막 끝 182 + bottomPad 12 = 카드높이 194.
+            // 우측 열 시작 y는 상태 라벨과 같은 높이(14)에서 시작해 정렬을 맞춘다.
+            AbCard grpDiff = new AbCard("DIFFICULTY CHANGER", col2X, yR, cardW, 194);
 
-            // NOMOD AR 상한 10 — osu! 실제 NOMOD AR이 10에서 막히고, 그 이상은 부자연스럽다.
-            // min/max는 OverlaySettings 상수 — Normalize() 클램프와 동일 범위를 공유한다.
-            AddValueRow(grpDiff, 20, "AR",
+            const int diffRowGap = 40;
+            AddValueRow(grpDiff, contentTopY + 0 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "AR",
                 settings.ArValue, OverlaySettings.ArMin, OverlaySettings.ArMax, 2,
                 (v) => { settings.ArValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapAR() : 9.0f,
-                out tbAR, out nudAR, out btnARAuto);
-            AddValueRow(grpDiff, 60, "CS",
+                out slAR, out btnARAuto);
+            AddValueRow(grpDiff, contentTopY + 1 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "CS",
                 settings.CsValue, OverlaySettings.CsMin, OverlaySettings.CsMax, 2,
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
-                // 채움은 mod 적용 CS — nomod를 채우면 EZ에서 mod가 무시됨
                 () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
-                out tbCS, out nudCS, out btnCSAuto);
-            AddValueRow(grpDiff, 100, "DT",
+                out slCS, out btnCSAuto);
+            AddValueRow(grpDiff, contentTopY + 2 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "DT",
                 settings.ArDtValue, OverlaySettings.DtArMin, OverlaySettings.DtArMax, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
-                out tbDtAR, out nudDtAR, out btnDtARAuto);
-            // HT AR 상한 10 — HT는 AR을 낮추는 mod라 10 이상은 의미가 없다.
-            // (DT만 10 초과 유지: AR10 맵+DT의 체감 AR은 10을 넘는다.)
-            AddValueRow(grpDiff, 140, "HT",
+                out slDtAR, out btnDtARAuto);
+            AddValueRow(grpDiff, contentTopY + 3 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "HT",
                 settings.ArHtValue, OverlaySettings.HtArMin, OverlaySettings.HtArMax, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
-                out tbHtAR, out nudHtAR, out btnHtARAuto);
+                out slHtAR, out btnHtARAuto);
 
             contentPanel.Controls.Add(grpDiff);
-            y += grpDiff.Height + 10;
+            yR += grpDiff.Height + cardGapY;
 
-            // ── Cursor ──
-            GroupBox grpCursor = new GroupBox();
-            grpCursor.Text = "Overlay Cursor";
-            grpCursor.Location = new Point(10, y);
-            grpCursor.Width = 330;
-            grpCursor.Height = 115;
+            // ── Cursor ── [좌측 열] OVERLAY 아래
+            // (마지막 객체 끝 132 + bottomPad 12 = 카드높이 144)
+            AbCard grpCursor = new AbCard("OVERLAY CURSOR", cardX, yL, cardW, 144);
 
-            chkCursorAutoSize = new CheckBox();
-            chkCursorAutoSize.Text = "Auto Cursor Size";
-            chkCursorAutoSize.Location = new Point(15, 20);
-            chkCursorAutoSize.AutoSize = false;
-            chkCursorAutoSize.Width = 140;
+            chkCursorAutoSize = new AbCheckBox { Text = "Auto Cursor Size" };
+            chkCursorAutoSize.Location = new Point(colL, contentTopY);
+            chkCursorAutoSize.Width = ctrlW;
             chkCursorAutoSize.Checked = settings.CursorAutoSize;
             chkCursorAutoSize.CheckedChanged += (s, e) => { settings.CursorAutoSize = chkCursorAutoSize.Checked; Save(); };
             grpCursor.Controls.Add(chkCursorAutoSize);
 
-            Label lblCursorSize = new Label();
-            lblCursorSize.Text = "Cursor Size:";
-            lblCursorSize.Location = new Point(15, 48);
-            lblCursorSize.Width = 70;
-            grpCursor.Controls.Add(lblCursorSize);
+            grpCursor.Controls.Add(MakeLabel("Cursor Size:", colL, 68, 90, AbTheme.TextRegular));
 
-            nudCursorSize = new NumericUpDown();
-            nudCursorSize.Location = new Point(90, 45);
-            nudCursorSize.Width = 70;
-            nudCursorSize.Minimum = (decimal)OverlaySettings.CursorSizeMin;
-            nudCursorSize.Maximum = (decimal)OverlaySettings.CursorSizeMax;
-            nudCursorSize.DecimalPlaces = 2;
-            nudCursorSize.Increment = 0.05m;
-            // 방어: NaN/Infinity는 (decimal) 캐스트에서 OverflowException을 던지므로 float 단계에서
-            // 먼저 살균한 뒤 범위로 클램프한다. (Normalize()가 이미 처리하지만 이중 방어.)
+            slCursorSize = new AbSlider();
+            slCursorSize.Location = new Point(colL, 86);
+            slCursorSize.Width = ctrlW;
+            slCursorSize.Height = 22;
+            slCursorSize.DecimalPlaces = 2;
+            slCursorSize.Minimum = OverlaySettings.CursorSizeMin;
+            slCursorSize.Maximum = OverlaySettings.CursorSizeMax;
             float cursorSize = settings.CursorSize;
             if (float.IsNaN(cursorSize) || float.IsInfinity(cursorSize)) cursorSize = 1.0f;
             cursorSize = Math.Max(OverlaySettings.CursorSizeMin, Math.Min(OverlaySettings.CursorSizeMax, cursorSize));
-            nudCursorSize.Value = (decimal)cursorSize;
-            nudCursorSize.ValueChanged += (s, e) => { settings.CursorSize = (float)nudCursorSize.Value; Save(); };
-            grpCursor.Controls.Add(nudCursorSize);
+            slCursorSize.Value = cursorSize;
+            slCursorSize.ValueChanged += (s, e) => { settings.CursorSize = slCursorSize.Value; Save(); };
+            grpCursor.Controls.Add(slCursorSize);
 
-            // Cursor Pack
-            Label lblCursorPack = new Label();
-            lblCursorPack.Text = "Cursor Pack:";
-            lblCursorPack.Location = new Point(15, 78);
-            lblCursorPack.Width = 70;
-            grpCursor.Controls.Add(lblCursorPack);
-
-            cmbCursorPack = new ComboBox();
-            cmbCursorPack.Location = new Point(90, 75);
-            cmbCursorPack.Width = 145;
-            cmbCursorPack.DropDownStyle = ComboBoxStyle.DropDownList;
+            // Cursor Pack — 콤보 + 우측 Refresh 버튼. "Pack:" 라벨은 콤보가 역할을 대신하므로 생략.
+            const int refreshWPack = 80;
+            int packComboW = ctrlW - refreshWPack - 10;
+            cmbCursorPack = new AbComboBox();
+            cmbCursorPack.Location = new Point(colL, 112);
+            cmbCursorPack.Width = packComboW;
+            cmbCursorPack.Height = 22;
             RefreshCursorPacks();
             cmbCursorPack.SelectedIndexChanged += (s, e) =>
             {
-                if (cmbCursorPack.SelectedIndex == 0)
+                int idx = cmbCursorPack.SelectedIndex;
+                if (idx == 0)
                 {
-                    // Auto — pack 비활성화
                     settings.CursorPackEnabled = false;
                     settings.CursorPackName = "";
                 }
-                else
+                else if (idx > 0)
                 {
                     settings.CursorPackEnabled = true;
                     settings.CursorPackName = (string)cmbCursorPack.SelectedItem;
@@ -258,55 +311,53 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpCursor.Controls.Add(cmbCursorPack);
 
-            btnRefreshCursorPacks = new Button();
-            btnRefreshCursorPacks.Text = "Refresh";
-            btnRefreshCursorPacks.Location = new Point(240, 75);
-            btnRefreshCursorPacks.Width = 65;
+            btnRefreshCursorPacks = new AbButton { Text = "Refresh" };
+            btnRefreshCursorPacks.Location = new Point(colL + packComboW + 10, 111);
+            btnRefreshCursorPacks.Width = refreshWPack;
+            btnRefreshCursorPacks.Height = 24;
             btnRefreshCursorPacks.Click += (s, e) => { RefreshCursorPacks(); };
             grpCursor.Controls.Add(btnRefreshCursorPacks);
 
             contentPanel.Controls.Add(grpCursor);
-            y += grpCursor.Height + 10;
+            yL += grpCursor.Height + cardGapY;
 
-            // ── HUD ──
-            GroupBox grpHud = new GroupBox();
-            grpHud.Text = "Gameplay HUD";
-            grpHud.Location = new Point(10, y);
-            grpHud.Width = 330;
-            grpHud.Height = 165;
+            // ── HUD ── [우측 열] DIFFICULTY 아래
+            // 힌트 2줄(압축) 끝 178 + bottomPad 12 = 카드높이 190.
+            // 우측 열 = 72 + 194 + 10 + 190 = 466 → 좌측 열(SKIN 끝 466)과 하단 일치.
+            AbCard grpHud = new AbCard("GAMEPLAY HUD", col2X, yR, cardW, 190);
 
-            chkHudFps = new CheckBox();
-            chkHudFps.Text = "FPS";
-            chkHudFps.Location = new Point(15, 20);
+            chkHudFps = new AbCheckBox { Text = "FPS" };
+            chkHudFps.Location = new Point(colL, contentTopY);
+            chkHudFps.Width = colR - colL;
             chkHudFps.Checked = settings.HudEnabled[0];
             chkHudFps.CheckedChanged += (s, e) => { settings.HudEnabled[0] = chkHudFps.Checked; Save(); };
             grpHud.Controls.Add(chkHudFps);
 
-            chkHudAcc = new CheckBox();
-            chkHudAcc.Text = "Accuracy";
-            chkHudAcc.Location = new Point(170, 20);
+            chkHudAcc = new AbCheckBox { Text = "Accuracy" };
+            chkHudAcc.Location = new Point(colR, contentTopY);
+            chkHudAcc.Width = ctrlW - colR + pad;
             chkHudAcc.Checked = settings.HudEnabled[1];
             chkHudAcc.CheckedChanged += (s, e) => { settings.HudEnabled[1] = chkHudAcc.Checked; Save(); };
             grpHud.Controls.Add(chkHudAcc);
 
-            chkHudCombo = new CheckBox();
-            chkHudCombo.Text = "Combo";
-            chkHudCombo.Location = new Point(15, 45);
+            chkHudCombo = new AbCheckBox { Text = "Combo" };
+            chkHudCombo.Location = new Point(colL, contentTopY + checkRowGap);
+            chkHudCombo.Width = colR - colL;
             chkHudCombo.Checked = settings.HudEnabled[2];
             chkHudCombo.CheckedChanged += (s, e) => { settings.HudEnabled[2] = chkHudCombo.Checked; Save(); };
             grpHud.Controls.Add(chkHudCombo);
 
-            chkHudHitError = new CheckBox();
-            chkHudHitError.Text = "Hit Error Bar";
-            chkHudHitError.Location = new Point(170, 45);
+            chkHudHitError = new AbCheckBox { Text = "Hit Error Bar" };
+            chkHudHitError.Location = new Point(colR, contentTopY + checkRowGap);
+            chkHudHitError.Width = ctrlW - colR + pad;
             chkHudHitError.Checked = settings.HudEnabled[3];
             chkHudHitError.CheckedChanged += (s, e) => { settings.HudEnabled[3] = chkHudHitError.Checked; Save(); };
             grpHud.Controls.Add(chkHudHitError);
 
-            btnEditLayout = new Button();
-            btnEditLayout.Text = "Edit Layout";
-            btnEditLayout.Location = new Point(15, 75);
-            btnEditLayout.Width = 290;
+            btnEditLayout = new AbButton { Text = "Edit Layout", Accent = true };
+            btnEditLayout.Location = new Point(colL, 96);
+            btnEditLayout.Width = ctrlW;
+            btnEditLayout.Height = 32;
             btnEditLayout.Click += (s, e) =>
             {
                 settings.HudEditMode = !settings.HudEditMode;
@@ -315,42 +366,39 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpHud.Controls.Add(btnEditLayout);
 
-            // edit 모드 단축키 안내 (NEWNEWOVERLAY overlay_tab.cpp 힌트 텍스트)
+            // edit 모드 단축키 힌트 — 3줄을 2줄로 압축해 HUD 카드를 줄이고
+            // 우측 열 하단을 좌측 열(SKIN) 하단과 맞춘다.
             lblEditHint1 = new Label();
-            lblEditHint1.Text = "Tab 순환 | Up/Down 크기 | Shift ×10";
-            lblEditHint1.Location = new Point(15, 103);
+            lblEditHint1.Text = "Tab 순환 | Up/Down 크기 | Shift ×10 | 드래그로 이동";
+            lblEditHint1.Location = new Point(colL, 138);
             lblEditHint1.AutoSize = true;
-            lblEditHint1.ForeColor = Color.FromArgb(180, 140, 0);
+            lblEditHint1.BackColor = AbTheme.GroupBg;
+            lblEditHint1.ForeColor = AbTheme.Hint;
+            lblEditHint1.Font = new Font("Verdana", 8.25f);
             grpHud.Controls.Add(lblEditHint1);
 
             lblEditHint2 = new Label();
-            lblEditHint2.Text = "드래그로 이동 | Esc 저장+종료";
-            lblEditHint2.Location = new Point(15, 123);
+            lblEditHint2.Text = "Esc 저장+종료 | S: 스냅 | X: 가로고정 | Y: 세로고정";
+            lblEditHint2.Location = new Point(colL, 158);
             lblEditHint2.AutoSize = true;
-            lblEditHint2.ForeColor = Color.FromArgb(180, 140, 0);
+            lblEditHint2.BackColor = AbTheme.GroupBg;
+            lblEditHint2.ForeColor = AbTheme.Hint;
+            lblEditHint2.Font = new Font("Verdana", 8.25f);
             grpHud.Controls.Add(lblEditHint2);
 
-            lblEditHint3 = new Label();
-            lblEditHint3.Text = "S: 스냅 | X: 가로고정 | Y: 세로고정";
-            lblEditHint3.Location = new Point(15, 143);
-            lblEditHint3.AutoSize = true;
-            lblEditHint3.ForeColor = Color.FromArgb(180, 140, 0);
-            grpHud.Controls.Add(lblEditHint3);
-
             contentPanel.Controls.Add(grpHud);
-            y += grpHud.Height + 10;
+            yR += grpHud.Height + cardGapY;
 
-            // ── Skin ──
-            GroupBox grpSkin = new GroupBox();
-            grpSkin.Text = "Skin";
-            grpSkin.Location = new Point(10, y);
-            grpSkin.Width = 330;
-            grpSkin.Height = 105;
+            // ── Skin ── [좌측 열] OVERLAY CURSOR 아래
+            // (InstaFade 체크 끝 92 + bottomPad 12 = 카드높이 104)
+            AbCard grpSkin = new AbCard("SKIN", cardX, yL, cardW, 104);
 
-            cmbSkin = new ComboBox();
-            cmbSkin.Location = new Point(15, 20);
-            cmbSkin.Width = 200;
-            cmbSkin.DropDownStyle = ComboBoxStyle.DropDownList;
+            const int refreshWSkin = 90;
+            int skinComboW = ctrlW - refreshWSkin - 10;
+            cmbSkin = new AbComboBox();
+            cmbSkin.Location = new Point(colL, contentTopY);
+            cmbSkin.Width = skinComboW;
+            cmbSkin.Height = 22;
             RefreshSkins();
             cmbSkin.SelectedIndexChanged += (s, e) =>
             {
@@ -362,45 +410,29 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpSkin.Controls.Add(cmbSkin);
 
-            btnRefreshSkin = new Button();
-            btnRefreshSkin.Text = "Refresh";
-            btnRefreshSkin.Location = new Point(225, 18);
-            btnRefreshSkin.Width = 80;
+            btnRefreshSkin = new AbButton { Text = "Refresh" };
+            btnRefreshSkin.Location = new Point(colL + skinComboW + 10, contentTopY - 1);
+            btnRefreshSkin.Width = refreshWSkin;
+            btnRefreshSkin.Height = 24;
             btnRefreshSkin.Click += (s, e) => { RefreshSkins(); };
             grpSkin.Controls.Add(btnRefreshSkin);
 
-            CheckBox chkInstaFade = new CheckBox();
-            chkInstaFade.Text = "InstaFade (no hit animation)";
-            chkInstaFade.AutoSize = false;
-            chkInstaFade.Width = 250;
-            chkInstaFade.Location = new Point(15, 50);
+            AbCheckBox chkInstaFade = new AbCheckBox { Text = "InstaFade (no hit animation)" };
+            chkInstaFade.Location = new Point(colL, 72);
+            chkInstaFade.Width = ctrlW;
             chkInstaFade.Checked = settings.InstaFade;
             chkInstaFade.CheckedChanged += (s, e) =>
             { settings.InstaFade = chkInstaFade.Checked; Save(); };
             grpSkin.Controls.Add(chkInstaFade);
 
             contentPanel.Controls.Add(grpSkin);
-            y += grpSkin.Height + 10;
+            yL += grpSkin.Height + cardGapY;
 
-            // ── 하단 정보 ──
-            Label lblInfo = new Label();
-            lblInfo.Text = "Close this panel to exit";
-            lblInfo.Location = new Point(10, y);
-            lblInfo.Width = 330;
-            lblInfo.Height = 20;
-            lblInfo.TextAlign = ContentAlignment.MiddleCenter;
-            lblInfo.ForeColor = Color.Gray;
-            contentPanel.Controls.Add(lblInfo);
-
-            // 스크롤 영역 하단 여백
-            y += lblInfo.Height + 10;
-            contentPanel.AutoScrollMinSize = new Size(340, y);
-
-            // 스크롤 휠이 NumericUpDown, TrackBar, ListBox에서 값을 변경하지 않도록 차단
-            // 스크롤 휠은 contentPanel의 스크롤바에서만 작동
+            // 스크롤 휠이 Ab* 컨트롤에서 값을 변경하지 않도록 차단.
+            // 2열 레이아웃에선 스크롤이 없지만 컨트롤 위에서 휠이 의도치 않게 동작하지 않게.
             DisableMouseWheelOnControls(contentPanel);
 
-            // 상태 동기화 타이머 — edit 버튼 텍스트 + 상태 표시
+            // 상태 동기화 타이머 — edit 버튼 텍스트 + 상태 표시 + CS 하한 강제.
             Timer statusSync = new Timer();
             statusSync.Interval = 150;
             statusSync.Tick += (s, e) =>
@@ -413,138 +445,99 @@ namespace OsuEnlightenOverlay.ControlPanel
                     if (lblStatus.Text != overlayRef.StatusText)
                     {
                         lblStatus.Text = overlayRef.StatusText;
-                        lblStatus.ForeColor = overlayRef.StatusText.StartsWith("●") ? Color.FromArgb(0, 180, 0) : Color.Gray;
+                        lblStatus.ForeColor = overlayRef.StatusText.StartsWith("●") ? AbTheme.Green : AbTheme.TextOff;
                     }
                     if (lblBeatmap.Text != overlayRef.BeatmapText)
                         lblBeatmap.Text = overlayRef.BeatmapText;
 
                     // CS 하한 강제 — 맵 CS(HR/EZ 반영) 아래로는 못 내려간다.
-                    // 곡을 바꿔서 내 값이 새 곡의 CS보다 작아지면 즉시 새 곡 값으로 올린다.
-                    // Compute도 Math.Max(CsValue, 맵CS)로 같은 하한을 걸지만, 여기서 슬라이더까지
-                    // 올려야 사용자가 실제 적용값을 보게 된다.
                     if (overlayRef.LiveCS > 0)
                     {
-                        decimal floor = (decimal)Math.Min(10, Math.Round(overlayRef.LiveCS, 2));
-                        if (floor > nudCS.Value)
-                            nudCS.Value = floor; // ValueChanged → settings.CsValue 반영 + Save
+                        float floor = Math.Min(10, (float)Math.Round(overlayRef.LiveCS, 2));
+                        if (floor > slCS.Value)
+                            slCS.Value = floor; // ValueChanged → settings.CsValue 반영 + Save
                     }
                 }
             };
             statusSync.Start();
-            // 폼 종료 시 타이머 정지·해제 (G6) — 예전엔 로컬 Timer라 프로세스 종료까지 계속 돌았다.
             this.FormClosed += (s, e) => { statusSync.Stop(); statusSync.Dispose(); };
         }
 
         /// <summary>
-        /// TrackBar + NumericUpDown + Auto Button 행 추가.
+        /// AbSlider + Auto 버튼 행 추가 (TrackBar+NUD 통합 버전).
         ///
-        /// Auto는 모드가 아니라 일회성 동작이다 — 누르면 getMapValue()(= 현재 맵의 값,
-        /// HR/EZ 반영)를 슬라이더에 채워넣고 끝이다. 슬라이더는 항상 편집 가능하고,
-        /// 슬라이더 값이 곧 적용되는 값이다. "Manual로 바꿔놨는데 원래 맵 값으로
-        /// 되돌리고 싶다"에 쓰는 버튼.
+        /// 기존과 동일 — Auto는 일회성 동작(현재 맵 값을 슬라이더에 채움).
+        /// 로드 값이 [min,max] 밖이면 클램프 후 설정에도 반영(wasClamped).
+        /// NaN/Infinity는 AbSlider.Value setter에서도 살균하지만 여기서도 이중 방어.
         /// </summary>
-        void AddValueRow(GroupBox parent, int yPos, string label,
+        void AddValueRow(Control parent, int yPos, int sliderX, int sliderW, int autoX, int autoW,
+            int labelX, int labelW, string label,
             float value, float min, float max, int decimals,
             Action<float> onValueChanged,
             Func<float> getMapValue,
-            out TrackBar outTb, out NumericUpDown outNud, out Button outBtnAuto)
+            out AbSlider outSlider, out AbButton outBtnAuto)
         {
-            Label lbl = new Label();
-            lbl.Text = label + ":";
-            lbl.Location = new Point(15, yPos + 3);
-            lbl.Width = 35;
-            parent.Controls.Add(lbl);
+            parent.Controls.Add(MakeLabel(label, labelX, yPos + 3, labelW, AbTheme.TextRegular));
 
-            // 저장된 값이 [min,max] 밖이면 클램프 — TrackBar.Value/NumericUpDown.Value는 범위 밖
-            // 대입 시 예외를 던진다. (settings.ini 손편집이나 슬라이더 상한 축소 후 로드에서 발생.)
-            // 클램프됐으면 아래에서 설정에도 반영해야 한다 — 안 그러면 슬라이더는 10을
-            // 보여주는데 settings에는 12가 남아 Compute가 12를 계속 쓴다.
-            //
-            // NaN/Infinity는 Math.Min/Max를 그대로 통과(전파)한 뒤 (decimal) 캐스트에서
-            // OverflowException을 낸다 — 클램프 전에 먼저 살균해야 한다. 원본과 비교해
-            // wasClamped를 판정하므로 NaN도 (min과 !=이라) 정상적으로 재저장된다.
+            // 방어: 클램프 전 NaN/Infinity 살균. 원본과 비교해 wasClamped 판정.
             float original = value;
             if (float.IsNaN(value) || float.IsInfinity(value)) value = min;
             float clampedValue = Math.Max(min, Math.Min(max, value));
             bool wasClamped = clampedValue != original;
             value = clampedValue;
 
-            TrackBar tb = new TrackBar();
-            tb.Location = new Point(55, yPos);
-            tb.Width = 140;
-            tb.Minimum = (int)(min * 10);
-            tb.Maximum = (int)(max * 10);
-            tb.Value = (int)(value * 10);
-            tb.TickFrequency = 10;
-            NumericUpDown nud = new NumericUpDown();
-            nud.Location = new Point(200, yPos);
-            nud.Width = 50;
-            nud.Minimum = (decimal)min;
-            nud.Maximum = (decimal)max;
-            nud.DecimalPlaces = decimals;
-            nud.Increment = 0.1m;
-            nud.Value = (decimal)value;
-            tb.Scroll += (s, e) =>
-            {
-                float v = tb.Value / 10f;
-                nud.Value = (decimal)v;
-                onValueChanged(v);
-            };
-            nud.ValueChanged += (s, e) =>
-            {
-                float v = (float)nud.Value;
-                tb.Value = Math.Max(tb.Minimum, Math.Min(tb.Maximum, (int)(v * 10)));
-                onValueChanged(v);
-            };
-            parent.Controls.Add(tb);
-            parent.Controls.Add(nud);
+            AbSlider sl = new AbSlider();
+            sl.Location = new Point(sliderX, yPos);
+            sl.Width = sliderW;
+            sl.Height = 22;
+            sl.DecimalPlaces = decimals;
+            sl.Minimum = min;
+            sl.Maximum = max;
+            sl.Value = value;
+            sl.ValueChanged += (s, e) => onValueChanged(sl.Value);
+            parent.Controls.Add(sl);
 
-            Button btnAuto = new Button();
-            btnAuto.Location = new Point(255, yPos);
-            btnAuto.Width = 55;
-            btnAuto.Height = 23;
-            btnAuto.Text = "Auto";
+            AbButton btnAuto = new AbButton { Text = "Auto" };
+            btnAuto.Location = new Point(autoX, yPos);
+            btnAuto.Width = autoW;
+            btnAuto.Height = 25;
             btnAuto.Click += (s, e) =>
             {
                 float mapVal = getMapValue();
                 if (float.IsNaN(mapVal) || float.IsInfinity(mapVal)) return;
                 mapVal = Math.Max(min, Math.Min(max, mapVal));
-                // nud.Value 변경이 ValueChanged를 타고 onValueChanged로 설정에 반영된다
-                nud.Value = (decimal)Math.Round(mapVal, 2);
+                // sl.Value 변경이 ValueChanged → onValueChanged 로 설정에 반영된다
+                sl.Value = (float)Math.Round(mapVal, 2);
             };
             parent.Controls.Add(btnAuto);
 
-            // 로드 값이 범위 밖이라 클램프됐다면 설정에도 반영(+저장). 핸들러는 위에서
-            // 붙었으므로 이 시점 호출은 정상적으로 onValueChanged를 탄다.
+            // 로드 값이 범위 밖이라 클램프됐다면 설정에도 반영(+저장)
             if (wasClamped)
                 onValueChanged(value);
 
-            outTb = tb;
-            outNud = nud;
+            outSlider = sl;
             outBtnAuto = btnAuto;
         }
 
         /// <summary>
-        /// 컨트롤 패널 내의 NumericUpDown, TrackBar, ListBox에서 스크롤 휠이 값을 변경하지 않도록 차단.
+        /// 컨트롤 패널 내의 AbSlider/AbComboBox 등에서 스크롤 휠이 값을 변경하지 않도록 차단.
         /// 스크롤 휠은 패널 스크롤바에서만 작동.
         /// </summary>
         void DisableMouseWheelOnControls(Control parent)
         {
             foreach (Control c in parent.Controls)
             {
-                // ComboBox가 빠져 있어서 스킨/커서 목록이 휠에 반응했다.
-                // 이 패널에 ListBox는 없지만(스킨·커서 모두 ComboBox), 타입 가드는 남겨둔다.
-                if (c is NumericUpDown || c is TrackBar || c is ListBox || c is ComboBox)
+                // Ab* 컨트롤은 모두 Control 파생이므로 타입 가드로 걸러야 한다.
+                // 표준 NumericUpDown/TrackBar/ListBox/ComboBox 도 호환성 위해 남김.
+                if (c is AbSlider || c is AbComboBox || c is AbButton || c is AbCheckBox ||
+                    c is NumericUpDown || c is TrackBar || c is ListBox || c is ComboBox)
                 {
                     c.MouseWheel += (s, e) =>
                     {
-                        // Handled=true면 Control.WmMouseWheel이 DefWndProc을 건너뛰어
-                        // 네이티브 컨트롤의 기본 휠 처리(값/선택 변경)가 일어나지 않는다.
                         HandledMouseEventArgs h = e as HandledMouseEventArgs;
                         if (h != null) h.Handled = true;
                     };
                 }
-                // 재귀적으로 자식 컨트롤도 처리
                 if (c.HasChildren)
                     DisableMouseWheelOnControls(c);
             }
@@ -557,7 +550,6 @@ namespace OsuEnlightenOverlay.ControlPanel
             cmbSkin.Items.Clear();
             cmbSkin.Items.Add("Default");
 
-            // osu! Skins 폴더에서 스킨 목록 스캔
             string osuDir = null;
             if (overlayRef != null)
                 osuDir = overlayRef.GetOsuInstallDir();
@@ -569,7 +561,7 @@ namespace OsuEnlightenOverlay.ControlPanel
                 string skinsPath = System.IO.Path.Combine(osuDir, "Skins");
                 if (System.IO.Directory.Exists(skinsPath))
                 {
-                    // Exists가 true여도 ACL로 GetDirectories가 예외를 낼 수 있다 — 생성자에서 죽지 않도록 (A1).
+                    // Exists가 true여도 ACL로 GetDirectories가 예외를 낼 수 있다 (A1).
                     string[] dirs;
                     try { dirs = System.IO.Directory.GetDirectories(skinsPath); }
                     catch { dirs = new string[0]; }
@@ -610,8 +602,8 @@ namespace OsuEnlightenOverlay.ControlPanel
                 System.Reflection.Assembly.GetExecutingAssembly().Location);
             string packsRoot = System.IO.Path.Combine(exeDir, "overlay-cursors");
 
-            // overlay-cursors 폴더가 없으면 생성 — 쓰기 불가 폴더(예: Program Files)에서 실행 시
-            // CreateDirectory가 예외를 던져 생성자(=메인 폼)가 죽으면 앱이 아예 안 뜬다 (A1).
+            // overlay-cursors 폴더가 없으면 생성 — 쓰기 불가 폴더에서 CreateDirectory 가 예외를
+            // 던지면 생성자(=메인 폼)가 죽어 앱이 아예 안 뜬다 (A1).
             if (!System.IO.Directory.Exists(packsRoot))
             {
                 try { System.IO.Directory.CreateDirectory(packsRoot); }
@@ -622,7 +614,6 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             if (System.IO.Directory.Exists(packsRoot))
             {
-                // Exists가 true여도 ACL/리파스포인트로 GetDirectories가 access-denied를 낼 수 있다.
                 string[] dirs;
                 try { dirs = System.IO.Directory.GetDirectories(packsRoot); }
                 catch { dirs = new string[0]; }
@@ -631,7 +622,6 @@ namespace OsuEnlightenOverlay.ControlPanel
                 foreach (string dir in dirs)
                 {
                     string name = System.IO.Path.GetFileName(dir);
-                    // cursor.png 또는 cursor@2x.png가 있어야 유효
                     if (System.IO.File.Exists(System.IO.Path.Combine(dir, "cursor.png")) ||
                         System.IO.File.Exists(System.IO.Path.Combine(dir, "cursor@2x.png")))
                     {

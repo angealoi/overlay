@@ -41,7 +41,6 @@ Write-Host "[2/4] Output folder: build_$ts" -ForegroundColor Yellow
 Write-Host "[3/4] Copying build output..." -ForegroundColor Yellow
 $buildFiles = @(
     "OsuEnlightenOverlay.exe",
-    "OsuEnlightenOverlay.pdb",
     "OpenTK.dll",
     "OpenTK.GLControl.dll"
 )
