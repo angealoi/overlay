@@ -102,8 +102,9 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
 
         /// <summary>
         /// 진행 중인 HitBurst를 SpriteManager에 재추가.
-        /// HOM.Update가 spriteManager.Clear()를 매 프레임 호출하므로,
-        /// 기존 HitBurst도 매 프레임 재추가해야 화면에 유지됨.
+        /// LoadBeatmap(맵 전환)과 HOM.Update의 retry 블록(시간 역행 시)만 spriteManager.Clear()로
+        /// 스프라이트를 비운다 — **매 프레임이 아니다**(F9 주석 교정). 그 직후 진행 중인 HitBurst를
+        /// 다시 넣어 화면에 유지한다(맵 로드 적용 블록에서 호출).
         /// </summary>
         public void ReAddActive()
         {
