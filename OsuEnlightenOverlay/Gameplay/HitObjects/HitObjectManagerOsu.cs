@@ -775,6 +775,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 foreach (SliderOsu s in sliders)
                 {
                     if (s.IsSpriteAdded) { s.RemoveFromSpriteManager(spriteManager); s.IsSpriteAdded = false; }
+                    s.ResetTickConsumption(); // 새 시도 — 소비된 틱 복원
                 }
                 foreach (SpinnerOsu sp in spinners)
                 {
