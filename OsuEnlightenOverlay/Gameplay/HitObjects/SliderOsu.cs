@@ -558,7 +558,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             float length = (float)(virtualEndTime - data.StartTime); // Length = EndTime - StartTime
             float pos = (time - data.StartTime) / (length / segmentCount);
 
-            if (pos % 2 > 1)
+            // 경계 포함(>=) — pos가 홀수 정수(볼이 리버스 화살표에 정확히 도달한 ms)일 때
+            // pos%2==1.0이 `>`에선 else로 떨어져 pos%1==0 → PositionAtLength(0) = 시작원으로
+            // 1프레임 순간이동했다. stable은 볼을 선분별 Movement 트랜스폼으로 움직여 이 특이점을
+            // 안 밟지만, 오버레이는 매 프레임 샘플링이라 경계를 끝점(1)으로 매핑해야 연속이다.
+            if (pos % 2 >= 1)
                 pos = 1 - (pos % 1);
             else
                 pos = (pos % 1);
