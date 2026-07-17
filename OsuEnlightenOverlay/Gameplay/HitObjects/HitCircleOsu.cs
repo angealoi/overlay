@@ -718,12 +718,31 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     spriteReverseArrow.Transformations.Add(new Transformation(
                         TransformationType.Fade, 1f, 0f, startTime, startTime + 1, EasingTypes.None));
 
-                    // Scale 1.3→1 반복 (300ms 간격, EasingTypes.Out) — osu! stable 공식
-                    for (int pulseStart = appearTime; pulseStart < startTime; pulseStart += 300)
+                    // 리버스 화살표 펄스 — osu! stable HitCircleSliderEnd.cs:77-97 정확 포팅.
+                    // 신규 레이아웃: Rotation 고정(위에서 angle 설정) + Scale 1.3→1 (EasingTypes.Out).
+                    // 구 레이아웃(Version<=1이고 Default/User 스킨 아님): Scale 1.3→1 선형(None) +
+                    //   Rotation angle+π/32 → angle-π/32 흔들림 (±5.625°). 구 레이아웃 스킨만 영향.
+                    //   Rotation transform이 base .Rotation을 덮어쓰므로(pSprite.cs:240,266) 위의
+                    //   spriteReverseArrow.Rotation=angle은 가시 구간 내내 흔들림 값으로 대체된다.
+                    if (SkinManager.UseNewLayout)
                     {
-                        int pulseEnd = Math.Min(pulseStart + 300, startTime);
-                        spriteReverseArrow.Transformations.Add(new Transformation(
-                            TransformationType.Scale, 1.3f, 1f, pulseStart, pulseEnd, EasingTypes.Out));
+                        for (int pulseStart = appearTime; pulseStart < startTime; pulseStart += 300)
+                        {
+                            int pulseEnd = Math.Min(pulseStart + 300, startTime);
+                            spriteReverseArrow.Transformations.Add(new Transformation(
+                                TransformationType.Scale, 1.3f, 1f, pulseStart, pulseEnd, EasingTypes.Out));
+                        }
+                    }
+                    else
+                    {
+                        for (int pulseStart = appearTime; pulseStart < startTime; pulseStart += 300)
+                        {
+                            int pulseEnd = Math.Min(pulseStart + 300, startTime);
+                            spriteReverseArrow.Transformations.Add(new Transformation(
+                                TransformationType.Scale, 1.3f, 1f, pulseStart, pulseEnd, EasingTypes.None));
+                            spriteReverseArrow.Transformations.Add(new Transformation(
+                                TransformationType.Rotation, angle + (float)Math.PI / 32f, angle - (float)Math.PI / 32f, pulseStart, pulseEnd, EasingTypes.None));
+                        }
                     }
                 }
             }

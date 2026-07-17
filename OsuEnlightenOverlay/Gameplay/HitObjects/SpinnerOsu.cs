@@ -223,12 +223,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
             // Approach Circle — osu-stable SpinnerOsu.cs:194:
             //   if (SpriteCircleTop.Texture.Source != SkinSource.Osu && !HD) 생성.
-            // spinner-top 텍스처가 osu! 내장 기본(SkinSource.Osu)이면 approach circle을 그리지 않음.
-            // Default 스킨의 spinner-top은 내장 기본이므로 approach circle 생략.
-            // 커스텀 스킨이 자체 spinner-top을 제공할 때만 approach circle 활성화.
-            bool isDefaultSkin = SkinManager.IsDefault;
+            // 실제 로드된 spinner-top(newStyle)/spinner-circle(oldStyle) 텍스처가 osu! 내장 기본
+            // (Source==Osu)이면 approach circle을 그리지 않는다 (H12). 예전엔 SkinManager.IsDefault로
+            // 판정해, 커스텀 스킨이 스피너 텍스처만 없어 내장 기본으로 폴백된 경우를 놓쳤다(잘못 그림).
+            // spriteCircleTop은 위에서 texTop(newStyle)/texCircle(oldStyle)로 생성된 바로 그 스프라이트다.
+            bool circleFromSkin = spriteCircleTop != null && spriteCircleTop.Texture != null
+                && spriteCircleTop.Texture.Source != SkinSource.Osu;
             bool isHidden = HitCircleOsu.HiddenActive;
-            bool useApproachCircle = !isDefaultSkin && !isHidden;
+            bool useApproachCircle = circleFromSkin && !isHidden;
 
             if (useApproachCircle)
             {
@@ -485,7 +487,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             {
                 // 회전 변환 — 메모리 FloatRotationCount는 "반바퀴 단위" (osu-stable line 287).
                 float frc = Math.Abs(floatRotation);
-                float topRotation = frc * (float)Math.PI * 0.5f;
+                // turnRatio — osu-stable SpinnerOsu.cs:272: spriteMiddleBottom(spinner-middle2)이
+                // 있으면(new-style) 0.5, 없으면(old-style) 1. top(및 그 1/3인 bottom)에만 적용.
+                // texMiddle2 != null일 때만 spriteMiddleBottom을 만들므로 이 검사가 stable과 동일하다.
+                // 0.5 하드코딩 때문에 old-style spinner-circle이 절반 속도로 돌던 버그(H13) 수정.
+                float turnRatio = spriteMiddleBottom != null ? 0.5f : 1f;
+                float topRotation = frc * (float)Math.PI * turnRatio;
                 float middleRotation = frc * (float)Math.PI;
 
                 if (spriteCircleTop != null)

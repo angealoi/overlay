@@ -94,7 +94,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 if ((h.Type & HitObjectType.Spinner) != 0)
                 {
-                    if (h.NewCombo)
+                    // v≤8: 스피너는 무조건 다음 객체에 새 콤보 강제 — osu! stable HitObjectManager.cs:1267-1277
+                    if (beatmap.BeatmapVersion <= 8)
+                        forceNew = true;
+                    else if (h.NewCombo)
                     {
                         combo += offset;
                         forceNew = true;
@@ -506,9 +509,19 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     dot.Transformations.Add(new Transformation(
                         TransformationType.Fade, 0f, 1f, fadein, fadein + FadeIn, EasingTypes.None));
 
-                    // Scale: 1.5x → 1.0x (default skin)
-                    dot.Transformations.Add(new Transformation(
-                        TransformationType.Scale, 1.5f, 1f, fadein, fadein + FadeIn, EasingTypes.Out));
+                    // Scale + Movement: default 스킨에서만 적용 (H15)
+                    // stable HitObjectManager.cs:1887-1891:
+                    //   if (SkinManager.IsDefault && GameBase.NewGraphicsAvailable) {
+                    //       Scale 1.5→1 Out; Movement posStart→pos Out }
+                    // NewGraphicsAvailable는 이 오버레이에서 항상 true이므로 IsDefault만 게이트한다.
+                    // posStart(line 498)는 이전엔 계산만 하고 안 쓰던 데드코드였다.
+                    if (SkinManager.IsDefault)
+                    {
+                        dot.Transformations.Add(new Transformation(
+                            TransformationType.Scale, 1.5f, 1f, fadein, fadein + FadeIn, EasingTypes.Out));
+                        dot.Transformations.Add(new Transformation(
+                            TransformationType.Movement, posStart, pos, fadein, fadein + FadeIn, EasingTypes.Out));
+                    }
 
                     // Fade out: 1 → 0
                     dot.Transformations.Add(new Transformation(
