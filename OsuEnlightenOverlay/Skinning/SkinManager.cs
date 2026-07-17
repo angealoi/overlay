@@ -372,7 +372,23 @@ namespace OsuEnlightenOverlay.Skinning
             }
             else if (hasIni)
             {
-                skin.Load(iniFilename);
+                try
+                {
+                    skin.Load(iniFilename);
+                }
+                catch (Exception ex)
+                {
+                    // 파일 I/O 예외(File.Exists 통과 후 잠김/삭제/권한거부 등)는 여기로 온다.
+                    // 파싱 자체는 완전 방어돼 손상된 '내용'으로는 예외가 안 나지만, I/O 폴트는 다르다.
+                    // OnLoad는 Show() 안(메시지 루프 이전)에서 돌아 이 예외를 잡지 않으면 앱이 기동
+                    // 즉시 죽는다. stable LoadSkinRaw처럼 기본 스킨으로 폴백한다 (I-감사 #1).
+                    Console.WriteLine("[Skin] Load 실패 — 기본 스킨으로 폴백: " + ex.Message);
+                    skin = new SkinOsu();
+                    skin.RawName = "Default";
+                    skin.SkinName = "osu!";
+                    skin.SkinAuthor = "peppy";
+                    skin.Version = SkinOsu.SKIN_VERSION;
+                }
             }
 
             Current = skin;

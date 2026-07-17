@@ -12,7 +12,7 @@
 
 | 티어 | 뜻 | 건수 | 항목 |
 |---|---|---|---|
-| 🔴 실질 결함 | 실행 중 체감/크래시/누수 | 6묶음(8건) | 1, 2+7, 3+5+28, 6, 30+31 |
+| 🔴 실질 결함 | 실행 중 체감/크래시/누수 | 6묶음(8건) | 1, 2+7, 3+5+28, 6, 30+31 — ✅ **완료** |
 | 🟡 충실도/에딧 | stable 1:1 강화, 대체로 조건부 | 8건 | 11, 14, 15, 16, 17, 18, 19, 20 |
 | ⚪ 죽은코드/거짓주석 | 안전 정리 | 7건 | 21, 22, 23, 24, 25, 26, 27 — ✅ **완료** |
 | ⛔ 무영향/수정불가 | document만 | 10건 | 8, 9, 10, 12, 13, 32, 33, 34, 35, 36 |
@@ -21,19 +21,22 @@
 
 ---
 
-## 🔴 티어 A — 실질 결함 (실행 중 체감)
+## 🔴 티어 A — 실질 결함 (실행 중 체감) — ✅ **완료** (빌드 경고 0/오류 0, 테스트 15/15, 적대적 회귀 검증 5/5 SOUND)
+
+> 행동 변경 5묶음을 적대적 회귀 검증(opus 5 에이전트)으로 정상 경로 무결성 확인 — 전부 SOUND, 회귀 0.
+> 핵심: 폰트 LRU는 use-after-dispose 불가(텍스트 텍스처 소비자가 HUD뿐 + `Remove` 즉시 + Prune이 Draw/AddText보다 앞), 스피너 리셋 변환은 원본과 문자 그대로 동일(첫 진입 no-op), 스킨 폴백 필드는 isDefault 분기와 동일.
 
 | # | 심각도 | 위치 | 내용 | 발현 시나리오 | stable 대비 | fix | 표결 | 상태 |
 |---|---|---|---|---|---|---|---|---|
-| 1 | CRASH | `Skinning/SkinManager.cs:377` | 커스텀 스킨 `skin.ini` 파일 I/O 예외(`File.Exists` 통과 후 잠김/삭제/권한거부)가 무방비. `LoadSkin`→`skin.Load`→`new StreamReader/ReadLine`에 try/catch 없음 | 비Default 스킨 지정 + 기동 시 `overlay.Show()`→`OnLoad`(메시지 루프 이전)에서 I/O 폴트 → **미처리 하드 크래시**(창 안 뜸). 렌더 틱 재로드 경로는 이미 try/catch 보호됨 | stable `LoadSkinRaw`는 릴리스에서 try/catch→`error.txt` 기록 후 `LoadSkinRaw(DEFAULT_SKIN)` 폴백 | `LoadSkin`의 `skin.Load`를 try/catch로 감싸 예외 시 Default(임베디드) 폴백 | 2C/0R | 미착수 |
-| 2 | LEAK | `Gameplay/HitObjects/SpinnerOsu.cs:570` | `NotStarted→Started` 전이에서 `spriteSpin.Transformations.Add(Fade)`를 Clear 없이 추가. `ResetState`도 spriteSpin 미리셋 → 재시도마다 트랜스폼 1개씩 누적 | 스피너 맵을 같은 세션 반복 재시도하면 spin 페이드 트랜스폼이 무한 append(pSprite.Update 매 프레임 전체 순회) | stable `spriteSpin.FadeOut`은 재생마다 재초기화 컨텍스트라 누적 없음 | (아래 7과 함께) `ResetState`에서 spriteSpin을 fadeIn/fadeOut 2개로 재구성 | 1C/1R | 미착수 |
-| 3 | LEAK | `Rendering/FontRenderer.cs:25` | `textCache`가 (텍스트\|폰트\|크기\|색\|그림자) 키마다 `GL.GenTextures`로 새 텍스처 생성, **상한/LRU/축출 전무**. 런타임 중 `ClearCache` 호출자 0 (Dispose에서만) | 정확도 HUD(`98.74%`→`98.71%`…)·콤보 HUD(`1..maxCombo`)가 판정마다 값 변경 → 캐시 미스마다 GL 텍스처 영구 적재. 32bit 프로세스라 장시간 세션에서 계단식 VRAM/RAM 증가 | stable은 숫자 글리프(`score-0..9`) 자릿수별 재사용 — 값마다 새 텍스처 없음 | textCache LRU 상한+초과분 Dispose, **또는** 맵/스킨 변경 시 `fontRenderer.ClearCache()` 실제 배선 (참조 중 텍스처 dispose 순서 주의) | 2C/0R | 미착수 |
-| 5 | LEAK | `Rendering/HudRenderer.cs:276` | (3과 동일 뿌리) `RenderAccuracy`가 매 프레임 `{0:F2}%` 텍스트→`AddText`→`RenderText`로 텍스처 캐싱. 세션 내내 evict 없음 | 여러 맵 연속 플레이 시 수천~1만 텍스트 텍스처 적재, 맵/스킨 변경으로도 안 비워짐 | stable pSpriteText 글리프 조합 | 3과 같은 수정으로 해소 | 2C/0R | 미착수 |
-| 28 | MINOR | `Rendering/FontRenderer.cs:224` | 주석 "캐시 클리어 — 스킨 변경 시"가 거짓. 실제 스킨 재로드는 `TextureManager.ClearCache`만 부름. 주석이 3의 누수를 은폐 | — | — | 주석을 실동작에 맞추거나 3 수정과 함께 배선 | 2C/0R | 미착수 |
-| 7 | FIDELITY | `Gameplay/HitObjects/SpinnerOsu.cs:88` | `ResetState`가 state·glow만 복원하고 `spriteClear` 트랜스폼 미리셋. 스피너 객체는 재시도마다 재사용 | 1차 시도서 클리어(spriteClear에 reveal 트랜스폼 남음) → 재시도서 클리어 못 해도 옛 시각에 **"Clear!" 그래픽이 잘못 페이드인**. 재시도는 매우 흔함 | stable은 재생마다 HitObject 재생성/재초기화라 잔여 트랜스폼 없음 | `ResetState`에서 `spriteClear.Transformations.Clear()` 후 초기 `Fade(0,0,Start,End)` 복원 + `ComputeTimeRange`. spriteSpin도 동일(2 해결) | 2C/0R | 미착수 |
-| 6 | CORRECTNESS | `Overlay/HudEditController.cs:241` | `CaptureLockCenter`가 `DragElement<0`이면 조기 return. 그러나 축고정(X/Y키)은 드래그 전에 켜는 지속 모드 → 캡처 실패로 `LockCenterY=0` | edit 진입→Combo HUD(y≈700) 선택→X키→드래그: 기대는 y유지 수평이동, 실제는 posY=0으로 clamp돼 **HUD가 화면 최상단으로 점프** | (stable 무관 — NEWNEWOVERLAY C++ 포팅 기능) | `int idx = DragElement>=0 ? DragElement : settings.HudEditSelected;` 로 잡고 `0<=idx<4`일 때 `HudRects[idx]`로 Lock 설정 | 2C/0R | 미착수 |
-| 30 | MINOR | `Overlay/CaptureBlock.cs:26` | `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 실패 진단이 `Debug.WriteLine`(overlay.log 미기록, Release 제거) + 두 호출부 반환 bool 무시 (F10과 같은 부류) | Win10 1903 미만/정책 제약서 캡처 제외 실패 시 **오버레이가 캡처에 노출**되는데 로그에 흔적 0 | — | `Console.WriteLine`으로 로깅 + 호출부/내부서 실패 로그 | 1C/0R | 미착수 |
-| 31 | MINOR | `Overlay/CaptureBlock.cs:23` | 주석 "재시도"·로그 "재시도만 수행"이 거짓(재시도 로직 없음). line16 "폴밭"→"폴백" 오타 | 유지보수자가 "실패해도 재시도되니 괜찮다" 오판 | — | "재시도" 문구 제거, 실동작(단발·폴백없음·실패시 미차단) 기술 | 2C/0R | 미착수 |
+| 1 | CRASH | `Skinning/SkinManager.cs:377` | 커스텀 스킨 `skin.ini` 파일 I/O 예외(`File.Exists` 통과 후 잠김/삭제/권한거부)가 무방비. `LoadSkin`→`skin.Load`→`new StreamReader/ReadLine`에 try/catch 없음 | 비Default 스킨 지정 + 기동 시 `overlay.Show()`→`OnLoad`(메시지 루프 이전)에서 I/O 폴트 → **미처리 하드 크래시**(창 안 뜸). 렌더 틱 재로드 경로는 이미 try/catch 보호됨 | stable `LoadSkinRaw`는 릴리스에서 try/catch→`error.txt` 기록 후 `LoadSkinRaw(DEFAULT_SKIN)` 폴백 | **try/catch → 기본 스킨 폴백** (stable `LoadSkinRaw` 대응) | 2C/0R | ✅ 완료 |
+| 2 | LEAK | `Gameplay/HitObjects/SpinnerOsu.cs:570` | `NotStarted→Started` 전이에서 `spriteSpin.Transformations.Add(Fade)`를 Clear 없이 추가. `ResetState`도 spriteSpin 미리셋 → 재시도마다 트랜스폼 1개씩 누적 | 스피너 맵을 같은 세션 반복 재시도하면 spin 페이드 트랜스폼이 무한 append(pSprite.Update 매 프레임 전체 순회) | stable `spriteSpin.FadeOut`은 재생마다 재초기화 컨텍스트라 누적 없음 | **`ResetState`에서 spriteSpin 초기 2변환 재구성**(7과 함께) | 1C/1R | ✅ 완료 |
+| 3 | LEAK | `Rendering/FontRenderer.cs:25` | `textCache`가 (텍스트\|폰트\|크기\|색\|그림자) 키마다 `GL.GenTextures`로 새 텍스처 생성, **상한/LRU/축출 전무**. 런타임 중 `ClearCache` 호출자 0 (Dispose에서만) | 정확도 HUD(`98.74%`→`98.71%`…)·콤보 HUD(`1..maxCombo`)가 판정마다 값 변경 → 캐시 미스마다 GL 텍스처 영구 적재. 32bit 프로세스라 장시간 세션에서 계단식 VRAM/RAM 증가 | stable은 숫자 글리프(`score-0..9`) 자릿수별 재사용 — 값마다 새 텍스처 없음 | **LRU 상한(96) `PruneCache()`** — `ClearHudSprites()` 직후(살아있는 스프라이트 0) 매 프레임 호출 | 2C/0R | ✅ 완료 |
+| 5 | LEAK | `Rendering/HudRenderer.cs:276` | (3과 동일 뿌리) `RenderAccuracy`가 매 프레임 `{0:F2}%` 텍스트→`AddText`→`RenderText`로 텍스처 캐싱. 세션 내내 evict 없음 | 여러 맵 연속 플레이 시 수천~1만 텍스트 텍스처 적재, 맵/스킨 변경으로도 안 비워짐 | stable pSpriteText 글리프 조합 | 3과 같은 수정으로 해소 | 2C/0R | ✅ 완료 |
+| 28 | MINOR | `Rendering/FontRenderer.cs:224` | 주석 "캐시 클리어 — 스킨 변경 시"가 거짓. 실제 스킨 재로드는 `TextureManager.ClearCache`만 부름. 주석이 3의 누수를 은폐 | — | — | **주석 정정** (Dispose 전용임을 명시) | 2C/0R | ✅ 완료 |
+| 7 | FIDELITY | `Gameplay/HitObjects/SpinnerOsu.cs:88` | `ResetState`가 state·glow만 복원하고 `spriteClear` 트랜스폼 미리셋. 스피너 객체는 재시도마다 재사용 | 1차 시도서 클리어(spriteClear에 reveal 트랜스폼 남음) → 재시도서 클리어 못 해도 옛 시각에 **"Clear!" 그래픽이 잘못 페이드인**. 재시도는 매우 흔함 | stable은 재생마다 HitObject 재생성/재초기화라 잔여 트랜스폼 없음 | **`ResetState`에서 spriteClear 초기 `Fade(0,0)` 복원 + `ComputeTimeRange`** (재구성 변환은 원본과 문자 그대로 동일) | 2C/0R | ✅ 완료 |
+| 6 | CORRECTNESS | `Overlay/HudEditController.cs:241` | `CaptureLockCenter`가 `DragElement<0`이면 조기 return. 그러나 축고정(X/Y키)은 드래그 전에 켜는 지속 모드 → 캡처 실패로 `LockCenterY=0` | edit 진입→Combo HUD(y≈700) 선택→X키→드래그: 기대는 y유지 수평이동, 실제는 posY=0으로 clamp돼 **HUD가 화면 최상단으로 점프** | (stable 무관 — NEWNEWOVERLAY C++ 포팅 기능) | **`idx = DragElement>=0 ? DragElement : HudEditSelected`**, `0<=idx<4`일 때 캡처 | 2C/0R | ✅ 완료 |
+| 30 | MINOR | `Overlay/CaptureBlock.cs:26` | `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 실패 진단이 `Debug.WriteLine`(overlay.log 미기록, Release 제거) + 두 호출부 반환 bool 무시 (F10과 같은 부류) | Win10 1903 미만/정책 제약서 캡처 제외 실패 시 **오버레이가 캡처에 노출**되는데 로그에 흔적 0 | — | **`Console.WriteLine`으로 로깅** (Enable 내부, overlay.log) | 1C/0R | ✅ 완료 |
+| 31 | MINOR | `Overlay/CaptureBlock.cs:23` | 주석 "재시도"·로그 "재시도만 수행"이 거짓(재시도 로직 없음). line16 "폴밭"→"폴백" 오타 | 유지보수자가 "실패해도 재시도되니 괜찮다" 오판 | — | **"재시도" 문구 제거 + 실동작 기술 + 폴밭→폴백 오타 수정** | 2C/0R | ✅ 완료 |
 
 ---
 

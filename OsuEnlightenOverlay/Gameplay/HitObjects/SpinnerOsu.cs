@@ -104,6 +104,30 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     TransformationType.Fade, 0f, 0f, StartTime, EndTime, EasingTypes.None));
                 spriteGlow.ComputeTimeRange();
             }
+
+            // spin 스프라이트 — 초기 fadeIn/fadeOut 두 개로 재구성.
+            // NotStarted→Started 전이에서 fade가 Clear 없이 append되므로 재시도마다 누적된다.
+            // 초기 상태로 되돌려 누적을 막는다 (I-감사 #2). InitializeSprites와 동일한 두 변환.
+            if (spriteSpin != null && difficulty != null)
+            {
+                spriteSpin.Transformations.Clear();
+                spriteSpin.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 0f, 1f, StartTime - difficulty.FadeIn / 2, StartTime, EasingTypes.None));
+                spriteSpin.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 1f, 0f, EndTime - Math.Min(400, EndTime - StartTime), EndTime, EasingTypes.None));
+                spriteSpin.ComputeTimeRange();
+            }
+
+            // clear 스프라이트 — 초기 Fade(0,0) '보이지 않는 캔버스'로 복원.
+            // Passed 전이에서만 reveal 변환이 재구성되므로, 리셋 안 하면 이전 시도의 reveal이
+            // 남아 이번 시도에서 클리어 못 해도 옛 시각에 "Clear!"가 잘못 뜬다 (I-감사 #7).
+            if (spriteClear != null)
+            {
+                spriteClear.Transformations.Clear();
+                spriteClear.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 0f, 0f, StartTime, EndTime, EasingTypes.None));
+                spriteClear.ComputeTimeRange();
+            }
         }
 
         /// <summary>

@@ -236,10 +236,14 @@ namespace OsuEnlightenOverlay.Overlay
                 settings.HudEditSnap = !settings.HudEditSnap;
             }
             // lock 시작 시 HUD의 현재 중심 캡처 — 드래그 시작 모서리가 아닌 실제 위치 기준.
+            // 락은 드래그 전에 켜두는 지속 모드라 DragElement가 -1일 수 있다. 그때는 현재 선택된
+            // HUD를 기준으로 캡처한다 — 안 그러면 LockCenter가 0에 머물러 이후 드래그 시 HUD가
+            // 화면 끝(0,0)으로 튄다 (I-감사 #6).
             void CaptureLockCenter()
             {
-                if (editState.DragElement < 0) return;
-                RectangleF r = hudRenderer.HudRects[editState.DragElement];
+                int idx = editState.DragElement >= 0 ? editState.DragElement : settings.HudEditSelected;
+                if (idx < 0 || idx >= 4) return;
+                RectangleF r = hudRenderer.HudRects[idx];
                 editState.LockCenterX = r.X + r.Width * 0.5f;
                 editState.LockCenterY = r.Y + r.Height * 0.5f;
             }

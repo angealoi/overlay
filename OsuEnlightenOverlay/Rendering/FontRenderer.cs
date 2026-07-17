@@ -24,6 +24,15 @@ namespace OsuEnlightenOverlay.Rendering
         // 텍스트 캐시 — 같은 텍스트+폰트+크기면 텍스처 재사용
         Dictionary<string, pTexture> textCache = new Dictionary<string, pTexture>();
 
+        // LRU 상한 (I-감사 #3/#5) — 콤보/정확도 HUD는 판정마다 값이 바뀌어 고유 문자열이
+        // 계속 생기고, 그때마다 GL 텍스처가 하나씩 textCache에 영구 적재돼 무한 증가했다.
+        // (stable은 숫자 글리프를 재사용해 이런 누적이 없다.) 접근 순서를 기록해 상한 초과 시
+        // 가장 오래 안 쓴 항목을 축출한다. 한 프레임에 필요한 문자열은 소수(fps/정확도/콤보 등)라
+        // 상한은 넉넉하고, 축출된 문자열은 다음에 필요하면 재렌더될 뿐이다.
+        Dictionary<string, long> textCacheLastUse = new Dictionary<string, long>();
+        long textCacheAccessCounter = 0;
+        public const int MaxCacheEntries = 96;
+
         // 매니페스트 리소스 이름 접두사 = RootNamespace + csproj의 EmbeddedResource 경로.
         //   <EmbeddedResource Include="resource\fonts\*.ttf" />
         //     -> "OsuEnlightenOverlay.resource.fonts.*.ttf"
@@ -142,7 +151,10 @@ namespace OsuEnlightenOverlay.Rendering
                 color.ToArgb() + "|" + shadowColor.ToArgb() + "|" + shadowOffsetX + "|" + shadowOffsetY;
 
             if (textCache.ContainsKey(cacheKey))
+            {
+                textCacheLastUse[cacheKey] = ++textCacheAccessCounter;
                 return textCache[cacheKey];
+            }
 
             FontFamily ff = GetFontFamily(fontFamily, style);
             if (ff == null) return null;
@@ -191,6 +203,7 @@ namespace OsuEnlightenOverlay.Rendering
                         {
                             tex.Source = SkinSource.Osu;
                             textCache[cacheKey] = tex;
+                            textCacheLastUse[cacheKey] = ++textCacheAccessCounter;
                         }
                         return tex;
                     }
@@ -222,7 +235,41 @@ namespace OsuEnlightenOverlay.Rendering
         }
 
         /// <summary>
-        /// 캐시 클리어 — 스킨 변경 시.
+        /// LRU 상한 초과분 축출 — HudRenderer가 매 프레임 ClearHudSprites() 직후 호출한다.
+        /// 그 시점엔 살아있는 HUD 스프라이트가 0개(모두 제거됨)라 어떤 텍스처를 dispose해도
+        /// use-after-dispose가 없다. textCache는 오직 HUD 스프라이트만 참조하기 때문이다.
+        /// 과축출돼도 해당 문자열은 다음 RenderText에서 재생성될 뿐이다.
+        /// </summary>
+        public void PruneCache()
+        {
+            if (textCache.Count <= MaxCacheEntries) return;
+
+            // 접근 순서 오름차순(오래된 것 먼저)으로 정렬해 상한까지 축출.
+            var byAge = new List<KeyValuePair<string, long>>(textCacheLastUse);
+            byAge.Sort((a, b) => a.Value.CompareTo(b.Value));
+
+            int toEvict = textCache.Count - MaxCacheEntries;
+            for (int i = 0; i < byAge.Count && toEvict > 0; i++)
+            {
+                string key = byAge[i].Key;
+                pTexture tex;
+                if (textCache.TryGetValue(key, out tex))
+                {
+                    if (tex != null && tex.IsDisposable)
+                        tex.Dispose();
+                    textCache.Remove(key);
+                    textCacheLastUse.Remove(key);
+                    toEvict--;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 캐시 전체 비우기 — 현재는 Dispose에서만 호출된다 (I-감사 #28: 예전 "스킨 변경 시"
+        /// 주석은 거짓이었다. 스킨 재로드는 TextureManager.ClearCache만 부른다).
+        /// 런타임 중 무한 증가는 PruneCache의 LRU 상한이 막는다. 스킨/맵 변경 시 여기를 호출하지
+        /// 않는 이유: HUD 텍스트 텍스처는 스킨 텍스처와 무관하고, 아직 그려질 hudSprite가 참조
+        /// 중일 수 있어 임의 시점 전체 dispose는 use-after-dispose 위험이 있다.
         /// </summary>
         public void ClearCache()
         {
@@ -232,6 +279,7 @@ namespace OsuEnlightenOverlay.Rendering
                     kv.Value.Dispose();
             }
             textCache.Clear();
+            textCacheLastUse.Clear();
         }
 
         public void Dispose()
