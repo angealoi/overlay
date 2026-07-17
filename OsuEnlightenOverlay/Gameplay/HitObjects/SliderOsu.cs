@@ -299,7 +299,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     scoringDistance += distance;
 
                     // 슬라이더 틱 (scoring points) — osu! stable UpdateCalculations 포팅
-                    while (scoringDistance >= tickDistance && !skipTick)
+                    // tickDistance > 0 가드 (C6): Length<=0인 에일리언 슬라이더는 tickDistance가
+                    // <=0로 클램프되는데, 그러면 `scoringDistance -= tickDistance`가 줄지 않아
+                    // while이 영영 안 끝나고 dot을 무한 생성해 로더가 멈춘다.
+                    while (scoringDistance >= tickDistance && tickDistance > 0 && !skipTick)
                     {
                         scoringLengthTotal += tickDistance;
                         scoringDistance -= tickDistance;
@@ -311,7 +314,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                         int scoreTime = TimeAtLength((float)scoringLengthTotal);
 
-                        float thisPointRatio = 1 - (float)(scoringDistance / Vector2.Distance(p1, p2));
+                        // 길이 0 선분(p1==p2, 중복 제어점을 가진 에일리언 맵)에서 Distance가 0이면
+                        // 나눗셈이 NaN을 만들어 틱이 NaN 좌표에 찍혔다 (C6). 이런 틱은 위치가
+                        // 정의되지 않고 stable도 radius 검사에서 누락하므로 dot 생성을 건너뛴다
+                        // (거리 bookkeeping은 위에서 이미 완료). 정상 선분(dist>0)은 동작 무변화.
+                        float segDist = Vector2.Distance(p1, p2);
+                        if (segDist <= 0)
+                            continue;
+                        float thisPointRatio = 1 - (float)(scoringDistance / segDist);
                         Vector2 adjustedPos = p1 + (p2 - p1) * thisPointRatio;
 
                         pTexture texScorePoint = texManager.Load("sliderscorepoint");
@@ -737,7 +747,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 int segmentCount = Math.Max(1, data.RepeatCount);
                 float length = (float)(virtualEndTime - data.StartTime);
-                float pos = (timeMs - data.StartTime) / (length / segmentCount);
+                // length<=0 (0-duration 슬라이더)면 0/0=NaN → (int)NaN이 쓰레기 세그먼트 인덱스를
+                // 만들어 Reverse/Flip이 뒤틀린다 (C6). GetBallPosition과 동일하게 0으로 가드.
+                float pos = length > 0 ? (timeMs - data.StartTime) / (length / segmentCount) : 0;
                 int currentSegment = (int)pos;
                 bool isReverseSegment = (currentSegment % 2) == 1;
                 sliderBall.Reverse = isReverseSegment;

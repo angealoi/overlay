@@ -316,7 +316,12 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
                 if (split.Length > 6 && int.TryParse(split[6], out ival))
                     h.RepeatCount = ival;
 
-                if (split.Length > 7 && double.TryParse(split[7], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out dval))
+                // 길이는 NaN/Infinity/음수를 거부한다 (C6 후속). double.TryParse는 "NaN"·"Infinity"
+                // 문자열도 성공으로 파싱하는데, 그 값이 velocity/커브 길이 계산을 타고 슬라이더 볼·틱을
+                // NaN 좌표로 만든다(GetBallPosition/PositionAtLength의 나눗셈 가드는 값이 NaN이면 못 거른다).
+                // 유한·비음수만 받아들이고 그 외엔 기본값 0으로 둔다(zero-length는 하위 가드가 안전 처리).
+                if (split.Length > 7 && double.TryParse(split[7], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out dval)
+                    && !double.IsNaN(dval) && !double.IsInfinity(dval) && dval >= 0)
                     h.Length = dval;
             }
             else if ((type & HitObjectType.Spinner) != 0)

@@ -83,6 +83,12 @@ namespace OsuEnlightenOverlay.Rendering.Sprites
         public Origins Origin;
         public Clocks Clock;
         public float Depth;
+        // Depth 정렬 시 동점(같은 Depth) 스프라이트의 안정 정렬용 tiebreak (C5/H21).
+        // SpriteManager.Add에서 전역 삽입 순서를 부여한다 — List.Sort는 불안정 정렬이라 동일
+        // Depth의 앞뒤가 재정렬마다 뒤바뀌어 z-플리커가 났다. (Depth, StableOrder)로 전순서를
+        // 만들면 결과가 유일하게 결정돼 깜빡임이 사라진다. stable ListHelper.StableSort와 동치.
+        // long이라 사실상 오버플로 불가(int면 장시간 세션에서 ~2^31 Add 후 wrap 가능).
+        public long StableOrder;
         public float Scale = 1f;
         public float Rotation;
         public float Alpha = 1f;
