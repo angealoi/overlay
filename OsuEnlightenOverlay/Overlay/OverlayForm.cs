@@ -67,8 +67,8 @@ namespace OsuEnlightenOverlay.Overlay
         // Difficulty Changer 수학 (mod + 오버라이드 → DifficultyValues) — 생성자에서 생성
         DifficultyController difficultyController;
 
-        // 지연된 스킨/커서 재로드 — ControlPanelForm 스레드에서 직접 OpenGL 작업 불가
-        // OnSyncTick(Render 스레드)에서 처리
+        // 지연된 스킨/커서 재로드 — 단일 UI 스레드지만 GL 작업은 GL 컨텍스트가 current인
+        // 렌더 틱(OnSyncTick)에 모아 처리한다 ("ControlPanelForm이 다른 스레드라 불가"는 오해였음: F9)
         string pendingSkinReload = null;
         bool pendingCursorReload = false;
 
@@ -187,7 +187,7 @@ namespace OsuEnlightenOverlay.Overlay
         {
             if (cursorRenderer != null && settings != null)
             {
-                // OnSyncTick에서 처리 — ControlPanelForm 스레드에서 OpenGL 작업 불가
+                // OnSyncTick(렌더 틱)에서 처리 — 단일 UI 스레드, GL은 컨텍스트가 current인 렌더 틱에 모아 한다 (F9)
                 pendingCursorReload = true;
             }
         }
@@ -209,7 +209,7 @@ namespace OsuEnlightenOverlay.Overlay
         public void ReloadSkin(string skinName)
         {
             if (renderer == null || reader == null) return;
-            // OnSyncTick에서 처리 — ControlPanelForm 스레드에서 OpenGL 작업 불가
+            // OnSyncTick(렌더 틱)에서 처리 — 단일 UI 스레드, GL은 컨텍스트가 current인 렌더 틱에 모아 한다 (F9)
             pendingSkinReload = skinName;
         }
 
@@ -366,7 +366,9 @@ namespace OsuEnlightenOverlay.Overlay
             BackColor = Color.Black;
 
             // GLControl 생성
-            GraphicsMode mode = new GraphicsMode(32, 24, 0, 4); // alpha=8
+            // GraphicsMode(color, depth, stencil, samples): color=32(RGBA8, α8)·depth=24·stencil=0·
+            // samples=4 → 4x MSAA (F9: 끝의 4는 alpha가 아니라 멀티샘플 수였음)
+            GraphicsMode mode = new GraphicsMode(32, 24, 0, 4);
             glControl = new GLControl(mode, 2, 0, GraphicsContextFlags.Default);
             glControl.Dock = DockStyle.Fill;
             glControl.BackColor = Color.Black;

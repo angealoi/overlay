@@ -117,8 +117,9 @@ namespace OsuEnlightenOverlay.Rendering
 
             // HitObjectManager Update — 슬라이더 바디 렌더링 (depth buffer)
             // GL.Clear 후, SpriteManager.Draw 전에 호출
-            // 주의: HitObjectManager.Update가 spriteManager.Clear()를 호출하므로
-            // HitBurst 등 다른 스프라이트는 이 후에 추가해야 함
+            // 주의: HitObjectManager.Update는 retry(시간 역행) 시에만 spriteManager.Clear()를 하고
+            // (매 프레임 아님, F9 교정) 매 프레임 스프라이트 윈도우를 갱신하므로,
+            // HitBurst 등 다른 스프라이트는 이 뒤에 추가해야 순서가 맞는다
             if (HitObjectManager != null)
                 HitObjectManager.Update(timeMs, PendingJudgements);
 

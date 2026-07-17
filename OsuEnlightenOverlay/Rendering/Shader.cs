@@ -46,7 +46,9 @@ namespace OsuEnlightenOverlay.Rendering
             if (linkStatus == 0)
             {
                 string log = GL.GetProgramInfoLog(programId);
-                System.Diagnostics.Debug.WriteLine("[Shader] Link failed: " + log);
+                // overlay.log에 남긴다 (F10) — 예전엔 Debug.WriteLine이라 릴리스/로그에 안 남고
+                // 조용히 fixed-function 폴백으로 그려져 셰이더 실패 원인 추적이 불가했다.
+                System.Console.WriteLine("[Shader] Link failed (fixed-function 폴백으로 그려짐): " + log);
                 GL.DeleteProgram(programId);
                 programId = 0;
             }
@@ -75,7 +77,8 @@ namespace OsuEnlightenOverlay.Rendering
             if (compileStatus == 0)
             {
                 string log = GL.GetShaderInfoLog(shaderId);
-                System.Diagnostics.Debug.WriteLine("[Shader] Compile failed (" + type + "): " + log);
+                // overlay.log에 남긴다 (F10) — 조용한 실패 방지
+                System.Console.WriteLine("[Shader] Compile failed (" + type + "): " + log);
                 GL.DeleteShader(shaderId);
                 return 0;
             }
