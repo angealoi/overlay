@@ -39,7 +39,7 @@
 | 2026-07-17 | **C5·C6** (+C3 오탐 확인): z-플리커 안정 정렬(=H21) · 슬라이더 틱 NaN/무한루프 방어 | `07c396e` | 적대적 리뷰(2 에이전트, fable5) — 둘 다 hold, 정상 맵 항등. C3은 stable과 byte 동일이라 오탐(코드 무변경). 빌드 통과(경고 0) + **실기: 정상 플레이 무이상(공통 경로 회귀 확인)**. C6 degenerate/에일리언 맵 트리거는 미노출 |
 | 2026-07-17 | **C4 분석 + C6 후속**: C4 동일 StartTime 오매칭(편차 실재·실측 영향 극소·document-only) · C6 잔여 NaN(슬라이더 길이 NaN/Inf 파싱 차단) | `6063c3f` | 설계+적대적 리뷰(opus) — C4는 std 랭크맵 0개라 코드 보류(안전 fix 경로만 기록), C6-ball 렌즈가 찾은 Length-NaN 가드 추가. 빌드 통과(경고 0) |
 | 2026-07-17 | **포팅 충실도 H 배치 8건**: H7(v<8 틱)·H8(v≤8 스피너콤보)·H9(HD 틱페이드)·H10(old-layout 리버스화살표)·H12(스피너 AC 조건)·H13(스피너 turnRatio)·H15(followpoint Movement)·**H18(AC 소멸 타이밍)** | `d877dc8` `f69e76c` | **codegraph로 오버레이+stable 동시 인덱싱** 후 triage(13건)→설계→적대적 리뷰(opus) 3단. 전부 stable 조건에 게이트돼 모던 경로 무변화. **triage가 H19를 오탐, H6를 자기교정으로 확정**. H18은 "단순 제거"가 컬링 모델상 악화라 타이밍 교정으로 재작업+검증. H11·H14·H16은 의도적 미구현으로 결정. 빌드 통과(경고 0). 실기 확인 대기 |
-| 2026-07-17 | **견고성 G 섹션 전체 (G1~G9)**: MessageBox 안내·Process 누수·**자동 재접속**·Menu HUD편집 지오메트리·타이머 Dispose·문자열 버퍼 재사용·**DPI 인식**·**회귀 테스트 프로젝트** | `af38a50` | G3(재접속)은 설계+적대적 리뷰(opus 2렌즈) — PID 종속 캐시 전수 리셋 검증. G5는 A1에서 이미 해결(문서만). G9 테스트 15개 통과(충실도도 검증). 빌드+테스트 통과. **G8은 고DPI 실기 확인 필요** |
+| 2026-07-17 | **견고성 G 섹션 전체 (G1~G9)**: MessageBox 안내·Process 누수·**자동 재접속**·Menu HUD편집 지오메트리·타이머 Dispose·문자열 버퍼 재사용·**DPI 인식**·**회귀 테스트 프로젝트** | `af38a50` | G3(재접속)은 설계+적대적 리뷰(opus 2렌즈) — PID 종속 캐시 전수 리셋 검증. G5는 A1에서 이미 해결(문서만). G9 테스트 15개 통과(충실도도 검증). 빌드+테스트 통과. **실기 확인: G1 MessageBox·G3 재접속(osu! 재시작→메모리 재독) 정상**. G8은 100% DPI 정책이라 스케일 경로 미검증(100%에선 무영향) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -282,14 +282,14 @@
 
 | # | 위치 | 내용 |
 |---|---|---|
-| ~~G1~~ ✅ (`af38a50`) | `Program.cs` | ~~WinExe라 `Console.ReadLine()`이 즉시 null → "대기 후 종료" 무동작~~ → 기동 실패 시 **MessageBox**로 안내 후 종료 |
+| ~~G1~~ ✅ (`af38a50`) | `Program.cs` | ~~WinExe라 `Console.ReadLine()`이 즉시 null → "대기 후 종료" 무동작~~ → 기동 실패 시 **MessageBox**로 안내 후 종료. **실기 확인**(다이얼로그 표시됨) |
 | ~~G2~~ ✅ (`af38a50`) | `ProcessMemory.cs` | ~~다중 실행 시 나머지 `Process` 객체 미해제~~ → `procs` 배열 전부 Dispose |
-| ~~G3~~ ✅ (`af38a50`) | (재접속) | ~~osu! 재시작 시 죽은 핸들 영구 보유 → 오버레이 재시작 필요~~ → **자동 재접속**: `GetExitCodeProcess`로 죽음 감지(무할당·무예외·PID재사용 안전) + PID 종속 캐시 **전수 리셋** 후 재스캔, 1초 rate-limit. 설계→적대적 리뷰(opus 2렌즈: 완전성·회귀) 검증. **정상 연결 경로 무변화** |
+| ~~G3~~ ✅ (`af38a50`) | (재접속) | ~~osu! 재시작 시 죽은 핸들 영구 보유 → 오버레이 재시작 필요~~ → **자동 재접속**: `GetExitCodeProcess`로 죽음 감지(무할당·무예외·PID재사용 안전) + PID 종속 캐시 **전수 리셋** 후 재스캔, 1초 rate-limit. 설계→적대적 리뷰(opus 2렌즈: 완전성·회귀) 검증. 정상 연결 경로 무변화. **실기 확인 — osu! 종료→재실행 시 자동 재접속·메모리 재독 정상** |
 | ~~G4~~ ✅ (`af38a50`) | `OsuMemoryReader.cs` | ~~Menu에선 해상도 갱신이 안 돌아 HUD 편집이 낡은 지오메트리~~ → `HudEditActive`일 때 Menu에서도 `resolution.Refresh()` |
 | ~~G5~~ ✅ (`fcfc0ff`, A1) | (설정) | ~~`..\..` 경로 탈출 가능~~ → **A1의 `IsSafeFolderName`이 이미 `.`/`..`·경로 구분자 거부**. 별도 수정 불필요(문서만 갱신) |
 | ~~G6~~ ✅ (`af38a50`) | `ControlPanelForm.cs` | ~~`statusSync` 타이머 Dispose 안 됨~~ → 폼 종료 시 Stop+Dispose. (`syncTimer`는 F1에서 이미 제거됨) |
 | ~~G7~~ ✅ (`af38a50`) | `ProcessMemory.cs` | ~~`ReadSharpString` 호출당 `byte[]` 할당~~ → `[ThreadStatic]` 재사용 버퍼 + 길이 지정 디코드(잔여 바이트 혼입 방지) |
-| ~~G8~~ ✅ (`af38a50`) | `Program.cs` | ~~High-DPI 인식 미검증~~ → **검증 결과 매니페스트/코드 없어 DPI-unaware였음** → `DpiAwareness.Enable()`(PerMonitorV2→System 폴백) 추가. ⚠️ **고DPI 디스플레이 실기 확인 필요**(현 100% DPI 환경 미검증, 문제 시 1줄 롤백) |
+| ~~G8~~ ✅ (`af38a50`) | `Program.cs` | ~~High-DPI 인식 미검증~~ → **검증 결과 매니페스트/코드 없어 DPI-unaware였음** → `DpiAwareness.Enable()`(PerMonitorV2→System 폴백) 추가. **정책상 DPI 100% 사용을 안내**하므로 스케일 경로는 미검증(테스트 생략) — 100%에선 DPI-aware==unaware라 no-op(무영향). 100% 세션은 정상 동작 확인. 스케일 지원이 필요해지면 `DpiAwareness.Enable()` 유지, 문제 시 1줄 롤백 |
 | ~~G9~~ ✅ (`af38a50`) | `OsuEnlightenOverlay.Tests` | ~~테스트 0개~~ → **자체 회귀 테스트 프로젝트**(nuget 무의존, InternalsVisibleTo): ParsePattern·난이도(AR→PreEmpt)·비트맵 파서 **15개 통과**. 포팅 충실도도 검증(AR5=1200·AR9=600·AR0=1800·AR10=450·FadeIn=400) |
 | ~~G10~~ ✅ | `Overlay/OverlayForm.cs:490` + `Program.cs:57` | ~~**기동 시 좌상단에 흰 사각형이 잠깐 뜸**~~ → 해결 (`e2e630d`). **사용자 제보로 발견 — 이 목록에 없던 항목**. `Show()`가 `StartOverlay()`(=`SyncToOsu`)보다 먼저라 그 사이 창이 `StartPosition=Manual` 기본값 (0,0) 300x300으로 떠 있었고, GL 서피스 미초기화라 창 전체가 흰색이었다 → 첫 SwapBuffers 전까지 알파 0 |
 
