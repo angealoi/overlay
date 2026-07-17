@@ -26,6 +26,16 @@ namespace OsuEnlightenOverlay.Rendering
 
         public float GamefieldSpriteRatio = 1f;
         int currentTime = 0; // Draw 시간 기반 컬링용
+        long stableOrderCounter = 0; // Add 전역 삽입 순서 — Depth 동점 안정 정렬 tiebreak (C5). long이라 오버플로 불가
+
+        // Depth 오름차순 + 동점은 삽입 순서(StableOrder)로 결정하는 전순서 비교자.
+        // static readonly IComparer로 캐싱해 List.Sort(Comparison<T>)의 매 호출 FunctorComparer
+        // 할당(net48)을 피한다 — 정렬은 사실상 매 프레임 돈다.
+        static readonly IComparer<pSprite> DepthOrderComparer = Comparer<pSprite>.Create((a, b) =>
+        {
+            int c = a.Depth.CompareTo(b.Depth);
+            return c != 0 ? c : a.StableOrder.CompareTo(b.StableOrder);
+        });
 
         public void SetViewportSize(int width, int height)
         {
@@ -67,6 +77,8 @@ namespace OsuEnlightenOverlay.Rendering
         public void Add(pSprite sprite)
         {
             // O(1) append + lazy sort — avoids O(n) List.Insert per sprite
+            // 삽입 순서를 기록해 Depth 동점 시 안정 정렬 tiebreak로 쓴다 (C5).
+            sprite.StableOrder = stableOrderCounter++;
             sprites.Add(sprite);
             spriteSet.Add(sprite);
             needsSort = true;
@@ -96,6 +108,9 @@ namespace OsuEnlightenOverlay.Rendering
             sprites.Clear();
             spriteSet.Clear();
             needsSort = false;
+            // 리스트를 비웠으니 삽입 순서 카운터도 재기준화 (Clear는 맵 로드/Retry에서만 호출됨).
+            // long이라 안 해도 오버플로는 없지만 숫자를 맵 단위로 작게 유지한다.
+            stableOrderCounter = 0;
         }
 
         /// <summary>
@@ -130,9 +145,12 @@ namespace OsuEnlightenOverlay.Rendering
         public void Draw()
         {
             // lazy sort — 정렬이 필요할 때만 (청크 추가 후 1회)
+            // Depth 오름차순 + 동점은 삽입 순서(StableOrder)로 결정 → 전순서라 결과가 유일하게
+            // 정해져 List.Sort(불안정)여도 프레임 간 z-플리커가 없다 (C5/H21).
+            // 캐싱된 비교자라 매 호출 추가 할당 없음.
             if (needsSort)
             {
-                sprites.Sort((a, b) => a.Depth.CompareTo(b.Depth));
+                sprites.Sort(DepthOrderComparer);
                 needsSort = false;
             }
 
