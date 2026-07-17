@@ -615,6 +615,9 @@ namespace OsuEnlightenOverlay.Overlay
 
             // Hidden override — HiddenOverride 설정이 켜져 있을 때만 HD 렌더링
             // (실제 osu!의 HD mod와 무관하게 컨트롤 패널 설정으로만 결정)
+            // InstaFade — Arm(히트 판정) 시점에 소비되므로 리로드 없이 값만 동기화
+            HitCircleOsu.InstaFadeActive = (settings != null && settings.InstaFade);
+
             bool newHiddenActive = (settings != null && settings.HiddenOverride);
             if (newHiddenActive != HitCircleOsu.HiddenActive)
             {

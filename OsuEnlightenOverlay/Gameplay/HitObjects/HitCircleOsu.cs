@@ -20,6 +20,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         // HD mod 활성 여부 — MmSliderRenderer 등에서 Fade Out 타이밍 결정용
         public static bool HiddenActive = false;
 
+        // InstaFade 설정 — 히트 시 팝 애니메이션(Scale 1.0→1.4 + FadeOut) 없이 즉시 소멸.
+        // OverlayForm이 매 프레임 settings.InstaFade에서 동기화. Arm(isHit=true) 시점에만 소비되므로
+        // HiddenActive와 달리 토글 시 맵 리로드가 필요 없다. 미스 애니메이션(60ms)은 영향 없음.
+        public static bool InstaFadeActive = false;
+
         // 첫 번째 객체 여부 — HD mod에서 첫 번째 approach circle 예외 (sHiddenShowFirstApproach)
         protected bool isFirstObject = false;
 
@@ -472,24 +477,31 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 // HD mod에서는 hit animation이 안 보임 — fade 시작값을 0으로 (객체가 이미 안 보이는 상태)
                 float hitFadeStart = HiddenActive ? 0f : 1f;
 
-                Transformation scaleOut = new Transformation(
-                    TransformationType.Scale, 1.0f, 1.4f,
-                    armTime, armTime + DifficultyCalculator.FadeOut,
-                    EasingTypes.Out);
-                scaleOut.TagNumeric = ARMED;
+                // InstaFade — 팝 애니메이션 없이 히트 순간 즉시 소멸.
+                // zero-duration 페이드(armTime→armTime)는 아래 approach circle 즉시 페이드와 같은 패턴.
+                int hitFadeEnd = InstaFadeActive ? armTime : armTime + DifficultyCalculator.FadeOut;
 
                 Transformation fadeOut = new Transformation(
                     TransformationType.Fade, hitFadeStart, 0f,
-                    armTime, armTime + DifficultyCalculator.FadeOut,
+                    armTime, hitFadeEnd,
                     EasingTypes.None);
                 fadeOut.TagNumeric = ARMED;
 
-                spriteHitCircle.Transformations.Add(scaleOut);
                 spriteHitCircle.Transformations.Add(fadeOut.Clone());
                 if (spriteHitCircleOverlay != null)
-                {
-                    spriteHitCircleOverlay.Transformations.Add(scaleOut.Clone());
                     spriteHitCircleOverlay.Transformations.Add(fadeOut.Clone());
+
+                if (!InstaFadeActive)
+                {
+                    Transformation scaleOut = new Transformation(
+                        TransformationType.Scale, 1.0f, 1.4f,
+                        armTime, armTime + DifficultyCalculator.FadeOut,
+                        EasingTypes.Out);
+                    scaleOut.TagNumeric = ARMED;
+
+                    spriteHitCircle.Transformations.Add(scaleOut);
+                    if (spriteHitCircleOverlay != null)
+                        spriteHitCircleOverlay.Transformations.Add(scaleOut.Clone());
                 }
 
                 if (spriteApproachCircle != null)
@@ -502,7 +514,17 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 }
 
                 // Combo number — new layout: Fade 1→0 (60ms), old layout: Scale + Fade
-                if (SkinManager.UseNewLayout)
+                // InstaFade면 레이아웃 무관 즉시 페이드(스케일 없음)
+                if (InstaFadeActive)
+                {
+                    Transformation textFade = new Transformation(
+                        TransformationType.Fade, 1f, 0f,
+                        armTime, armTime, EasingTypes.None);
+                    textFade.TagNumeric = ARMED;
+                    foreach (pSprite textSprite in spriteHitCircleText)
+                        textSprite.Transformations.Add(textFade.Clone());
+                }
+                else if (SkinManager.UseNewLayout)
                 {
                     Transformation textFade = new Transformation(
                         TransformationType.Fade, 1f, 0f,
