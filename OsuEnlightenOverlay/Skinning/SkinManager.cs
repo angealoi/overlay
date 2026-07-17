@@ -301,17 +301,21 @@ namespace OsuEnlightenOverlay.Skinning
             string[] split = value.Split(',');
             try
             {
+                // stable Section.ConvertString은 각 성분을 (byte)Convert.ToInt32로 256 모듈로 wrap한다.
+                // int.Parse 후 Color.FromArgb(int,...)는 0~255 밖이면 ArgumentException→catch→Empty로
+                // 색이 통째로 버려졌다. byte 캐스팅으로 stable처럼 wrap(예: 300→44, -5→251)해
+                // 범위 밖 값을 쓰는 손상 스킨도 stable과 동일하게 표시한다 (I-감사 #20).
                 if (split.Length == 3)
                     return Color.FromArgb(
-                        int.Parse(split[0].Trim()),
-                        int.Parse(split[1].Trim()),
-                        int.Parse(split[2].Trim()));
+                        (byte)int.Parse(split[0].Trim()),
+                        (byte)int.Parse(split[1].Trim()),
+                        (byte)int.Parse(split[2].Trim()));
                 if (split.Length == 4)
                     return Color.FromArgb(
-                        allowAlpha ? int.Parse(split[3].Trim()) : 255,
-                        int.Parse(split[0].Trim()),
-                        int.Parse(split[1].Trim()),
-                        int.Parse(split[2].Trim()));
+                        allowAlpha ? (byte)int.Parse(split[3].Trim()) : 255,
+                        (byte)int.Parse(split[0].Trim()),
+                        (byte)int.Parse(split[1].Trim()),
+                        (byte)int.Parse(split[2].Trim()));
             }
             catch { }
             return Color.Empty;

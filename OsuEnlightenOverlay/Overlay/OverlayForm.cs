@@ -1022,6 +1022,11 @@ namespace OsuEnlightenOverlay.Overlay
                         hudRenderer.SetViewport(ClientSize.Width, ClientSize.Height);
                         hudRenderer.Render();
                     };
+                    // 즉시모드 HUD 도형(에러바·에디트 하이라이트)은 SpriteManager.Draw 이후에 그린다 (I-감사 #18).
+                    renderer.PostDrawCallback = delegate(int timeMs)
+                    {
+                        hudRenderer.RenderOverlayShapes();
+                    };
                 }
 
                 // HitObjectManager Update는 renderer.Render 내부에서 호출됨

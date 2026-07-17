@@ -336,6 +336,15 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
 
             // (미사용 지역변수 origin 제거 — 실제 origin은 AddTrailParticle에서 계산, I-감사 #22)
 
+            // stable updateCursorTrail은 트레일 텍스처 DisplayWidth<5이면 트레일을 비활성화한다
+            // (lastTrailPosition 리셋 후 return). 폭이 극히 좁은 트레일 텍스처에서 minSpacing이
+            // 1px로 클램프돼 프레임당 파티클을 대량 방출하던 것을 막는다 (I-감사 #16).
+            if (trailDisplayW < 5)
+            {
+                lastTrailPosition = -Vector2.One;
+                return;
+            }
+
             if (hasMiddle)
             {
                 // ---- New-style trail — osu-stable updateCursorTrail :1263-1291 ----
@@ -419,9 +428,13 @@ namespace OsuEnlightenOverlay.Gameplay.Cursor
                     pos, cursor.Depth - 0.001f, false, Color.White);
                 trail.Scale = cursor.Scale;
                 trail.VectorScale = cursor.VectorScale;
-                trail.Rotation = cursorTrailRotate ? cursor.CurrentRotation : 0;
+                // 회전: stable은 old-style(cursormiddle 없음)만 CursorTrailRotate를 존중한다.
+                // new-style 렌더러(CursorTrailRenderer)는 축정렬 쿼드라 회전을 적용하지 않는다 (I-감사 #15).
+                trail.Rotation = (!hasMiddle && cursorTrailRotate) ? cursor.CurrentRotation : 0;
                 trail.Alpha = 1.0f;
-                trail.Additive = true;
+                // 블렌드: stable new-style은 가산(SrcAlpha/One), old-style은 일반 알파 블렌드다 (I-감사 #14).
+                // (이 오버레이는 커서를 항상 흰색으로 그리므로 old-style 색은 White로 이미 동일.)
+                trail.Additive = hasMiddle;
                 trail.Transformations.Add(new Transformation(
                     TransformationType.Fade, 1.0f, 0.0f,
                     timeMs, timeMs + lifetime));
