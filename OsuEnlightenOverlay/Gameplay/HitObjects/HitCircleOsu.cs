@@ -307,10 +307,15 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             spriteApproachCircle.Transformations.Add(new Transformation(
                 TransformationType.Scale, 4f, 1f,
                 startTime - p, startTime, EasingTypes.None));
-            // Approach Circle Fade Out — osu-stable Arm(isHit=false): Fade 0.9→0 (startTime → startTime+60)
+            // Approach Circle 제거 — osu-stable(H18): AC는 히트/미스 판정 순간까지 0.9로 남는다.
+            //   히트: Arm(hit)의 즉시 페이드(armTime). 미스: 판정 마감(StartTime+HitWindow50)에 60ms 페이드.
+            // 예전엔 startTime→+60에 페이드해 늦은 히트/미스에서 AC가 조기 소멸했다(startTime을 미스
+            // 마감으로 오인). 이 폴백 페이드는 판정이 안 오는 경우의 제거도 겸하며, EndTime을 히트창
+            // 끝까지 확장해 Arm의 hit/miss 변환이 Draw 컬링(currentTime>EndTime)에 걸리지 않게 한다.
+            // HD는 Disarm의 HD 페이드가 접근 중 먼저 제거(리스트 뒤라 이 폴백을 덮어씀)한다.
             spriteApproachCircle.Transformations.Add(new Transformation(
                 TransformationType.Fade, 0.9f, 0f,
-                startTime, startTime + 60, EasingTypes.None));
+                startTime + difficulty.HitWindow50, startTime + difficulty.HitWindow50 + 60, EasingTypes.None));
         }
 
         /// <summary>
@@ -374,9 +379,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 spriteApproachCircle.Transformations.Add(new Transformation(
                     TransformationType.Scale, 4f, 1f,
                     startTime - p, startTime, EasingTypes.None));
+                // H18: 미스 판정 마감(StartTime+HitWindow50)에 페이드 — 생성자와 동일 (조기 소멸 수정)
                 spriteApproachCircle.Transformations.Add(new Transformation(
                     TransformationType.Fade, 0.9f, 0f,
-                    startTime, startTime + 60, EasingTypes.None));
+                    startTime + newDifficulty.HitWindow50, startTime + newDifficulty.HitWindow50 + 60, EasingTypes.None));
             }
 
             // Hit Circle / Overlay / Text Fade In 재구성
