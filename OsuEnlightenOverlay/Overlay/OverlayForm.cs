@@ -603,7 +603,12 @@ namespace OsuEnlightenOverlay.Overlay
                 syncCounter = 0;
             }
 
-            // 메모리 읽기
+            // G3: osu! 종료/재시작 자동 재접속. osu!가 살아있으면(정상 경로) 1초에 한 번
+            // 프로세스 생존만 확인하고 그대로 통과한다 — 연결 중 동작은 그대로다.
+            TryReconnectIfDead();
+
+            // 메모리 읽기 — HUD 편집 모드면 Menu에서도 해상도 갱신하도록 리더에 알린다 (G4)
+            reader.HudEditActive = settings != null && settings.HudEditMode;
             reader.RefreshLiveValues();
 
             // Hidden override — HiddenOverride 설정이 켜져 있을 때만 HD 렌더링
@@ -837,9 +842,46 @@ namespace OsuEnlightenOverlay.Overlay
         bool? lastClickThroughState = null; // ClickThrough 상태 캐싱 (매 프레임 Win32 API 호출 방지)
         bool? lastCaptureBlockState = null; // CaptureBlock 상태 캐싱
 
+        // G3 재접속 — 프로세스 생존 확인/재접속 시도 rate-limit (1초에 한 번)
+        long lastConnCheckTicks = 0;
+        static readonly long ConnCheckIntervalTicks = TimeSpan.TicksPerSecond;
+
+        /// <summary>
+        /// osu!가 종료됐거나(핸들 죽음) 스캔이 아직 미완이면 재접속. rate-limit(1초)으로
+        /// osu!가 없을 때 비싼 재스캔이 스핀하지 않게 한다. osu!가 살아있고 완전 연결된
+        /// 정상 경로에서는 1초에 한 번 IsProcessAlive만 확인하고 즉시 반환한다.
+        /// </summary>
+        void TryReconnectIfDead()
+        {
+            long now = DateTime.UtcNow.Ticks;
+            if (now - lastConnCheckTicks < ConnCheckIntervalTicks) return;
+            lastConnCheckTicks = now;
+
+            if (reader.IsProcessAlive() && reader.IsConnected) return; // 정상 — no-op
+
+            if (reader.Reconnect())
+            {
+                // 새 PID의 osu! 창 핸들 재획득 — 옛 HWND는 죽은 창을 가리킨다.
+                // 창이 아직 안 떴으면 Zero가 되고, SyncToOsu가 동기화마다 재시도한다.
+                osuHwnd = WindowInterop.FindOsuWindow(reader.ProcessId);
+                // 맵 파싱 상태 리셋 — 새 세션에서 현재 맵을 다시 파싱하도록.
+                lastBeatmapFolder = null;
+                lastBeatmapFilename = null;
+                lastFrameTime = -1;
+                Console.WriteLine("[Reconnect] osu! 재접속 성공 (PID=" + reader.ProcessId + ")");
+            }
+        }
+
         void SyncToOsu()
         {
-            if (osuHwnd == IntPtr.Zero) return;
+            if (osuHwnd == IntPtr.Zero)
+            {
+                // G3: 재접속 직후 osu! 창이 아직 안 뜬 경우 재획득 시도.
+                // 정상 실행 중에는 osuHwnd가 항상 유효하므로 이 분기는 실행되지 않는다.
+                if (reader != null && reader.IsOpen)
+                    osuHwnd = WindowInterop.FindOsuWindow(reader.ProcessId);
+                if (osuHwnd == IntPtr.Zero) return;
+            }
 
             // 클라이언트 영역(실제 게임 영역) 기준 — 타이틀바/테두리 제외
             WindowInterop.RECT clientRect;

@@ -48,6 +48,9 @@ namespace OsuEnlightenOverlay.Memory
         public string BeatmapDifficultyName { get; private set; }
         public int PlayMode { get; private set; }
 
+        // HUD 편집 모드 여부 — OverlayForm이 매 프레임 세팅. Menu에서도 편집 시 해상도 갱신용 (G4).
+        public bool HudEditActive;
+
         // ── 스코어 — ScoreReader 위임 ──
         public bool ScoreLive { get { return score.ScoreLive; } }
         public int TotalScore { get { return score.TotalScore; } }
@@ -84,6 +87,14 @@ namespace OsuEnlightenOverlay.Memory
 
         public bool IsOpen { get { return pm.IsOpen; } }
         public int ProcessId { get { return pm.ProcessId; } }
+
+        /// <summary>추적 중인 osu! 프로세스가 아직 살아있는지 (G3 재접속 감지용).</summary>
+        public bool IsProcessAlive() { return pm.IsProcessAlive(); }
+
+        // G3: static slot 스캔이 완전히 성공했는지 — 재접속 시 부분 스캔 실패를 감지.
+        bool staticSlotsReady = false;
+        /// <summary>핸들이 열려있고 static slot 스캔까지 성공한 완전 연결 상태.</summary>
+        public bool IsConnected { get { return pm.IsOpen && staticSlotsReady; } }
 
         /// <summary>
         /// 현재 플레이 중인 맵의 .osu 파일 전체 경로.
@@ -145,6 +156,83 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
+        /// osu! 재접속 (G3) — 죽은 핸들을 닫고 PID 종속 캐시를 전부 리셋한 뒤 재스캔.
+        /// OverlayForm이 프로세스 종료를 감지했을 때만(=연결이 끊긴 상태에서만) 호출한다.
+        /// 정상 연결 경로에서는 절대 실행되지 않으므로 연결 중 동작은 그대로다.
+        /// </summary>
+        public bool Reconnect()
+        {
+            // 스캔 이전에 먼저 전부 리셋 — OpenOsu/스캔이 도중 실패해도 낡은 포인터가
+            // 새 프로세스로 새어 들어가지 않도록(부분 실패 안전).
+            ResetPidState();
+
+            pm.Dispose();          // 죽은 핸들 CloseHandle → IsOpen=false
+            if (!pm.OpenOsu())     // 새 osu! 탐색 + 핸들 오픈 (없으면 다음 시도까지 대기)
+                return false;
+
+            return ScanStaticSlots();
+        }
+
+        /// <summary>
+        /// PID 종속 캐시 전면 초기화 — 하나라도 빠지면 새 프로세스에 옛 포인터가 남아
+        /// 쓰레기/크래시가 된다. 필드 추가 시 여기도 반드시 갱신할 것 (G3).
+        /// </summary>
+        void ResetPidState()
+        {
+            staticSlotsReady = false;
+
+            // static slot (ScanStaticSlots가 덮어쓰지만, 부분 실패 대비로 먼저 0)
+            timeSlot = IntPtr.Zero;
+            modeSlot = IntPtr.Zero;
+            modsSlot = IntPtr.Zero;
+            beatmapStaticAddr = IntPtr.Zero;
+            playModeSlot = IntPtr.Zero;
+            playerInstanceSlot = IntPtr.Zero; // ScanStaticSlots는 player.First!=0일 때만 덮어씀 — 필수 리셋
+
+            // 커서 — cursorSlots는 ApplyCursorScan이 Add로 APPEND하므로 반드시 Clear
+            cursorSlots.Clear();
+            cursorWriteSlots.Clear();
+            cursorPositionSlot = IntPtr.Zero;  // Identify는 Zero일 때만 덮어씀 — 명시 리셋 필수
+            cursorSlotIsProvisional = false;
+            cursorRescanLastTicks = 0;
+            cursorRescanAttempts = 0;
+
+            // 비트맵 live-read 캐시
+            lastBeatmapPtr = IntPtr.Zero;
+            BeatmapFolder = null;
+            BeatmapOsuFilename = null;
+            BeatmapDifficultyName = null;
+
+            // HOM 캐시
+            foundPlayerHomOff = -1;
+            foundHomListOff = -1;
+            cachedHoStartTimes = null;
+            cachedHoEndTimes = null;
+            cachedHoCount = 0;
+            cachedMaxDuration = 0;
+            hoCacheReady = false;
+            lastBeatmapObj = IntPtr.Zero;
+
+            // .osu 파싱/주입 캐시
+            parsedHitObjects.Clear();
+            parsedOsuPath = null;
+            parsedStartTimes = new List<int>();
+            parsedTypes = new List<int>();
+            parsedOsuKey = null;
+
+            // 설치 경로 — 새 PID는 다른 경로일 수 있음
+            cachedOsuInstallDir = null;
+
+            // 실패한 재접속 동안 오버레이가 뜨지 않도록 모드/오디오 상태를 내린다
+            Mode = 0;         // Menu
+            AudioState = 0;
+
+            // 서브 리더 — 각자의 slot/인덱스/모니터 캐시 리셋
+            score.ResetForReconnect();
+            resolution.ResetForReconnect();
+        }
+
+        /// <summary>
         /// 기동 시 static slot 일괄 스캔.
         /// 예전에는 시그니처마다 전체 메모리를 다시 읽어 **전체 패스가 9회** 돌았다 (D1).
         /// 이제 모든 패턴을 한 배치로 넘겨 **1회 패스**로 끝낸다.
@@ -191,7 +279,8 @@ namespace OsuEnlightenOverlay.Memory
                 pm.ReadPointer(player.First + Signatures.PlayerInstance.OperandSkip, out playerInstanceSlot);
             resolution.ApplyScan(config);
 
-            return timeSlot != IntPtr.Zero;
+            staticSlotsReady = timeSlot != IntPtr.Zero; // G3: 완전 스캔 성공 표식
+            return staticSlotsReady;
         }
 
         // ── E2: AOB slot 검증 (time/mode/mods) ──
@@ -441,6 +530,10 @@ namespace OsuEnlightenOverlay.Memory
                 RefreshBeatmap();
                 resolution.Refresh();
             }
+            // HUD 편집 모드는 Menu(모드 0)에서도 오버레이를 표시하므로 그때도 해상도(지오메트리)를
+            // 갱신해야 낡은 지오메트리로 편집하지 않는다 (G4). 커서/비트맵은 편집에 불필요하므로 제외.
+            else if (HudEditActive)
+                resolution.Refresh();
 
             if (playModeSlot != IntPtr.Zero)
             {

@@ -121,6 +121,24 @@ namespace OsuEnlightenOverlay.Memory
             configDictSlot = AobScanner.ResolveSlot(pm, Signatures.ConfigDictionary, req);
         }
 
+        /// <summary>
+        /// G3 재접속 — PID 종속 상태 리셋. configDictSlot은 ApplyScan이 덮어쓰지만(assign),
+        /// ConfigKey.Index(딕셔너리 인덱스)와 DesktopWidth/Height(모니터 캐시)는
+        /// ApplyScan이 건드리지 않으므로 여기서 반드시 초기화한다 — 새 프로세스의 Config
+        /// 딕셔너리 인덱스가 다르거나 다른 모니터일 수 있다.
+        /// </summary>
+        public void ResetForReconnect()
+        {
+            configDictSlot = IntPtr.Zero;
+            foreach (ConfigKey k in allKeys) k.Index = -1;
+            WindowWidth = 0;
+            WindowHeight = 0;
+            DesktopWidth = 0;   // 새 PID → 다른 모니터일 수 있음, 재조회 강제
+            DesktopHeight = 0;
+            lastScanTicks = 0;
+            lastVerifyTicks = 0;
+        }
+
         // ────────────────────── Dictionary 접근 (캐싱 없음) ──────────────────────
 
         /// <summary>
