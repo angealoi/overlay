@@ -42,6 +42,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         pSprite sliderBallNd;
         List<pSprite> sliderScorePoints = new List<pSprite>();
 
+        // 틱 소비 상태 — 볼이 tracking(follow circle 표시) 상태로 지나친 틱은 즉시 숨긴다.
+        // stable은 슬라이더 판정(scoring)이 틱을 소비하지만 오버레이는 틱 단위 판정을
+        // 메모리에서 못 읽어 IsTracking으로 근사한다(사용자 결정).
+        List<int> tickScoreTimes = new List<int>(); // sliderScorePoints[i]와 병렬 — 볼 통과 시각(ms)
+        int nextConsumableTick = 0;                 // 다음 소비 판정 대상 (시간순 전진 전용)
+        const int TagTickConsumed = 1;              // 소비 숨김 트랜스폼 태그 — retry 리셋용
+
         // tracking 상태 — 메모리에서 읽은 IsTracking
         byte currentTracking = 0;
         byte prevTracking = 0;
@@ -374,6 +381,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                             if (distToStart >= radiusSquared && distToEnd >= radiusSquared)
                             {
                                 sliderScorePoints.Add(scoringDot);
+                                tickScoreTimes.Add(scoreTime); // 소비 판정용 — 리스트 병렬 유지
                                 segmentDots.Add(scoringDot);
                             }
                         }
@@ -661,6 +669,30 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         }
 
         /// <summary>
+        /// 틱 소비 상태 리셋 — retry(시간 대역행) 시 HOM에서 호출.
+        /// 소비 숨김 트랜스폼(TagTickConsumed)을 걷어내 새 시도에서 틱이 다시 보이게 한다.
+        /// (OverlayForm의 retry 맵 재로드가 객체를 재생성하면 무의미하지만, HOM 단독
+        /// 리셋 경로에서도 상태가 새기지 않도록 방어한다.)
+        /// </summary>
+        public void ResetTickConsumption()
+        {
+            nextConsumableTick = 0;
+            foreach (pSprite dot in sliderScorePoints)
+            {
+                bool removed = false;
+                for (int i = dot.Transformations.Count - 1; i >= 0; i--)
+                {
+                    if (dot.Transformations[i].TagNumeric == TagTickConsumed)
+                    {
+                        dot.Transformations.RemoveAt(i);
+                        removed = true;
+                    }
+                }
+                if (removed) dot.ComputeTimeRange();
+            }
+        }
+
+        /// <summary>
         /// 슬라이더 시작원 Arm — osu-stable Hit(slider.sliderStartCircle).
         /// </summary>
         public void ArmStartCircle(bool isHit, int armTime)
@@ -775,6 +807,26 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 if (sliderBallNd != null) sliderBallNd.Position = ballPos;
                 if (sliderBallSpec != null) sliderBallSpec.Position = ballPos;
+            }
+
+            // 틱 소비 — 볼이 tracking 상태로 틱을 지나치는 순간 그 틱을 즉시 숨긴다.
+            // 통과 순간 tracking이 아니었으면(놓친 틱) 남겨두고, 세그먼트 끝 일괄 페이드(H22)가
+            // 처리한다 — stable에서 미스한 틱이 남는 것과 동일. 포인터는 시간순으로만 전진하므로
+            // 각 틱은 통과 프레임에 정확히 한 번 판정된다. 숨김은 통과 시각(scoreTime)에 앵커된
+            // zero-duration 페이드(H22 패턴)라 이후 시간 어디서 그려도 일관된다.
+            while (nextConsumableTick < tickScoreTimes.Count && timeMs >= tickScoreTimes[nextConsumableTick])
+            {
+                if (currentTracking == 1)
+                {
+                    pSprite dot = sliderScorePoints[nextConsumableTick];
+                    int consumeTime = tickScoreTimes[nextConsumableTick];
+                    Transformation hide = new Transformation(
+                        TransformationType.Fade, 0f, 0f, consumeTime, consumeTime, EasingTypes.None);
+                    hide.TagNumeric = TagTickConsumed;
+                    dot.Transformations.Add(hide);
+                    dot.ComputeTimeRange();
+                }
+                nextConsumableTick++;
             }
 
             // 슬라이더 팔로워 — tracking 기반 애니메이션 (osu-stable InitSlide/KillSlide)
