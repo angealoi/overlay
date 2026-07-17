@@ -219,11 +219,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
             // 슬라이더 볼 — osu! stable: LoadAll("sliderb", SkinSource.All, false)
             // dashSeparator=false → sliderb0, sliderb1, ...
-            pTexture[] sliderBallTextures = texManager.LoadAll("sliderb", SkinSource.All, false);
+            // LoadAll은 유저 스킨·임베디드 기본 스킨 어디에도 텍스처가 없으면 null을 반환한다.
+            // 그대로 .Length를 읽으면 NRE(A3) — 빈 배열로 합치면 아래 `.Length > 0` 가드가
+            // 자연히 걸러 sliderBall/sliderFollower가 null로 남는다(모든 사용처가 null 가드됨).
+            pTexture[] sliderBallTextures = texManager.LoadAll("sliderb", SkinSource.All, false) ?? new pTexture[0];
             bool usingDefault = sliderBallTextures.Length > 0 && sliderBallTextures[0].Source == SkinSource.Osu;
 
             // 슬라이더 팔로워 — osu! stable: LoadAll("sliderfollowcircle")
-            pTexture[] sliderFollowerTextures = texManager.LoadAll("sliderfollowcircle");
+            pTexture[] sliderFollowerTextures = texManager.LoadAll("sliderfollowcircle") ?? new pTexture[0];
 
             // ── 시작 원 (HitCircleSliderStart) ──
             // sliderstartcircle 텍스처 사용 (fallback: hitcircle)

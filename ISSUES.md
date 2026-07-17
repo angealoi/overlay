@@ -35,6 +35,7 @@
 | 2026-07-17 | **A1**: 손상된 settings.ini 값 하나로 기동 불능 (범위 밖 `.Value`·NaN 캐스트·경로 문자·null 스킨 폴더·쓰기 불가 폴더) | `fcfc0ff` | 감사+적대적 리뷰 워크플로 전수 검증. **실기 확인** — 전 트리거 동시 주입 ini로 정상 기동(값 살균 확인) |
 | 2026-07-17 | **A4**: 문화권 의존 직렬화 → InvariantCulture 고정 (+ 구파일 현재-로케일 폴백) | `fcfc0ff` | 적대적 리뷰로 로케일 라운드트립·구파일 회귀 검증 |
 | 2026-07-17 | **E1~E7 전부**: 잠복 결함 7건 (버퍼 스레드안전·AOB slot 검증·QuadBatch 셰이더·Fields enum 충돌·GameField 경합·낡은 파싱 폐기·문자열 캐시) | `68de5ad` | 감사 정독 → 적대적 리뷰(설계 14 + 구현 4 에이전트, fable5) 전수 검증. 리뷰가 실결함 3건 잡아 반영(모드 범위 오탈락·GameField float 절단·폐기 시 영구 blank). 빌드 통과(경고 0) + **실기: 정상 플레이 무이상(공통 경로 회귀 확인, E2 slot 오탈락 없음·E4 렌더 정상)**. E3 오버플로 등 희귀 트리거는 미노출 |
+| 2026-07-17 | **A2·A3·A5**: 크래시 방어 3건 (깨진 스킨 `Arm()` NRE · `LoadAll` null · 콤보색 범위 초과) | `67e6a7f` | 적대적 리뷰(3 에이전트, fable5) 전수 검증 — 남은 크래시 지점 0, 정상 경로 회귀 0. 유효 맵은 클램프 항등이라 무변화. 빌드 통과(경고 0) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -66,21 +67,21 @@
 | 비고 | `d79570d`가 난이도 행(451·460)만 선(先)클램프했었고, 이번에 FpsCap·CursorSize·NaN·경로·IO·null 스킨 폴더까지 완결. A4와 함께라 사용자 잘못 없이도 나던 경로도 차단 |
 | 검증 | 감사 워크플로(전 크래시 지점 열거) → 적대적 리뷰 워크플로(verify 포함)로 3건 추가 발견·수정: null 스킨 폴더 크래시·`..` 경로탈출·구파일 로케일 회귀. **실기 확인 완료** |
 
-### A2. 텍스처 없는 스킨에서 판정 오는 순간 NullReferenceException
+### ~~A2. 텍스처 없는 스킨에서 판정 오는 순간 NullReferenceException~~ ✅ 해결 (`67e6a7f`)
 | | |
 |---|---|
-| 위치 | `Gameplay/HitObjects/HitCircleOsu.cs:221 (원인), 466, 516 (폭발 지점)` |
-| 증상 | hitcircle/approachcircle 텍스처 로드 실패 시 생성자가 스프라이트 전부 null인 채 早退하는데, `Arm()`은 null 검사 없이 접근 |
+| ~~증상~~ | ~~hitcircle/approachcircle 텍스처 로드 실패 시 생성자가 스프라이트 전부 null인 채 早退하는데 `Arm()`이 null 무검사 접근 → 판정 순간 NRE~~ → `Arm()` 초입(IsArmed/IsHit/ArmTime 기록 후)에 `if (spriteHitCircle == null) return;` 가드 |
 | 트리거 | 깨진 스킨 + 판정 발생 |
-| 비고 | `:328`은 `spriteHitCircle?.`인데 `:466`은 검사 없음 — 같은 파일 안에서 비일관 |
+| 수정 | 단일 가드가 hit/miss 경로의 무가드 접근 5곳(스케일아웃·페이드·miss 페이드·Scale 리셋)을 전부 지배. 파일 내 다른 스프라이트 접근은 이미 전부 null 가드됨. `HitCircleSliderStart/End`는 `Arm()` 미오버라이드라 상속으로 함께 보호 |
+| 검증 | 적대적 리뷰로 전 메서드·서브클래스·호출부 전수 확인 — 남은 무가드 접근 0, 정상 스킨 경로 무변화 |
 
-### A3. `TextureManager.LoadAll` null 반환 미처리
+### ~~A3. `TextureManager.LoadAll` null 반환 미처리~~ ✅ 해결 (`67e6a7f`)
 | | |
 |---|---|
-| 위치 | `Rendering/Textures/TextureManager.cs:289 (null 반환) → Gameplay/HitObjects/SliderOsu.cs:189-190 (역참조)` |
-| 증상 | `sliderBallTextures.Length` 에서 NRE |
-| 트리거 | sliderb / sliderfollowcircle이 유저 스킨에도 임베디드 기본 스킨에도 없는 경우 |
-| 비고 | followpoint 호출부(`HitObjectManagerOsu.cs:463`)만 null 체크함 — 호출부마다 다름 |
+| ~~증상~~ | ~~`sliderb`/`sliderfollowcircle`이 유저·임베디드 기본 스킨 모두에 없으면 `LoadAll`이 null → `sliderBallTextures.Length`에서 NRE~~ → `LoadAll(...) ?? new pTexture[0]`로 빈 배열 합침 |
+| 트리거 | sliderb / sliderfollowcircle이 어느 스킨에도 없는 경우 |
+| 수정 | 빈 배열이면 `.Length > 0` 가드가 자연히 걸려 `sliderBall`/`sliderFollower`가 null로 남는다 — 전 사용처(Add/Remove·매 프레임 Update·Dispose·스택)가 이미 null 가드. `usingDefault`도 short-circuit 안전 |
+| 검증 | 적대적 리뷰로 빈 배열 다운스트림 전수 확인 + 다른 `LoadAll` 호출부(HitBurst·HitCircleOsu·HOM)도 이미 null/빈 가드됨 확인 |
 
 ### ~~A4. 문화권 의존 직렬화~~ ✅ 해결 (`fcfc0ff`)
 | | |
@@ -89,12 +90,12 @@
 | 하위호환 | 구버전이 현재 로케일로 저장한 ini(예: de-DE "1,50")는 **현재-로케일 폴백 파싱**으로 복구. `NumberStyles.Float`(천단위 불허) 유지 → '.' 로케일에서 "9,20"이 920으로 오독되지 않고 실패→기본값 (A4 수정을 되돌리지 않음) |
 | 비고 | NaN/Infinity도 거부. BeatmapParser는 원래 Invariant였고 이번에 SettingsSerializer만 맞춤. (적대적 리뷰가 폴백 없으면 구파일 침묵 초기화됨을 발견 → 폴백 추가) |
 
-### A5. 비트맵 Combo 색상 범위 초과
+### ~~A5. 비트맵 Combo 색상 범위 초과~~ ✅ 해결 (`67e6a7f`)
 | | |
 |---|---|
-| 위치 | `Gameplay/Beatmap/BeatmapParser.cs:199` |
-| 증상 | `Color.FromArgb(r,g,b)` 무클램프 — `Combo1: 300,0,0` 같은 맵에서 ArgumentException |
-| 비고 | 파싱 Task의 catch가 받아 앱은 살지만, 그 맵은 **조용히** 로드 실패 (로그 한 줄뿐) |
+| ~~증상~~ | ~~`Color.FromArgb(r,g,b)` 무클램프 — `Combo1: 300,0,0` 같은 맵에서 ArgumentException → 파싱 Task의 catch가 삼켜 그 맵이 **조용히** 로드 실패~~ → r/g/b를 `Math.Max(0, Math.Min(255, .))`로 `[0,255]` 클램프 후 FromArgb |
+| 수정 | 유효 맵은 클램프가 항등이라 무변화. 파서 내 **유일한** Color 생성 지점(`Combo#`만). skin.ini 색상은 원래 try/catch 보호(`SkinManager.ParseColor`) |
+| 검증 | 적대적 리뷰로 파서·저장소 전 `FromArgb` 감사 — 남은 무클램프 user-data Color 지점 0. `ComboColours`는 다운스트림 미소비(콤보 순환은 `SkinManager.GetComboColours`)라 순환 회귀 없음 |
 
 ---
 

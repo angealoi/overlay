@@ -447,6 +447,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             IsHit = isHit;
             ArmTime = armTime;
 
+            // 텍스처 로드 실패(깨진 스킨)로 핵심 스프라이트가 없으면 애니메이션할 대상이 없다.
+            // 생성자가 hitcircle/approachcircle 로드 실패 시 스프라이트를 전부 null인 채 早退하는데,
+            // 아래 hit/miss 경로는 spriteHitCircle을 무가드로 접근해 판정 순간 NRE가 났다 (A2).
+            // 상태(IsArmed/IsHit/ArmTime)는 위에서 이미 기록했으므로 여기서 안전하게 종료한다.
+            if (spriteHitCircle == null)
+                return;
+
             // 기존 ARMED transformation 제거
             RemoveArmedTransformations(spriteHitCircle);
             RemoveArmedTransformations(spriteHitCircleOverlay);
