@@ -1,5 +1,10 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+
+// 테스트 프로젝트가 internal 핵심 로직(AobScanner/BeatmapParser/DifficultyCalculator)에
+// 접근할 수 있게 한다 (G9 — 회귀 테스트).
+[assembly: InternalsVisibleTo("OsuEnlightenOverlay.Tests")]
 
 [assembly: AssemblyTitle("OsuEnlightenOverlay")]
 [assembly: AssemblyDescription("osu! Enlighten & Difficulty Changer Overlay")]

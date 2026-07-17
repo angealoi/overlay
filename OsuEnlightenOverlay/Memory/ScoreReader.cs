@@ -60,6 +60,16 @@ namespace OsuEnlightenOverlay.Memory
             ScoreLive = false;
         }
 
+        /// <summary>
+        /// G3 재접속 — PID 종속 상태 리셋. rulesetSlot은 ApplyScan이 덮어쓰지만(assign),
+        /// 스캔이 ApplyScan 이전에 실패할 수 있으므로 먼저 0으로 둔다.
+        /// </summary>
+        public void ResetForReconnect()
+        {
+            rulesetSlot = IntPtr.Zero;
+            ScoreLive = false;
+        }
+
         public void Refresh()
         {
             ScoreLive = false;

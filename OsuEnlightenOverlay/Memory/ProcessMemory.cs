@@ -24,6 +24,9 @@ namespace OsuEnlightenOverlay.Memory
         static extern bool CloseHandle(IntPtr hObject);
 
         [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, int dwLength);
 
         [StructLayout(LayoutKind.Sequential)]
@@ -52,6 +55,21 @@ namespace OsuEnlightenOverlay.Memory
         public IntPtr Handle { get; private set; }
         public int ProcessId { get; private set; }
         public bool IsOpen { get { return Handle != IntPtr.Zero; } }
+
+        // STILL_ACTIVE(259): GetExitCodeProcess가 실행 중 프로세스에 반환하는 코드.
+        const uint STILL_ACTIVE = 259;
+
+        /// <summary>
+        /// 이 핸들이 가리키는 프로세스가 아직 살아있는지 — 종료 코드로 판정(할당·예외 없음).
+        /// 핸들은 좀비 프로세스도 계속 참조하므로 PID 재사용에도 원본 종료를 정확히 본다 (G3).
+        /// </summary>
+        public bool IsProcessAlive()
+        {
+            if (Handle == IntPtr.Zero) return false;
+            uint code;
+            if (!GetExitCodeProcess(Handle, out code)) return false;
+            return code == STILL_ACTIVE;
+        }
 
         // 재사용 버퍼 — 매번 new byte[] 할당 방지.
         // [ThreadStatic]로 스레드마다 독립 버퍼를 준다: 여러 스레드가 동시에 Read*를 불러도
@@ -143,7 +161,10 @@ namespace OsuEnlightenOverlay.Memory
                 return false;
 
             int pid = procs[0].Id;
-            procs[0].Dispose();
+            // 다중 osu! 실행 시 첫 프로세스를 쓴다. 나머지 Process 객체도 전부 해제한다
+            // — 예전엔 procs[0]만 Dispose해 나머지 프로세스 핸들이 누수됐다 (G2).
+            for (int i = 0; i < procs.Length; i++)
+                procs[i].Dispose();
 
             ProcessId = pid;
             Handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, ProcessId);
@@ -336,11 +357,25 @@ namespace OsuEnlightenOverlay.Memory
             if (length <= 0 || length > 65536)
                 return null;
 
-            byte[] buf = new byte[length * 2];
-            if (!ReadBytes(stringPtr + 0x8, buf, length * 2))
+            int byteLen = length * 2;
+            byte[] buf = StrBuf(byteLen);   // 재사용 버퍼 (G7) — 호출당 new byte[] 방지
+            if (!ReadBytes(stringPtr + 0x8, buf, byteLen))
                 return null;
 
-            return System.Text.Encoding.Unicode.GetString(buf);
+            // 재사용 버퍼는 byteLen보다 클 수 있으므로 반드시 길이를 지정해 디코드한다
+            // (안 하면 이전 큰 문자열의 잔여 바이트까지 문자열에 섞인다).
+            return System.Text.Encoding.Unicode.GetString(buf, 0, byteLen);
+        }
+
+        // .NET String 읽기용 재사용 버퍼 — 길이가 가변이라 필요 시 키운다. [ThreadStatic]로
+        // 스레드마다 독립(다른 소형 버퍼와 동일 정책). Config Dictionary 스캔 시 호출당
+        // new byte[] 할당을 없앤다 (G7).
+        [ThreadStatic] static byte[] tStrBuf;
+        static byte[] StrBuf(int size)
+        {
+            if (tStrBuf == null || tStrBuf.Length < size)
+                tStrBuf = new byte[size];
+            return tStrBuf;
         }
 
         public void Dispose()

@@ -431,6 +431,8 @@ namespace OsuEnlightenOverlay.ControlPanel
                 }
             };
             statusSync.Start();
+            // 폼 종료 시 타이머 정지·해제 (G6) — 예전엔 로컬 Timer라 프로세스 종료까지 계속 돌았다.
+            this.FormClosed += (s, e) => { statusSync.Stop(); statusSync.Dispose(); };
         }
 
         /// <summary>

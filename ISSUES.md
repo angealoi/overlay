@@ -38,7 +38,8 @@
 | 2026-07-17 | **A2·A3·A5**: 크래시 방어 3건 (깨진 스킨 `Arm()` NRE · `LoadAll` null · 콤보색 범위 초과) | `67e6a7f` | 적대적 리뷰(3 에이전트, fable5) 전수 검증 — 남은 크래시 지점 0, 정상 경로 회귀 0. 유효 맵은 클램프 항등이라 무변화. 빌드 통과(경고 0) |
 | 2026-07-17 | **C5·C6** (+C3 오탐 확인): z-플리커 안정 정렬(=H21) · 슬라이더 틱 NaN/무한루프 방어 | `07c396e` | 적대적 리뷰(2 에이전트, fable5) — 둘 다 hold, 정상 맵 항등. C3은 stable과 byte 동일이라 오탐(코드 무변경). 빌드 통과(경고 0) + **실기: 정상 플레이 무이상(공통 경로 회귀 확인)**. C6 degenerate/에일리언 맵 트리거는 미노출 |
 | 2026-07-17 | **C4 분석 + C6 후속**: C4 동일 StartTime 오매칭(편차 실재·실측 영향 극소·document-only) · C6 잔여 NaN(슬라이더 길이 NaN/Inf 파싱 차단) | `6063c3f` | 설계+적대적 리뷰(opus) — C4는 std 랭크맵 0개라 코드 보류(안전 fix 경로만 기록), C6-ball 렌즈가 찾은 Length-NaN 가드 추가. 빌드 통과(경고 0) |
-| 2026-07-17 | **포팅 충실도 H 배치 8건**: H7(v<8 틱)·H8(v≤8 스피너콤보)·H9(HD 틱페이드)·H10(old-layout 리버스화살표)·H12(스피너 AC 조건)·H13(스피너 turnRatio)·H15(followpoint Movement)·**H18(AC 소멸 타이밍)** | `d877dc8` `f69e76c` | **codegraph로 오버레이+stable 동시 인덱싱** 후 triage(13건)→설계→적대적 리뷰(opus) 3단. 전부 stable 조건에 게이트돼 모던 경로 무변화. **triage가 H19를 오탐, H6를 자기교정으로 확정**. H18은 "단순 제거"가 컬링 모델상 악화라 타이밍 교정으로 재작업+검증. H11·H14·H16만 보류. 빌드 통과(경고 0). 실기 확인 대기 |
+| 2026-07-17 | **포팅 충실도 H 배치 8건**: H7(v<8 틱)·H8(v≤8 스피너콤보)·H9(HD 틱페이드)·H10(old-layout 리버스화살표)·H12(스피너 AC 조건)·H13(스피너 turnRatio)·H15(followpoint Movement)·**H18(AC 소멸 타이밍)** | `d877dc8` `f69e76c` | **codegraph로 오버레이+stable 동시 인덱싱** 후 triage(13건)→설계→적대적 리뷰(opus) 3단. 전부 stable 조건에 게이트돼 모던 경로 무변화. **triage가 H19를 오탐, H6를 자기교정으로 확정**. H18은 "단순 제거"가 컬링 모델상 악화라 타이밍 교정으로 재작업+검증. H11·H14·H16은 의도적 미구현으로 결정. 빌드 통과(경고 0). 실기 확인 대기 |
+| 2026-07-17 | **견고성 G 섹션 전체 (G1~G9)**: MessageBox 안내·Process 누수·**자동 재접속**·Menu HUD편집 지오메트리·타이머 Dispose·문자열 버퍼 재사용·**DPI 인식**·**회귀 테스트 프로젝트** | `af38a50` | G3(재접속)은 설계+적대적 리뷰(opus 2렌즈) — PID 종속 캐시 전수 리셋 검증. G5는 A1에서 이미 해결(문서만). G9 테스트 15개 통과(충실도도 검증). 빌드+테스트 통과. **실기 확인: G1 MessageBox·G3 재접속(osu! 재시작→메모리 재독) 정상**. G8은 100% DPI 정책이라 스케일 경로 미검증(100%에선 무영향) |
 
 > DT 배속은 [H1과 별개](#h1-fadein이-stable-상수가-아니라-lazer-공식)로, `speedMultiplier`/`scalePreEmpt` 이중 적용 문제였다.
 
@@ -281,15 +282,15 @@
 
 | # | 위치 | 내용 |
 |---|---|---|
-| G1 | `Program.cs:31` | WinExe라 콘솔이 없어 `Console.ReadLine()`이 즉시 null 반환 — "대기 후 종료" 의도가 동작 안 함 |
-| G2 | `Memory/ProcessMemory.cs:152-157` | osu! 다중 실행 시 첫 프로세스 임의 선택. 배열의 나머지 `Process` 객체 미해제 |
-| G3 | (설계) | 재접속 로직 없음 — osu! 재시작 시 죽은 핸들을 영구 보유, 오버레이도 재시작해야 함 |
-| G4 | `Memory/OsuMemoryReader.cs:330` | Menu(모드 0)에서는 해상도 갱신이 안 도는데, HUD 편집 모드는 Menu에서도 오버레이를 표시 → 낡은 지오메트리로 편집 |
-| G5 | (설정) | `CursorPackName`/`SkinName`에 `..\..` 경로 탈출 가능 — 자기 설정 파일로 자기 공격 수준, 실위험 낮음 |
-| G6 | `ControlPanelForm.cs:394`, `OverlayForm.cs:390` | `statusSync`/`syncTimer` Dispose 안 됨 — 프로세스 수명이라 실해 없음 |
-| G7 | `Memory/ProcessMemory.cs:373` | `ReadSharpString` 호출당 `byte[]` 할당 — Config Dictionary 스캔 시 234회/회 |
-| G8 | (미확인) | High-DPI 매니페스트 유무 — **검증 안 함**, 이전 외부 분석의 주장만 있음 |
-| G9 | (일반론) | 테스트 0개 — AOB/난이도/파서 등 핵심 로직 회귀 검증 불가 |
+| ~~G1~~ ✅ (`af38a50`) | `Program.cs` | ~~WinExe라 `Console.ReadLine()`이 즉시 null → "대기 후 종료" 무동작~~ → 기동 실패 시 **MessageBox**로 안내 후 종료. **실기 확인**(다이얼로그 표시됨) |
+| ~~G2~~ ✅ (`af38a50`) | `ProcessMemory.cs` | ~~다중 실행 시 나머지 `Process` 객체 미해제~~ → `procs` 배열 전부 Dispose |
+| ~~G3~~ ✅ (`af38a50`) | (재접속) | ~~osu! 재시작 시 죽은 핸들 영구 보유 → 오버레이 재시작 필요~~ → **자동 재접속**: `GetExitCodeProcess`로 죽음 감지(무할당·무예외·PID재사용 안전) + PID 종속 캐시 **전수 리셋** 후 재스캔, 1초 rate-limit. 설계→적대적 리뷰(opus 2렌즈: 완전성·회귀) 검증. 정상 연결 경로 무변화. **실기 확인 — osu! 종료→재실행 시 자동 재접속·메모리 재독 정상** |
+| ~~G4~~ ✅ (`af38a50`) | `OsuMemoryReader.cs` | ~~Menu에선 해상도 갱신이 안 돌아 HUD 편집이 낡은 지오메트리~~ → `HudEditActive`일 때 Menu에서도 `resolution.Refresh()` |
+| ~~G5~~ ✅ (`fcfc0ff`, A1) | (설정) | ~~`..\..` 경로 탈출 가능~~ → **A1의 `IsSafeFolderName`이 이미 `.`/`..`·경로 구분자 거부**. 별도 수정 불필요(문서만 갱신) |
+| ~~G6~~ ✅ (`af38a50`) | `ControlPanelForm.cs` | ~~`statusSync` 타이머 Dispose 안 됨~~ → 폼 종료 시 Stop+Dispose. (`syncTimer`는 F1에서 이미 제거됨) |
+| ~~G7~~ ✅ (`af38a50`) | `ProcessMemory.cs` | ~~`ReadSharpString` 호출당 `byte[]` 할당~~ → `[ThreadStatic]` 재사용 버퍼 + 길이 지정 디코드(잔여 바이트 혼입 방지) |
+| ~~G8~~ ✅ (`af38a50`) | `Program.cs` | ~~High-DPI 인식 미검증~~ → **검증 결과 매니페스트/코드 없어 DPI-unaware였음** → `DpiAwareness.Enable()`(PerMonitorV2→System 폴백) + **기동 시 시스템 DPI가 96(=100%)이 아니면 경고 MessageBox**(차단 아님, 100% 배율 안내). **정책상 100% 배율 권장**이라 스케일 경로 자체는 미검증 — 100%에선 DPI-aware==unaware라 no-op(무영향), 100% 세션 정상 동작 확인. 문제 시 `DpiAwareness.Enable()` 1줄 롤백 |
+| ~~G9~~ ✅ (`af38a50`) | `OsuEnlightenOverlay.Tests` | ~~테스트 0개~~ → **자체 회귀 테스트 프로젝트**(nuget 무의존, InternalsVisibleTo): ParsePattern·난이도(AR→PreEmpt)·비트맵 파서 **15개 통과**. 포팅 충실도도 검증(AR5=1200·AR9=600·AR0=1800·AR10=450·FadeIn=400) |
 | ~~G10~~ ✅ | `Overlay/OverlayForm.cs:490` + `Program.cs:57` | ~~**기동 시 좌상단에 흰 사각형이 잠깐 뜸**~~ → 해결 (`e2e630d`). **사용자 제보로 발견 — 이 목록에 없던 항목**. `Show()`가 `StartOverlay()`(=`SyncToOsu`)보다 먼저라 그 사이 창이 `StartPosition=Manual` 기본값 (0,0) 300x300으로 떠 있었고, GL 서피스 미초기화라 창 전체가 흰색이었다 → 첫 SwapBuffers 전까지 알파 0 |
 
 ---
@@ -359,12 +360,12 @@
 | ~~H8~~ ✅ (`d877dc8`) | ~~**v≤8 스피너 콤보**~~ | 스피너면 무조건 `forceNew` — `HitObjectManager.cs:1267` | ~~NewCombo일 때만~~ → `v≤8`이면 스피너가 무조건 다음 콤보 강제 |
 | ~~H9~~ ✅ (`d877dc8`) | ~~**HD 틱 페이드**~~ | hidden이면 틱에 `Fade 1→0(…→scoreTime)` — `SliderOsu.cs:895,903` | ~~없음~~ → `HiddenActive`일 때 각 틱에 scoreTime 페이드아웃. nomod 무변화 |
 | ~~H10~~ ✅ (`d877dc8`) | ~~**old-layout 리버스 화살표**~~ | Scale + **Rotation ±π/32 진동** — `HitCircleSliderEnd.cs:90-95` | ~~new-layout(Scale만) 고정~~ → `UseNewLayout` 게이트: old-layout이면 선형 Scale + Rotation ±π/32 흔들림 |
-| H11 📋보류 | **SpinnerFadePlayfield** | 검은 배킹 레이어 2장 — `SpinnerOsu.cs:126-144` | 누락. **triage: old-format 스킨만·moderate. 이미 old-style spinner-background(y≈32-464)를 그려 상·하 ~29/19 units 띠만 미검게 — 후속 배치** |
+| H11 ⛔미구현(결정) | **SpinnerFadePlayfield** | 검은 배킹 레이어 2장 — `SpinnerOsu.cs:126-144` | 누락. **triage: old-format 스킨만·moderate. 이미 old-style spinner-background(y≈32-464)를 그려 상·하 ~29/19 units 띠만 미검게 — 후속 배치** |
 | ~~H12~~ ✅ (`d877dc8`) | ~~**스피너 어프로치서클 조건**~~ | `SpriteCircleTop.Texture.Source != SkinSource.Osu` — `SpinnerOsu.cs:194` | ~~`!SkinManager.IsDefault`(텍스처만 없을 때 오판)~~ → 실제 로드된 `spriteCircleTop.Texture.Source`로 판정 |
 | ~~H13~~ ✅부분 (`d877dc8`) | ~~**스피너 회전 배율**~~ | `turnRatio`는 middle2 없으면 **1** — `SpinnerOsu.cs:272-279` | ~~**0.5 고정**(oldstyle 절반 속도)~~ → `spriteMiddleBottom` 유무로 0.5/1. **부호(반시계)는 무부호 메모리 `FloatRotationCount`라 복구 불가 — 잔여** |
-| H14 📋근사한계 | **metre 블링크** | `RNG.NextBool(…)` **확률적** — `SpinnerOsu.cs:456` | `>= 0.5f` 결정적. **triage: stable의 프레임별 RNG 시퀀스는 시드 없이 재현 불가 — 확률화해도 frame-exact 아님. old-style 스킨 한정. 문서화만** |
+| H14 ⛔미구현(재현불가) | **metre 블링크** | `RNG.NextBool(…)` **확률적** — `SpinnerOsu.cs:456` | `>= 0.5f` 결정적. **triage: stable의 프레임별 RNG 시퀀스는 시드 없이 재현 불가 — 확률화해도 frame-exact 아님. old-style 스킨 한정. 문서화만** |
 | ~~H15~~ ✅ (`d877dc8`) | ~~**followpoint 등장**~~ | `IsDefault`일 때만 Scale + **Movement**(posStart→pos, Out) — `HitObjectManager.cs:1887-1891` | ~~Scale 무조건 + Movement 누락, `posStart` 데드코드~~ → `IsDefault` 게이트 + Movement 추가(데드 `posStart` 사용) |
-| H16 📋보류 | **sliderBall 회전+FlipVertical** | 진행 방향 회전 + 곡선 시작 각도 상하반전 — `SliderOsu.cs:796-800` | 없음. **triage: 회전과 flip은 분리 불가(flip만 넣으면 좌향 슬라이더서 뒤집힘). 기본/원형 sliderb엔 사실상 불가시, 비대칭 커스텀 sliderb만 — moderate, 후속** |
+| H16 ⛔미구현(결정) | **sliderBall 회전+FlipVertical** | 진행 방향 회전 + 곡선 시작 각도 상하반전 — `SliderOsu.cs:796-800` | 없음. **triage: 회전과 flip은 분리 불가(flip만 넣으면 좌향 슬라이더서 뒤집힘). 기본/원형 sliderb엔 사실상 불가시, 비대칭 커스텀 sliderb만 — moderate, 후속** |
 | ~~H17~~ ✅ | ~~**glow flash 복귀**~~ → 해결 (`8a2442e`) | `FlashColour(White, 200)` — 200ms 후 파란색 복귀 — `SpinnerOsu.cs:386` | ~~White로 바꾸고 복귀 없음~~ → glow 전용 수동 보간(`ApplyGlowColour`). pSprite에 Colour 변환 지원이 없어 인프라 추가 대신 국소 처리 |
 | ~~H18~~ ✅ (`f69e76c`) | ~~**어프로치서클 소멸**~~ | AC는 판정 순간까지 0.9 유지, 미스는 `StartTime+HitWindow50`에 60ms 페이드 — `HitCircleOsu.cs:245,264` | ~~생성 시 `0.9→0 @ startTime→+60`(startTime을 미스 마감으로 오인 → 늦은 히트/미스서 AC 조기 소멸)~~ → 페이드를 `StartTime+HitWindow50`로 교정, EndTime 확장으로 Arm 변환 컬링 방지. **단순 제거(보류했던 설계)는 컬링 모델상 AC를 startTime에 하드컬해 악화 확인 → 타이밍 교정으로 선회.** 적대적 리뷰 2렌즈(컬링·공존/HD) hold |
 | ~~H19~~ ❌오탐 | ~~**Disarm 후 Scale 리셋**~~ → 결함 아님 | Disarm에서 `Scale=1`, `Text.Scale=TEXT_SIZE` — `HitCircleOsu.cs:223-225` | **triage: retry는 인스턴스 전체 재생성, `UpdateDifficulty`는 `Transformations.Clear`로 스케일 복원 → 잔존 불가능. stable은 지속 Scale 필드라 필요했지만 우리는 매 프레임 무상태 평가라 불필요** |
