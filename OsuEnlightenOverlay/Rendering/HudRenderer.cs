@@ -98,6 +98,10 @@ namespace OsuEnlightenOverlay.Rendering
             // 이전 HUD 스프라이트 제거
             ClearHudSprites();
 
+            // 폰트 텍스트 캐시 LRU 축출 (I-감사 #3/#5) — 반드시 ClearHudSprites 직후, AddText 전에.
+            // 이 시점엔 살아있는 HUD 스프라이트가 0개라 어떤 텍스처를 축출해도 안전하다.
+            fontRenderer.PruneCache();
+
             bool editMode = settings.HudEditMode;
 
             // FPS
