@@ -127,6 +127,13 @@ namespace OsuEnlightenOverlay.ControlPanel
             Height = 20;
         }
 
+        // owner-draw — Control.Text setter 가 자동 Invalidate 하지 않으므로 Text 변경 시 다시 그림.
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            Invalidate();
+        }
+
         protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hovered = false; Invalidate(); base.OnMouseLeave(e); }
 
@@ -426,6 +433,15 @@ namespace OsuEnlightenOverlay.ControlPanel
         {
             get { return accent; }
             set { accent = value; Invalidate(); }
+        }
+
+        // owner-draw 컨트롤은 Control.Text setter 가 자동 Invalidate 하지 않으므로,
+        // Text 가 바뀌면(예: Edit Layout ↔ Stop Editing) 즉시 다시 그린다.
+        // 이게 없으면 타이머가 Text 를 바꿔도 hover 같은 트리거가 있어야 화면에 반영된다.
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            Invalidate();
         }
 
         public AbButton()
@@ -853,34 +869,8 @@ namespace OsuEnlightenOverlay.ControlPanel
             using (SolidBrush bg = new SolidBrush(headerBg))
                 g.FillRectangle(bg, r);
 
-            // ─ 상단 레인보우 그라디언트 바 — AByteCheat GUI.cpp:506-517 ─
-            // 파랑(0,160,255) → 보라(160,0,255) → 노랑(255,255,0). 2줄(메인 + 보조).
-            // 윈도우 전체폭으로 가로 그라디언트.
-            int midX = r.Width / 2;
-            Rectangle line1a = new Rectangle(0, 0, midX, 1);
-            Rectangle line1b = new Rectangle(midX, 0, r.Width - midX, 1);
-            Rectangle line2a = new Rectangle(0, 1, midX, 1);
-            Rectangle line2b = new Rectangle(midX, 1, r.Width - midX, 1);
-
-            Color blue   = Color.FromArgb(0, 160, 255);
-            Color purple = Color.FromArgb(160, 0, 255);
-            Color yellow = Color.FromArgb(255, 255, 0);
-
-            // 메인 줄(밝음)
-            using (LinearGradientBrush ga = AbTheme.HorizontalGradient(line1a, blue, purple))
-                g.FillRectangle(ga, line1a);
-            using (LinearGradientBrush gb = AbTheme.HorizontalGradient(line1b, purple, yellow))
-                g.FillRectangle(gb, line1b);
-            // 보조 줄(반투명)
-            using (LinearGradientBrush ga2 = AbTheme.HorizontalGradient(line2a,
-                       Color.FromArgb(120, blue), Color.FromArgb(120, purple)))
-                g.FillRectangle(ga2, line2a);
-            using (LinearGradientBrush gb2 = AbTheme.HorizontalGradient(line2b,
-                       Color.FromArgb(120, purple), Color.FromArgb(120, yellow)))
-                g.FillRectangle(gb2, line2b);
-
-            // 타이틀 텍스트 — 좌측, 수직 중앙. 레인보우 바(2px) 아래.
-            Rectangle textRect = new Rectangle(10, 2, closeRect.X - 20, Height - 2);
+            // 타이틀 텍스트 — 좌측, 수직 중앙.
+            Rectangle textRect = new Rectangle(10, 0, closeRect.X - 20, Height);
             TextRenderer.DrawText(g, Title ?? "", TitleFont, textRect, AbTheme.TextBright,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 

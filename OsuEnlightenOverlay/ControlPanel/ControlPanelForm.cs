@@ -45,25 +45,36 @@ namespace OsuEnlightenOverlay.ControlPanel
         Label lblStatus, lblBeatmap;
 
         // ── FormBorderStyle=None 폼의 외곽선 ──
-        // 커스텀 타이틀바를 쓰므로 Windows 기본 테두리가 없다. 폼 자체 OnPaint 에서
-        // 1px 외곽선(GroupLight)을 그려 창 윤곽을 준다.
-        public ControlPanelForm()
-        {
-            // 기본 생성자 — 더블버퍼링으로 외곽선/배경 깜빡임 방지.
-            SetStyle(ControlStyles.OptimizedDoubleBuffer |
-                     ControlStyles.AllPaintingInWmPaint |
-                     ControlStyles.UserPaint |
-                     ControlStyles.ResizeRedraw, true);
-        }
+        // AByteCheat 원본 스타일(GUI.cpp:411-424) — 3중 외곽선:
+        //   본체(28,28,28) → 6px 회색 띠(40,40,40) → 2중 가는 라인(60,60,60 + 10,10,10)
+        // 원본은 초록이 아니다 — 초록 액센트는 체크박스/슬라이더 채움에만 쓰인다.
+        // 폼 OnPaint 로 그려야 3중이 가능하므로, contentPanel/titleBar 는 Padding(8) 안쪽.
+        const int BorderWidth = 8;  // 외곽선 총 두께 (6px 띠 + 2중 라인)
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            // 폼 전체 외곽선 — (48,48,48) 단선.
-            using (Pen p = new Pen(AbTheme.GroupLight))
+            System.Drawing.Graphics g = e.Graphics;
+            Rectangle r = ClientRectangle;
+
+            // 1) 6px 회색 띠 (40,40,40) — 윈도우 둘레. 원본 Render::Clear 6px 사각형 4개.
+            using (SolidBrush band = new SolidBrush(AbTheme.LightGray))
             {
-                Rectangle r = ClientRectangle;
-                e.Graphics.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
+                g.FillRectangle(band, 0, 0, r.Width, BorderWidth);                    // 상
+                g.FillRectangle(band, 0, r.Height - BorderWidth, r.Width, BorderWidth); // 하
+                g.FillRectangle(band, 0, 0, BorderWidth, r.Height);                   // 좌
+                g.FillRectangle(band, r.Width - BorderWidth, 0, BorderWidth, r.Height); // 우
+            }
+
+            // 2) 2중 외곽 라인 — 안쪽 (60,60,60), 바깥 (10,10,10). 원본 Render::Outline 2중.
+            using (Pen darkOut = new Pen(AbTheme.Outline))              // 바깥 어두운 라인 (10,10,10)
+            using (Pen lightIn = new Pen(Color.FromArgb(60, 60, 60)))   // 안쪽 밝은 라인
+            {
+                // 바깥 라인 — 폭 전체 가장자리.
+                g.DrawRectangle(darkOut, r.X, r.Y, r.Width - 1, r.Height - 1);
+                // 안쪽 라인 — 6px 띠와 본체 경계.
+                int ix = BorderWidth - 1;
+                g.DrawRectangle(lightIn, ix, ix, r.Width - 2 * BorderWidth + 1, r.Height - 2 * BorderWidth + 1);
             }
         }
 
@@ -86,24 +97,27 @@ namespace OsuEnlightenOverlay.ControlPanel
         {
             this.settings = settings;
             this.overlayRef = overlay;
+            // 외곽 마감 — AByteCheat 3중 외곽선(6px 띠 + 2중 라인). OnPaint 로 그리므로
+            // 자식이 덮지 않게 Padding(BorderWidth=8) 안쪽에 contentPanel 배치.
+            SetStyle(ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                     ControlStyles.ResizeRedraw, true);
+
             this.Text = "osu! Enlighten Overlay — Control Panel";
             // 2열 레이아웃 — 카드를 좌/우 열에 배치해 세로 스크롤 없이 한 화면에.
-            // 폭: cardW(420)*2 + 여백(cardX*2 + 열간격 gapCol=14) + 외곽 ≈ 884.
-            this.Width = 900;
-            // 높이: 타이틀바(32) + 상태(약 50) + 좌측열 카드(126+144+104+간격) + 하단 여백.
+            // 폭은 좌우 여백 대칭 기준으로 유도: marginX*2 + cardW*2 + gapCol.
+            // FormBorderStyle=None 이므로 클라이언트 폭 == Width.
+            this.Width = 874;  // 10*2 + 420*2 + 14
             this.Height = 520;
             this.StartPosition = FormStartPosition.CenterScreen;
-            // FormBorderStyle=None — Windows 기본 타이틀바를 버리고 AByteCheat 스타일
-            // 커스텀 헤더(AbTitleBar)를 직접 그린다. 레인보우 그라디언트 바 + 드래그 이동.
             this.FormBorderStyle = FormBorderStyle.None;
-            this.BackColor = AbTheme.Gray;            // (28,28,28) 메인 배경
+            this.BackColor = AbTheme.Gray;            // (28,28,28) 본체색
             this.ForeColor = AbTheme.TextRegular;     // (200,200,200)
             this.Font = new Font("Verdana", 9f);
+            this.Padding = new Padding(BorderWidth);  // 외곽선 두께만큼 자식 밀어냄
 
             // Dock 배치는 컨트롤 추가 '역순'으로 처리된다. Fill 패널을 먼저 추가하고
-            // 타이틀바(Top)를 나중에 추가해야 타이틀바가 위쪽 32px을 먼저 차지하고,
-            // Fill 패널이 그 아래 남은 공간을 채운다. (반대로 하면 Fill 이 폼 전체를
-            // 먹어서 타이틀바가 패널을 덮고, 패널 상단 lblStatus 가 타이틀바에 가려진다.)
+            // 타이틀바(Top)를 나중에 추가해야 타이틀바가 위쪽을 차지, Fill 패널이 그 아래.
             Panel contentPanel = new Panel();
             contentPanel.Dock = DockStyle.Fill;
             contentPanel.AutoScroll = false;
@@ -117,10 +131,12 @@ namespace OsuEnlightenOverlay.ControlPanel
             this.Controls.Add(titleBar);
 
             // ── 레이아웃 상수 — 2열 배치 기준 ──
-            const int cardX = 10;          // 좌측 열 x
+            // marginX: 좌우 대칭 외부 여백. 우측 여백도 같은 값이 되도록 폼 폭은
+            // marginX*2 + cardW*2 + gapCol 로 유도된다(위 this.Width 참조).
+            const int marginX = 10;        // 좌/우 외부 여백 (대칭)
             const int cardW = 420;         // 카드 폭 (열당 하나)
             const int gapCol = 14;         // 좌/우 열 간격
-            const int col2X = cardX + cardW + gapCol;  // 우측 열 x
+            const int col2X = marginX + cardW + gapCol;  // 우측 열 x
             const int cardGapY = 10;       // 세로 카드 간격
             const int pad = 20;            // 카드 내부 좌측 패딩
             const int colL = pad;          // 카드 내 좌측 컬럼 x
@@ -138,14 +154,20 @@ namespace OsuEnlightenOverlay.ControlPanel
             const int contentTopY = 40;
             const int bottomPad = 12;
             const int checkRowGap = 26;
+            // ─ 콤보박스 + Refresh 버튼 공통 규격 (Cursor Pack / Skin 동일) ─
+            // 두 섹션이 같은 폭/높이/위치 규칙을 써서 좌우 폭을 통일한다.
+            const int refreshW = 90;                       // Refresh 버튼 폭
+            const int refreshGap = 10;                     // 콤보-버튼 간격
+            const int refreshH = 24;                       // Refresh 버튼 높이
+            const int comboW = ctrlW - refreshW - refreshGap; // 콤보박스 폭 (우측 버튼 공간 제외)
 
             // ── 상태 표시 바 — 폼 전체 폭, 타이틀바와 카드 사이 정중앙 ──
             // 게임 모드(Playing/Menu 등) + 비트맵 정보를 가운데 정렬로 보여준다.
             // 양쪽 카드 열은 이 바 아래 같은 y에서 시작한다.
-            int contentW = col2X + cardW - cardX;  // 전체 콘텐츠 폭
+            int contentW = col2X + cardW - marginX;  // 전체 콘텐츠 폭 (marginX~marginX 대칭)
             lblStatus = new Label();
             lblStatus.Text = "● Ready";
-            lblStatus.Location = new Point(cardX, 12);
+            lblStatus.Location = new Point(marginX, 12);
             lblStatus.Width = contentW;
             lblStatus.Height = 22;
             lblStatus.TextAlign = ContentAlignment.MiddleCenter;
@@ -156,7 +178,7 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             lblBeatmap = new Label();
             lblBeatmap.Text = "";
-            lblBeatmap.Location = new Point(cardX, 36);
+            lblBeatmap.Location = new Point(marginX, 36);
             lblBeatmap.Width = contentW;
             lblBeatmap.Height = 18;
             lblBeatmap.TextAlign = ContentAlignment.MiddleCenter;
@@ -173,7 +195,7 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // ── Overlay ── [좌측 열] 카드높이 = 마지막 객체 끝(114) + bottomPad(12) = 126
             int overlayH = 114 + bottomPad;
-            AbCard grpOverlay = new AbCard("OVERLAY", cardX, yL, cardW, overlayH);
+            AbCard grpOverlay = new AbCard("OVERLAY", marginX, yL, cardW, overlayH);
 
             chkEnabled = new AbCheckBox { Text = "Enable Overlay" };
             chkEnabled.Location = new Point(colL, contentTopY);
@@ -260,7 +282,7 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // ── Cursor ── [좌측 열] OVERLAY 아래
             // (마지막 객체 끝 132 + bottomPad 12 = 카드높이 144)
-            AbCard grpCursor = new AbCard("OVERLAY CURSOR", cardX, yL, cardW, 144);
+            AbCard grpCursor = new AbCard("OVERLAY CURSOR", marginX, yL, cardW, 144);
 
             chkCursorAutoSize = new AbCheckBox { Text = "Auto Cursor Size" };
             chkCursorAutoSize.Location = new Point(colL, contentTopY);
@@ -286,11 +308,10 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpCursor.Controls.Add(slCursorSize);
 
             // Cursor Pack — 콤보 + 우측 Refresh 버튼. "Pack:" 라벨은 콤보가 역할을 대신하므로 생략.
-            const int refreshWPack = 80;
-            int packComboW = ctrlW - refreshWPack - 10;
+            // 공통 규격(refreshW/comboW) 사용 — Skin 섹션과 좌우 폭/버튼 크기 동일.
             cmbCursorPack = new AbComboBox();
             cmbCursorPack.Location = new Point(colL, 112);
-            cmbCursorPack.Width = packComboW;
+            cmbCursorPack.Width = comboW;
             cmbCursorPack.Height = 22;
             RefreshCursorPacks();
             cmbCursorPack.SelectedIndexChanged += (s, e) =>
@@ -312,9 +333,9 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpCursor.Controls.Add(cmbCursorPack);
 
             btnRefreshCursorPacks = new AbButton { Text = "Refresh" };
-            btnRefreshCursorPacks.Location = new Point(colL + packComboW + 10, 111);
-            btnRefreshCursorPacks.Width = refreshWPack;
-            btnRefreshCursorPacks.Height = 24;
+            btnRefreshCursorPacks.Location = new Point(colL + comboW + refreshGap, 111);
+            btnRefreshCursorPacks.Width = refreshW;
+            btnRefreshCursorPacks.Height = refreshH;
             btnRefreshCursorPacks.Click += (s, e) => { RefreshCursorPacks(); };
             grpCursor.Controls.Add(btnRefreshCursorPacks);
 
@@ -391,13 +412,12 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // ── Skin ── [좌측 열] OVERLAY CURSOR 아래
             // (InstaFade 체크 끝 92 + bottomPad 12 = 카드높이 104)
-            AbCard grpSkin = new AbCard("SKIN", cardX, yL, cardW, 104);
+            AbCard grpSkin = new AbCard("SKIN", marginX, yL, cardW, 104);
 
-            const int refreshWSkin = 90;
-            int skinComboW = ctrlW - refreshWSkin - 10;
+            // 공통 규격(refreshW/comboW) 사용 — Cursor Pack 섹션과 좌우 폭/버튼 크기 동일.
             cmbSkin = new AbComboBox();
             cmbSkin.Location = new Point(colL, contentTopY);
-            cmbSkin.Width = skinComboW;
+            cmbSkin.Width = comboW;
             cmbSkin.Height = 22;
             RefreshSkins();
             cmbSkin.SelectedIndexChanged += (s, e) =>
@@ -411,9 +431,9 @@ namespace OsuEnlightenOverlay.ControlPanel
             grpSkin.Controls.Add(cmbSkin);
 
             btnRefreshSkin = new AbButton { Text = "Refresh" };
-            btnRefreshSkin.Location = new Point(colL + skinComboW + 10, contentTopY - 1);
-            btnRefreshSkin.Width = refreshWSkin;
-            btnRefreshSkin.Height = 24;
+            btnRefreshSkin.Location = new Point(colL + comboW + refreshGap, contentTopY - 1);
+            btnRefreshSkin.Width = refreshW;
+            btnRefreshSkin.Height = refreshH;
             btnRefreshSkin.Click += (s, e) => { RefreshSkins(); };
             grpSkin.Controls.Add(btnRefreshSkin);
 
