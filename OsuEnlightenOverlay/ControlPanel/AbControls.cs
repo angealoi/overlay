@@ -629,23 +629,50 @@ namespace OsuEnlightenOverlay.ControlPanel
     //  AbDropdownForm — AbComboBox 의 드롭다운을 별도 폼으로 띄운다.
     //  부모 카드/패널의 클리핑에 잘리지 않고 스킨 목록 전체를 보여주기 위함.
     //  AByteCheat CComboBoxYeti::Draw 의 열린 상태 항목 렌더링과 동일 스타일.
+    //
+    //  스크롤: WinForms AutoScroll 은 DoubleBuffered + UserPaint 폼에서 비트맵 갱신이
+    //  꼬여 스크롤 시 항목이 번지는(깨지는) 문제가 있다. 따라서 스크롤을 완전히 수동으로
+    //  구현한다 — scrollOffset 정수값 하나만 유지하고 OnPaint 에서 직접 오프셋을 반영.
+    //  세로 스크롤바도 직접 그려 AByteCheat 다크 테마와 색을 맞춘다.
+    //
+    //  - 최대 10개 항목까지 표시, 초과 시 세로 스크롤바
+    //  - 휠 / 항목 클릭 / 스크롤바 끌기 / 선택 항목 자동 스크롤 지원
     // ────────────────────────────────────────────────────────────────────────
     internal class AbDropdownForm : Form
     {
+        const int ItemH = 20;
+        const int MaxVisibleItems = 10;
+        const int ScrollBarW = 6;
+
         readonly AbComboBox owner;
         readonly List<string> items;
-        readonly int width;
+        readonly int listWidth;     // 스크롤바를 뺀 항목 영역 폭
+        readonly int contentH;      // 항목 전체 높이 (가상)
+        int scrollOffset;           // 현재 스크롤 위치 (0 = 맨 위, 양수 = 아래로)
         int hoverIndex = -1;
         int selectedIndex;
+        bool thumbDrag;
+        int thumbDragY;
+        int thumbDragOffset;
 
         public event Action<int> ItemSelected;
+
+        // 가시 항목 영역(스크롤바 제외)의 높이
+        int ViewportH { get { return ClientSize.Height; } }
+        int MaxScroll { get { return Math.Max(0, contentH - ViewportH); } }
 
         public AbDropdownForm(AbComboBox owner, List<string> items, int selectedIdx, Point screenLoc, int width)
         {
             this.owner = owner;
             this.items = items;
             this.selectedIndex = selectedIdx;
-            this.width = width;
+            this.contentH = items.Count * ItemH;
+
+            // 드롭다운 전체 폭(formWidth)은 헤더(콤보박스) 폭과 동일 — 좌우 폭 정렬.
+            // 스크롤이 필요하면 항목 영역(listWidth)을 ScrollBarW 만큼 줄이고 우측에 스크롤바 배치.
+            bool needsScroll = items.Count > MaxVisibleItems;
+            this.listWidth = needsScroll ? width - ScrollBarW : width;
+            int formWidth = width;
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -654,9 +681,8 @@ namespace OsuEnlightenOverlay.ControlPanel
             TopMost = true;
             BackColor = AbTheme.Gray;
 
-            int itemH = 20;
-            int totalH = items.Count * itemH + 2;
-            ClientSize = new Size(width, totalH);
+            int clientH = Math.Min(contentH, MaxVisibleItems * ItemH);
+            ClientSize = new Size(formWidth, clientH);
 
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
@@ -664,21 +690,54 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // 화면 밖으로 나가면 위로 띄우기
             var screen = Screen.FromPoint(screenLoc);
-            if (screenLoc.Y + totalH > screen.WorkingArea.Bottom)
+            if (screenLoc.Y + clientH > screen.WorkingArea.Bottom)
             {
-                int newY = screenLoc.Y - owner.Height - totalH;
+                int newY = screenLoc.Y - owner.Height - clientH;
                 if (newY >= screen.WorkingArea.Top)
                     Location = new Point(screenLoc.X, newY);
             }
+
+            // 열 때 선택 항목이 보이도록 스크롤
+            ScrollToIndex(selectedIndex);
         }
 
-        protected override void OnActivated(EventArgs e)
+        // 클라이언트 Y → 항목 인덱스 (스크롤바 영역 클릭은 -1)
+        int ItemAtPoint(int x, int y)
         {
-            base.OnActivated(e);
+            if (x > listWidth) return -1; // 스크롤바 영역
+            int idx = (y + scrollOffset) / ItemH;
+            if (idx < 0 || idx >= items.Count) return -1;
+            return idx;
         }
 
-        // 포커스 잃으면(외부 클릭 등) 닫기 — 일반 TopMost 폼이므로 활성화/비활성화가 정상 동작한다.
-        // 드롭다운이 닫히면 컨트롤 패널로 포커스가 돌아간다.
+        // 스크롤바 thumb 사각형 (클라이언트 좌표계)
+        Rectangle GetThumbRect()
+        {
+            if (contentH <= ViewportH) return Rectangle.Empty;
+            int trackH = ViewportH;
+            int thumbH = Math.Max(20, trackH * ViewportH / contentH);
+            int thumbY = (trackH - thumbH) * scrollOffset / MaxScroll;
+            return new Rectangle(listWidth, thumbY, ScrollBarW, thumbH);
+        }
+
+        void SetScroll(int value)
+        {
+            int clamped = Math.Max(0, Math.Min(MaxScroll, value));
+            if (clamped == scrollOffset) return;
+            scrollOffset = clamped;
+            Invalidate();
+        }
+
+        void ScrollToIndex(int idx)
+        {
+            if (idx < 0 || idx >= items.Count) return;
+            int itemTop = idx * ItemH;
+            if (itemTop < scrollOffset)
+                SetScroll(itemTop);                                  // 위에 가려짐
+            else if (itemTop + ItemH > scrollOffset + ViewportH)
+                SetScroll(itemTop + ItemH - ViewportH);              // 아래에 가려짐
+        }
+
         protected override void OnDeactivate(EventArgs e)
         {
             base.OnDeactivate(e);
@@ -693,9 +752,20 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            int itemH = 20;
-            int idx = e.Y / itemH;
-            if (idx < 0 || idx >= items.Count) idx = -1;
+            // 스크롤바 끌기 중
+            if (thumbDrag)
+            {
+                Rectangle thumb = GetThumbRect();
+                int trackH = ViewportH;
+                int thumbH = thumb.Height;
+                int newThumbY = e.Y - thumbDragOffset;
+                newThumbY = Math.Max(0, Math.Min(trackH - thumbH, newThumbY));
+                int newScroll = (trackH - thumbH) == 0 ? 0 : newThumbY * MaxScroll / (trackH - thumbH);
+                SetScroll(newScroll);
+                return;
+            }
+
+            int idx = ItemAtPoint(e.X, e.Y);
             if (hoverIndex != idx)
             {
                 hoverIndex = idx;
@@ -704,10 +774,42 @@ namespace OsuEnlightenOverlay.ControlPanel
             base.OnMouseMove(e);
         }
 
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            // 스크롤바 thumb 클릭 → 끌기 시작
+            Rectangle thumb = GetThumbRect();
+            if (!thumb.IsEmpty && e.X >= listWidth && thumb.Contains(e.Location))
+            {
+                thumbDrag = true;
+                thumbDragY = e.Y;
+                thumbDragOffset = e.Y - thumb.Y;
+                Capture = true;
+                return;
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (thumbDrag)
+            {
+                thumbDrag = false;
+                Capture = false;
+                return;
+            }
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            int delta = e.Delta > 0 ? -ItemH * 3 : ItemH * 3;
+            SetScroll(scrollOffset + delta);
+            base.OnMouseWheel(e);
+        }
+
         protected override void OnMouseClick(MouseEventArgs e)
         {
-            int itemH = 20;
-            int idx = e.Y / itemH;
+            int idx = ItemAtPoint(e.X, e.Y);
             if (idx >= 0 && idx < items.Count)
             {
                 selectedIndex = idx;
@@ -721,26 +823,41 @@ namespace OsuEnlightenOverlay.ControlPanel
         protected override void OnPaint(PaintEventArgs e)
         {
             System.Drawing.Graphics g = e.Graphics;
-            int itemH = 20;
             Rectangle r = ClientRectangle;
 
             // 전체 배경 그라디언트 (Controls.cpp:833)
             using (LinearGradientBrush gb = AbTheme.VerticalGradient(r, AbTheme.GradNotHoverFirst, AbTheme.GradNotHoverSecond))
                 g.FillRectangle(gb, r);
 
-            for (int i = 0; i < items.Count; i++)
+            // 가시 항목 범위만 렌더링 — scrollOffset 기준
+            int firstVisible = scrollOffset / ItemH;
+            int lastVisible  = (scrollOffset + ViewportH - 1) / ItemH;
+            if (firstVisible < 0) firstVisible = 0;
+            if (lastVisible >= items.Count) lastVisible = items.Count - 1;
+
+            for (int i = firstVisible; i <= lastVisible; i++)
             {
-                Rectangle itemR = new Rectangle(0, i * itemH, width, itemH);
+                int y = i * ItemH - scrollOffset; // 클라이언트 좌표로 변환
+                Rectangle itemR = new Rectangle(0, y, listWidth, ItemH);
                 if (i == hoverIndex)
                 {
-                    // hover 항목 (Controls.cpp:839-841)
                     using (LinearGradientBrush hb = AbTheme.VerticalGradient(itemR, AbTheme.GradHoverFirst, AbTheme.GradHoverSecond))
                         g.FillRectangle(hb, itemR);
                 }
-                Rectangle textRect = new Rectangle(8, i * itemH, width - 16, itemH);
+                Rectangle textRect = new Rectangle(8, y, listWidth - 16, ItemH);
                 Color c = (i == selectedIndex) ? AbTheme.Accent : AbTheme.TextOff;
                 TextRenderer.DrawText(g, items[i], owner.Font, textRect, c,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
+
+            // 스크롤바 — 트랙은 항목 배경 그라디언트가 그대로 비치도록 따로 칠하지 않고,
+            // thumb 만 밝게 그려 인디케이터처럼 보이게 한다. 외곽선과 겹침 현상 해결.
+            if (contentH > ViewportH)
+            {
+                Rectangle thumb = GetThumbRect();
+                Color thumbColor = thumbDrag ? AbTheme.TextBright : AbTheme.TextOff;
+                using (SolidBrush thb = new SolidBrush(thumbColor))
+                    g.FillRectangle(thb, thumb);
             }
 
             // 외곽
