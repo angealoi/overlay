@@ -24,11 +24,15 @@ namespace OsuEnlightenOverlay.Helpers
         public static string LogPath { get; private set; }
 
         /// <summary>
-        /// 로그 파일을 열고 Console.Out을 콘솔+파일 듀얼 라이터로 교체.
-        /// 실패해도 앱은 정상 동작해야 하므로 예외를 삼킨다.
+        /// 로그 파일 생성은 비활성화 — exe 옆에 overlay.log 를 남기지 않는다.
+        /// Console.Out 도 교체하지 않으므로 Console.WriteLine 은 기본 출력(WinExe 에서는
+        /// 어디에도 쓰지 않고, stdout 리다이렉트 시에만 보임)으로 그대로 동작한다.
+        /// 파일 기록을 다시 켜려면 이 메서드에서 아래 주석 블록을 활성화한다.
         /// </summary>
         public static void Init()
         {
+            // 파일 로그 비활성화 — overlay.log 생성 안 함.
+            /*
             try
             {
                 string exeDir = Path.GetDirectoryName(
@@ -48,6 +52,7 @@ namespace OsuEnlightenOverlay.Helpers
             {
                 _file = null;
             }
+            */
         }
 
         /// <summary>로그 파일 닫기 및 Console.Out 복원.</summary>

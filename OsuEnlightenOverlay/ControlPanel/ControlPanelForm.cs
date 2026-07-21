@@ -295,11 +295,19 @@ namespace OsuEnlightenOverlay.ControlPanel
             chkCursorAutoSize.CheckedChanged += (s, e) => { settings.CursorAutoSize = chkCursorAutoSize.Checked; Save(); };
             grpCursor.Controls.Add(chkCursorAutoSize);
 
-            grpCursor.Controls.Add(MakeLabel("Cursor Size:", colL, 68, 90, AbTheme.TextRegular));
+            // "Cursor Size:" 라벨과 슬라이더를 한 줄로 — Difficulty Changer 의 AR/CS/DT/HT 행과 동일 배치.
+            // 라벨(labelW) 옆에 슬라이더가 붙도록 sliderX/sliderW 산출.
+            const int cursorLabelW = 85;
+            const int cursorLabelGap = 8;
+            const int cursorRowY = 70;
+            const int cursorSliderX = colL + cursorLabelW + cursorLabelGap;
+            const int cursorSliderW = ctrlW - cursorLabelW - cursorLabelGap;
+
+            grpCursor.Controls.Add(MakeLabel("Cursor Size:", colL, cursorRowY + 3, cursorLabelW, AbTheme.TextRegular));
 
             slCursorSize = new AbSlider();
-            slCursorSize.Location = new Point(colL, 86);
-            slCursorSize.Width = ctrlW;
+            slCursorSize.Location = new Point(cursorSliderX, cursorRowY);
+            slCursorSize.Width = cursorSliderW;
             slCursorSize.Height = 22;
             slCursorSize.DecimalPlaces = 2;
             slCursorSize.Minimum = OverlaySettings.CursorSizeMin;
