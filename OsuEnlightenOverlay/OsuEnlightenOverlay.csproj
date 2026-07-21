@@ -52,6 +52,8 @@
     <Compile Include="Memory\ResolutionReader.cs" />
     <Compile Include="Memory\ScoreReader.cs" />
     <Compile Include="Memory\OsuMemoryReader.cs" />
+    <Compile Include="Memory\SharedState.cs" />
+    <Compile Include="Memory\StateBroadcaster.cs" />
     <Compile Include="Overlay\OverlayForm.cs" />
     <Compile Include="Overlay\WindowInterop.cs" />
     <Compile Include="Overlay\NativeMethods.cs" />

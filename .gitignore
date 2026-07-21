@@ -1,0 +1,16 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+build_*/
+
+# IDE / tooling
+.codegraph/
+.ua/
+.zcode/
+.vs/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+.DS_Store

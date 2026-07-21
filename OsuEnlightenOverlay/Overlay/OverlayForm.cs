@@ -35,6 +35,9 @@ namespace OsuEnlightenOverlay.Overlay
         System.Diagnostics.Stopwatch renderStopwatch;
         double fpsCapInterval = 0; // 0 = unlimited
         OsuMemoryReader reader;
+        // 공유 메모리 브로드캐스터 — Reconstructor(OTD 플러그인)가 reader의 live 상태를 읽어감.
+        // UI 스레드에서만 write (OnSyncTick). reader는 외부 프로세스(Reconstructor)에서 접근.
+        StateBroadcaster stateBroadcaster;
         OsuGlRenderer renderer;
         ControlPanel.OverlaySettings settings;
 
@@ -357,6 +360,9 @@ namespace OsuEnlightenOverlay.Overlay
             this.reader = reader;
             this.settings = settings;
             this.difficultyController = new DifficultyController(settings, reader);
+
+            // Reconstructor용 공유 메모리 생성 — 실패해도 오버레이 자체 동작엔 영향 없음.
+            this.stateBroadcaster = new StateBroadcaster();
 
             // Form 기본 설정
             FormBorderStyle = FormBorderStyle.None;
@@ -836,6 +842,15 @@ namespace OsuEnlightenOverlay.Overlay
                 }
             }
 
+        // Reconstructor(OTD 플러그인)에 live 상태 브로드캐스트 — UI 스레드 매 프레임.
+        // RefreshLiveValues() 직후라 reader의 모든 값이 최신. currentDifficulty를 넘겨
+        // Difficulty Changer override가 반영된 PreEmpt/HitObjectRadius까지 함께 전달.
+        // renderer.GameField와 osu! 창 위치를 넘겨 좌표 변환 파라미터도 함께 전달.
+        if (stateBroadcaster != null)
+            stateBroadcaster.WriteSnapshot(reader, currentDifficulty,
+                renderer != null ? renderer.GameField : null,
+                osuClientScreenX, osuClientScreenY);
+
             frameCount++;
         }
 
@@ -844,6 +859,9 @@ namespace OsuEnlightenOverlay.Overlay
         int lastFrameTime = -1; // Retry 감지용
         int syncCounter = 0; // SyncToOsu 빈도 제어
         int hojCounter = 0; // ReadHitObjectJudgements 빈도 제어
+        // osu! 창 위치 (ClientToScreen 기준) — SyncToOsu가 갱신. Reconstructor 좌표 변환용.
+        int osuClientScreenX = 0;
+        int osuClientScreenY = 0;
         bool? lastClickThroughState = null; // ClickThrough 상태 캐싱 (매 프레임 Win32 API 호출 방지)
         bool? lastCaptureBlockState = null; // CaptureBlock 상태 캐싱
 
@@ -899,6 +917,10 @@ namespace OsuEnlightenOverlay.Overlay
             int clientY = pt.Y;
             int clientW = clientRect.Width;
             int clientH = clientRect.Height;
+
+            // Reconstructor 전달용 — OTD 좌표계(전체 화면)에서 osu! 창 내부 좌표계로 변환하려면 필요.
+            osuClientScreenX = clientX;
+            osuClientScreenY = clientY;
 
             // ── 렌터박싱(네이티브 렌더) 감지 시 게임 필드 영역 계산 ──
             // 렌터박싱 ON: osu! 창은 모니터 전체 해상도로 열리지만,
@@ -1119,6 +1141,8 @@ namespace OsuEnlightenOverlay.Overlay
                     renderer.Dispose();
                 if (glControl != null)
                     glControl.Dispose();
+                if (stateBroadcaster != null)
+                    stateBroadcaster.Dispose();
             }
             base.Dispose(disposing);
         }

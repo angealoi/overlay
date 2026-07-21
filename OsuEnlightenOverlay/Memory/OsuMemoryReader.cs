@@ -650,16 +650,15 @@ namespace OsuEnlightenOverlay.Memory
                 return;
             lastBeatmapPtr = beatmapPtr;
 
-            // 맵이 바뀌었을 때만 AR/CS/HP/OD 읽기
+            // 맵이 바뀌었을 때만 AR/CS/HP/OD 읽기.
+            // ReadFloat이 실패하면 out 값이 0이라 무의미한 0으로 덮어쓰게 됨 —
+            // 문자열처럼 실패 시 기존 값을 유지(건드리지 않음)해서 Reconstructor에
+            // 0/쓰레기값이 새어 들어가는 것을 막는다.
             float ar, cs, hp, od;
-            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_AR, out ar);
-            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_CS, out cs);
-            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_HP, out hp);
-            pm.ReadFloat(beatmapPtr + Offsets.Beatmap_OD, out od);
-            BeatmapAR = ar;
-            BeatmapCS = cs;
-            BeatmapHP = hp;
-            BeatmapOD = od;
+            if (pm.ReadFloat(beatmapPtr + Offsets.Beatmap_AR, out ar))  BeatmapAR = ar;
+            if (pm.ReadFloat(beatmapPtr + Offsets.Beatmap_CS, out cs))  BeatmapCS = cs;
+            if (pm.ReadFloat(beatmapPtr + Offsets.Beatmap_HP, out hp))  BeatmapHP = hp;
+            if (pm.ReadFloat(beatmapPtr + Offsets.Beatmap_OD, out od))  BeatmapOD = od;
 
             // 문자열은 맵(beatmapPtr)이 바뀔 때만 여기 도달한다 — 위 early-return이 같은
             // 포인터를 이미 걸러냈다. 예전엔 folderPtr==lastFolderPtr면 재읽기를 스킵했는데,
