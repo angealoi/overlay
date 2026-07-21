@@ -1,11 +1,13 @@
 # Build output
 [Bb]in/
 [Oo]bj/
-build_*/
+*.dll
+*.exe
+*.pdb
 
 # IDE / tooling
 .codegraph/
-.ua/
+.claude/
 .zcode/
 .vs/
 *.user
@@ -14,7 +16,4 @@ build_*/
 # OS
 Thumbs.db
 .DS_Store
-*.dll
-*.exe
-*.pdb
 *.bak

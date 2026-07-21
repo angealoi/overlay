@@ -1,0 +1,13 @@
+{
+    "Name": "Reconstructor",
+    "Owner": "Kuuuube",
+    "Description": "Path-following + human-motion aim assist for OpenTabletDriver.",
+    "PluginVersion": "0.3.2.0",
+    "SupportedDriverVersion": "0.6.1.0",
+    "RepositoryUrl": "https://github.com/Kuuuube/Tablet_Area_Randomizer",
+    "DownloadUrl": "https://github.com/Kuuuube/Tablet_Area_Randomizer/releases/download/0.3.2/0.3.2_release_Tablet_Area_Randomizer.zip",
+    "CompressionFormat": "zip",
+    "SHA256": "411b1e39ce84b0539a93fc120b278c89060a7f69069955e7295cc651c77d0952",
+    "WikiUrl": "https://github.com/Kuuuube/Tablet_Area_Randomizer/blob/main/README.md",
+    "LicenseIdentifier": "GPL-3.0-only"
+}
