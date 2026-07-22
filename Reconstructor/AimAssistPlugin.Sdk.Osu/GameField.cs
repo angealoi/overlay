@@ -62,28 +62,25 @@ internal class GameField
     /// OsuEnlightenOverlay2의 GameField.FieldToDisplay와 동일한 변환을 사용 —
     /// 양쪽이 동일한 좌표계를 써야 어시스트가 정확히 노트 위치로 향함.
     /// 폴백: GameFieldReady가 0일 때 기존 공식.
+    ///
+    /// 참고: 오버레이 OffsetVector1(GameFieldOffsetX/Y)에는 osu! stable 플레이필드 수직 보정
+    /// modeOffset(-16*ratio)이 이미 포함되어 있다. 이 값은 노트 "렌더링 위치"이자 곧 "히트 판정 위치"이므로
+    /// 커서 좌표계로 변환할 때 역상쇄(+16*ratio)를 해서는 안 된다 — 역상쇄하면 노트가 항상
+    /// 실제 중심보다 아래로 쏠리게 된다. (이전 +16*ratio 보정은 삭제됨.)
     /// </summary>
-    /// <param name="forCursor">true면 osu! 커서 좌표계로 변환 (렌더링 modeOffset 제외).
-    /// 어시스트는 커서 좌표계 기준으로 노트 위치를 봐야 하므로 true로 호출.
-    /// 오버레이의 OffsetVector1에는 modeOffset(-16*ratio)이 포함되어 있는데,
-    /// 이건 노트 스프라이트 렌더링용 보정이라 커서 좌표계엔 들어가지 않는다.
-    /// 실측: osu! 커서 vs 오버레이 노트 위치가 Y축으로 일관 -35px(ratio=2.0) 차이.</param>
-	public static Vector2 FieldToDisplay(Vector2 field, bool forCursor = false)
+	public static Vector2 FieldToDisplay(Vector2 field)
 	{
 		var state = EnlightenService.LatestState;
 		if (state != null && state.Value.GameFieldReady == 1 && state.Value.GameFieldRatio > 0f)
 		{
 			float ratio = state.Value.GameFieldRatio;
-			// 어시스트/커서 좌표계 — 렌더링 modeOffset을 역적용.
-			// Δscreen=(0,0) 실측 완료 — 좌표 변환은 정확함.
-			// osu! 커서 히트 판정 위치와 노트 field 좌표가 일치하므로 추가 보정 불필요.
-			float modeOffset = forCursor ? 16f * ratio : 0f;
-			// osu! 창 위치(화면 좌표) 추가 — OTD 좌표계(전체 화면)로 변환.
+			// 게임 필드 좌상단(화면 좌표) — 렌터박싱 시 검은 여백이 이미 제외된 실제 렌더 영역 기준.
+			// OTD 좌표계(전체 화면)로 변환하려면 이 기준점이 필요. 클라이언트 영역 좌상단이 아님에 주의.
 			float winX = state.Value.OsuWindowX;
 			float winY = state.Value.OsuWindowY;
 			return new Vector2(
 				winX + state.Value.GameFieldOffsetX + field.X * ratio,
-				winY + state.Value.GameFieldOffsetY + field.Y * ratio + modeOffset);
+				winY + state.Value.GameFieldOffsetY + field.Y * ratio);
 		}
         // 폴백 — 오버레이 미연결 시. 기존 Reconstructor 공식.
         return field * GetRatio() + GetOffset();

@@ -90,10 +90,16 @@ namespace OsuEnlightenOverlay.Memory
         /// <summary>osu! 인게임 커서 Y (field 좌표계).</summary>
         public float CursorY;
 
-        /// <summary>osu! 창 왼쪽 위 X (화면 좌표). OTD 좌표계 변환용.</summary>
+        // ── osu! 게임 필드 좌상단 (화면 좌표) ──
+        // "게임 필드 좌상단" = 렌터박싱(native resolution OFF)일 때 검은 여백을 제외한 실제
+        // 렌더 영역의 좌상단. native resolution ON이면 osu! 클라이언트 영역 좌상단과 동일.
+        // Reconstructor는 이 값을 기준으로 GameField offset + field*ratio 변환을 적용한다.
+        // ⚠️ 주의: osu! 클라이언트 영역 좌상단이 아님 — 렌터박싱 시 두 값이 다름.
+
+        /// <summary>osu! 게임 필드 좌상단 X (화면 좌표, 주 모니터 기준).</summary>
         public int OsuWindowX;
 
-        /// <summary>osu! 창 왼쪽 위 Y (화면 좌표). OTD 좌표계 변환용.</summary>
+        /// <summary>osu! 게임 필드 좌상단 Y (화면 좌표, 주 모니터 기준).</summary>
         public int OsuWindowY;
     }
 

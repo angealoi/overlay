@@ -849,7 +849,7 @@ namespace OsuEnlightenOverlay.Overlay
         if (stateBroadcaster != null)
             stateBroadcaster.WriteSnapshot(reader, currentDifficulty,
                 renderer != null ? renderer.GameField : null,
-                osuClientScreenX, osuClientScreenY);
+                gameFieldScreenX, gameFieldScreenY);
 
             frameCount++;
         }
@@ -859,9 +859,12 @@ namespace OsuEnlightenOverlay.Overlay
         int lastFrameTime = -1; // Retry 감지용
         int syncCounter = 0; // SyncToOsu 빈도 제어
         int hojCounter = 0; // ReadHitObjectJudgements 빈도 제어
-        // osu! 창 위치 (ClientToScreen 기준) — SyncToOsu가 갱신. Reconstructor 좌표 변환용.
-        int osuClientScreenX = 0;
-        int osuClientScreenY = 0;
+        // 게임 필드 좌상단 화면 좌표 — SyncToOsu가 갱신.
+        // 렌터박싱(=native resolution OFF)일 때 게임 필드는 클라이언트 영역 내에 검은 여백을 두고
+        // 위치하므로 clientX/Y와 다르다. Reconstructor 좌표 변환은 이 값을 기준으로 해야 정확 —
+        // OsuWindowX/Y에는 client가 아닌 게임 필드 좌상단을 전달한다.
+        int gameFieldScreenX = 0;
+        int gameFieldScreenY = 0;
         bool? lastClickThroughState = null; // ClickThrough 상태 캐싱 (매 프레임 Win32 API 호출 방지)
         bool? lastCaptureBlockState = null; // CaptureBlock 상태 캐싱
 
@@ -918,9 +921,10 @@ namespace OsuEnlightenOverlay.Overlay
             int clientW = clientRect.Width;
             int clientH = clientRect.Height;
 
-            // Reconstructor 전달용 — OTD 좌표계(전체 화면)에서 osu! 창 내부 좌표계로 변환하려면 필요.
-            osuClientScreenX = clientX;
-            osuClientScreenY = clientY;
+            // 게임 필드 좌상단 초기값 — 렌터박싱 분기에서 overlayX/Y로 보정됨.
+            // 아래 overlayX/overlayY 계산이 끝난 뒤 최종 값으로 갱신.
+            gameFieldScreenX = clientX;
+            gameFieldScreenY = clientY;
 
             // ── 렌터박싱(네이티브 렌더) 감지 시 게임 필드 영역 계산 ──
             // 렌터박싱 ON: osu! 창은 모니터 전체 해상도로 열리지만,
@@ -996,6 +1000,12 @@ namespace OsuEnlightenOverlay.Overlay
                     overlayX, overlayY, overlayW, overlayH,
                     WindowInterop.SWP_NOACTIVATE);
             }
+
+            // 게임 필드 좌상단 확정 — overlayX/overlayY가 곧 게임 필드 영역의 화면 좌표.
+            // 렌터박싱이면 검은 여백(offsetX/Y)이 반영된 위치이고, 아니면 clientX/Y와 동일.
+            // Reconstructor는 이 값을 OsuWindowX/Y로 받아 field 좌표 → 화면 좌표 변환의 기준으로 씀.
+            gameFieldScreenX = overlayX;
+            gameFieldScreenY = overlayY;
 
             // 렌더링 엔진 리사이즈 — 게임 필드 크기가 실제로 변경되었을 때만
             if (renderer != null && glControl != null && (gameFieldW != lastWindowW || gameFieldH != lastWindowH))

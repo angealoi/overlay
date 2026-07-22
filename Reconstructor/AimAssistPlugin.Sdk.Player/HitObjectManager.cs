@@ -111,6 +111,24 @@ internal class HitObjectManager
         return hitObjects.Count;
     }
 
+    /// <summary>
+    /// 현재 시간 기준으로 다가오는(dueTime 이후) 가장 가까운 히트 객체의 인덱스.
+    /// 스피너는 제외 — 스피너는 중심 고정 회전이라 히트 "위치" 개념이 없다.
+    /// 서클과 슬라이더 head 모두 해당(Position = 히트점).
+    /// dueTime 이후에 올 첫 객체를 반환. 없으면 -1.
+    /// 어시스트 deadzone의 기준점(가장 가까운 노트)을 찾는 용도.
+    /// </summary>
+    public static int GetUpcomingNonSpinnerIndex(int dueTime)
+    {
+        for (int i = 0; i < hitObjects.Count; i++)
+        {
+            HitObject ho = hitObjects[i];
+            if (IsSpinner(ho)) continue;
+            if (ho.StartTime > dueTime) return i;
+        }
+        return -1;
+    }
+
     public static double MapDifficultyRange(double difficulty, double min, double mid, double max, bool adjustToMods)
     {
         var state = EnlightenService.LatestState;
@@ -155,7 +173,6 @@ internal class HitObjectManager
         // HR 모드일 때 Y축 미러링 (기존 동작 유지).
         // BasePosition도 같이 미러링해야 stacking이 HR 상태에서도 정확함.
         bool isHR = (state.Value.MenuMods & SharedMods.HR) != 0;
-        _cachedIsHR = isHR;
         var beatmap = BeatmapDecoder.Decode(path);
         // StackLeniency를 맵에서 읽어 static에 캐싱 — ApplyStacking이 씀.
         // .osu 파일에 값이 없으면 OsuParsers 기본값 0.7 사용.
@@ -163,10 +180,19 @@ internal class HitObjectManager
         List<HitObject> list = beatmap.HitObjects;
         if (isHR)
         {
+            // osu! stable HR — Y축 미러링. head(Position/BasePosition)뿐 아니라
+            // 슬라이더의 SliderPoints 전체 경로도 같이 미러해야 tail/곡선이 정확함.
+            // 이렇게 하면 GetSliderEndPosition/GetExitFieldPosition이 미러된 좌표계에서
+            // 일관되게 동작하고 stacking(BasePosition vs sliderEnd)도 정확해진다.
             foreach (HitObject item in list)
             {
                 item.Position = MirrorHardRockPosition(item.Position);
                 item.BasePosition = item.Position;
+                if (item is Slider slider)
+                {
+                    for (int i = 0; i < slider.SliderPoints.Count; i++)
+                        slider.SliderPoints[i] = MirrorHardRockPosition(slider.SliderPoints[i]);
+                }
             }
         }
         return list;
@@ -175,12 +201,9 @@ internal class HitObjectManager
     /// <summary>GetAndTransformHitObjects에서 캐싱한 맵의 StackLeniency 값.</summary>
     static float _cachedStackLeniency = 0.7f;
 
-    /// <summary>GetAndTransformHitObjects에서 캐싱한 HR 여부. 슬라이더 tail 미러링에 사용.</summary>
-    static bool _cachedIsHR;
-
     private static Vector2 MirrorHardRockPosition(Vector2 pos)
     {
-        return new Vector2(pos.X, 384f - pos.Y);
+        return new Vector2(pos.X, PLAYFIELD_HEIGHT - pos.Y);
     }
 
     // ── Stacking 알고리즘 ──────────────────────────────────────────────
@@ -321,7 +344,7 @@ internal class HitObjectManager
 
     static bool IsCircle(HitObject ho) { return (ho.Type & 1) != 0; }
     static bool IsSlider(HitObject ho) { return (ho.Type & 2) != 0; }
-    static bool IsSpinner(HitObject ho) { return (ho.Type & 8) != 0; }
+    public static bool IsSpinner(HitObject ho) { return (ho.Type & 8) != 0; }
 
     /// <summary>
     /// 슬라이더의 끝 위치 (BasePosition 기준). stacking 알고리즘이 끝 위치로 겹침을 판정.
@@ -344,7 +367,8 @@ internal class HitObjectManager
     /// <summary>
     /// 객체를 "빠져나가는" 위치 (field 좌표, Position과 동일 좌표계 = stacked+mirrored).
     /// 슬라이더는 반복 홀수면 tail에서, 짝수면 head에서 끝난다. 그 외/서클/스피너는 Position(중심).
-    /// tail은 SliderPoints 원본이라 HR 미러 + stack 오프셋을 head와 동일하게 맞춰준다.
+    /// tail은 SliderPoints 마지막 점 — GetAndTransformHitObjects에서 HR 미러가 이미 적용된 상태이므로
+    /// 여기서는 stack 오프셋만 head와 동일하게 맞춰준다.
     /// </summary>
     public static Vector2 GetExitFieldPosition(int index)
     {
@@ -352,7 +376,6 @@ internal class HitObjectManager
         if (ho is Slider s && s.SliderPoints.Count > 0 && (s.Repeats % 2 == 1))
         {
             Vector2 tail = s.SliderPoints[s.SliderPoints.Count - 1];
-            if (_cachedIsHR) tail = new Vector2(tail.X, PLAYFIELD_HEIGHT - tail.Y);
             float stackOffset = GetHitObjectRadius() / 10f;
             tail -= new Vector2(ho.StackCount * stackOffset, ho.StackCount * stackOffset);
             return tail;

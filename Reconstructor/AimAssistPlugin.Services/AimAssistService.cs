@@ -98,25 +98,29 @@ public class AimAssistService
 		var xs = new List<float>(count + 4);
 		var ys = new List<float>(count + 4);
 		var ts = new List<int>(count + 4);
-		var gaps = new List<bool>(count + 4);
+		var gaps = new List<bool>(count + 4); // true=접근 구간(ON), false=바디/스피너진입(OFF)
 
+		// gap[k] = "wp[k] → wp[k+1] 구간"의 ON/OFF.
+		// 다음 객체가 스피너면 그 구간(스피너로의 진입)을 끈다 — 스피너는 중심 고정 회전이라
+		// 경로 추종이 무의미하고, head.Position이 실제 중심과 어긋난 경우가 많아 오히려 방해됨.
 		for (int i = 0; i < count; i++)
 		{
 			HitObject ho = HitObjectManager.GetHitObject(i);
 			Vector2 head = ho.Position;
+			bool nextIsSpinner = (i + 1 < count) && HitObjectManager.IsSpinner(HitObjectManager.GetHitObject(i + 1));
 
 			if (HitObjectManager.IsBodyObject(i))
 			{
 				// 진입(head) — 이후 구간은 바디(OFF).
 				xs.Add(head.X); ys.Add(head.Y); ts.Add(ho.StartTime); gaps.Add(false);
-				// 탈출(tail/head) — 이후 구간은 다음 객체로의 접근(ON).
+				// 탈출(exit) — 이후 구간은 다음 객체로의 접근. 다음이 스피너면 OFF, 아니면 ON.
 				Vector2 exit = HitObjectManager.GetExitFieldPosition(i);
-				xs.Add(exit.X); ys.Add(exit.Y); ts.Add(ho.EndTime); gaps.Add(true);
+				xs.Add(exit.X); ys.Add(exit.Y); ts.Add(ho.EndTime); gaps.Add(!nextIsSpinner);
 			}
 			else
 			{
-				// 서클 — 이후 구간은 다음 객체로의 접근(ON).
-				xs.Add(head.X); ys.Add(head.Y); ts.Add(ho.StartTime); gaps.Add(true);
+				// 서클 — 이후 구간이 스피너로의 진입이면 OFF, 아니면 다음 객체로의 접근(ON).
+				xs.Add(head.X); ys.Add(head.Y); ts.Add(ho.StartTime); gaps.Add(!nextIsSpinner);
 			}
 		}
 
@@ -129,13 +133,14 @@ public class AimAssistService
 
 	/// <summary>waypoint field 좌표 → 화면 좌표.</summary>
 	private static Vector2 ScreenWp(int k)
-		=> GameField.FieldToDisplay(new Vector2(_wpX[k], _wpY[k]), forCursor: true) + monitorOffsets;
+		=> GameField.FieldToDisplay(new Vector2(_wpX[k], _wpY[k])) + monitorOffsets;
 
 	public static Vector2 GetOffset(Vector2 cursorPosition)
 	{
 		if (_wpN <= 0) return Vector2.Zero;
 
 		int time = AudioEngine.GetTime();
+
 		// 되감기(리트라이/시크) 감지 — 재초기화.
 		if (lastAudioTime != -1 && time < lastAudioTime)
 			Initialize();
@@ -189,15 +194,24 @@ public class AimAssistService
 		//   [0, deadR)            : 데드존 — k=0. 노트 중심근처 튐 방지.
 		//   [deadR, hitR]         : 데드존 → 최대로 부드럽게 상승.
 		//   (hitR, maxR]          : 최대 → 0으로 선형 감소 (기존 동작).
+		//
+		// ⚠️ 데드존 기준점은 guide(경로상 점)가 아니라 "가장 가까운 노트"다.
+		// guide는 두 노트 사이 경로 위 임의의 점이라 그 점 기준 deadzone이 켜지면
+		// 이동 중에도 어시스트가 꺼지는 의도치 않은 동작이 생긴다.
+		// deadzone의 본래 목적은 "노트 중심 근처에서 커서가 튀는 걸 막는 것"이므로
+		// 실제 히트 위치(가장 가까운 서클/슬라이더 head) 기준으로 판정해야 한다.
 		float deadR = hitR * Math.Clamp(AimAssistSettings.DeadZone, 0f, 1f);
+		bool inDeadZone = IsCursorNearClosestCircle(cursor, time, deadR);
+
 		float kDist;
-		if (dist <= deadR)
+		if (inDeadZone)
 		{
-			kDist = 0f; // 데드존 — 어시스트 끔.
+			kDist = 0f; // 데드존 — 가장 가까운 노트 중심 근처. 어시스트 끔.
 		}
 		else
 		{
 			// 데드존~hitR 구간: 0 → 1로 상승, hitR~maxR 구간: 1 → 0으로 감소.
+			// (kDist의 거리 인자는 여전히 guide 기준 dist — 어시스트 강도 곡선.)
 			float t = Math.Clamp((dist - deadR) / Math.Max(hitR - deadR, 1f), 0f, 1f);
 			kDist = t * (1f - Math.Clamp((dist - hitR) / Math.Max(maxR - hitR, 1f), 0f, 1f));
 		}
@@ -205,6 +219,22 @@ public class AimAssistService
 		float k = kMax * kDist;
 
 		return toGuide * k;
+	}
+
+	/// <summary>
+	/// 커서가 "가장 가까운 다가오는 노트(서클/슬라이더 head)"의 중심 근처에 있는가.
+	/// deadzone 판정 전용 — guide(경로점)가 아니라 실제 히트 위치 기준.
+	/// 스피너는 제외(회전이라 히트 위치 개념 없음). 다가오는 노트가 없으면 false.
+	/// </summary>
+	private static bool IsCursorNearClosestCircle(Vector2 cursor, int time, float deadR)
+	{
+		if (deadR <= 0f) return false;
+		int idx = HitObjectManager.GetUpcomingNonSpinnerIndex(time);
+		if (idx < 0) return false;
+		HitObject ho = HitObjectManager.GetHitObject(idx);
+		Vector2 circleScreen = GameField.FieldToDisplay(ho.Position) + monitorOffsets;
+		float distToCircle = Vector2.Distance(cursor, circleScreen);
+		return distToCircle <= deadR;
 	}
 
 	/// <summary>
