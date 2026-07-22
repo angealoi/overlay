@@ -558,6 +558,15 @@ namespace OsuEnlightenOverlay.ControlPanel
 
         void ToggleDropdown()
         {
+            // OnDeactivate → Close() 가 메시지 펌핑 중 ToggleDropdown 을 재진입할 수 있다.
+            // 이미 dispose 된 폼에 Show() 를 걸어 ObjectDisposedException 이 나는 것을 막기 위해
+            // dropdown 참조가 살아있더라도 IsDisposed 이면 정리 후 새 폼으로 갈아탄다.
+            if (dropdown != null && dropdown.IsDisposed)
+            {
+                dropdown = null;
+                dropdownOpen = false;
+            }
+
             if (dropdownOpen)
             {
                 CloseDropdown();
@@ -567,26 +576,58 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // 헤더의 스크린 좌표 — 드롭다운 폼을 바로 아래에 띄운다
             Point loc = PointToScreen(new Point(0, Height));
-            dropdown = new AbDropdownForm(this, items, selectedIndex, loc, Width);
-            dropdown.FormClosed += (s, e) =>
+            AbDropdownForm form = new AbDropdownForm(this, items, selectedIndex, loc, Width);
+            dropdown = form;
+            dropdownOpen = true;
+            form.FormClosed += (s, e) =>
             {
-                dropdownOpen = false;
-                dropdown = null;
-                Invalidate();
+                // 닫힌 폼이 현재 참조와 동일할 때만 상태를 지운다 — 그 사이 새 폼이
+                // 열렸을 수 있으므로 무조건 null 로 만들면 안 된다.
+                if (ReferenceEquals(dropdown, form))
+                {
+                    dropdown = null;
+                    dropdownOpen = false;
+                    Invalidate();
+                }
             };
-            dropdown.ItemSelected += (idx) =>
+            form.ItemSelected += (idx) =>
             {
                 SelectedIndex = idx;
             };
-            dropdownOpen = true;
-            dropdown.Show();
+
+            // Show() 도중 OnDeactivate → Close() 가 동기 재진입할 수 있다.
+            // 그 경우 폼이 이미 닫혔으므로 상태를 되돌린다.
+            try
+            {
+                form.Show();
+            }
+            catch (ObjectDisposedException)
+            {
+                if (ReferenceEquals(dropdown, form))
+                {
+                    dropdown = null;
+                    dropdownOpen = false;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // "닫힌 폼을 표시하려 했습니다" 등 — 동일하게 정리.
+                if (ReferenceEquals(dropdown, form))
+                {
+                    dropdown = null;
+                    dropdownOpen = false;
+                }
+            }
         }
 
         void CloseDropdown()
         {
+            // dispose 상태 가드 — OnDeactivate 가 늦게 발화한 폼 참조일 수 있다.
             if (dropdown != null && !dropdown.IsDisposed)
             {
-                dropdown.Close();
+                try { dropdown.Close(); }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
             }
         }
 
@@ -738,15 +779,33 @@ namespace OsuEnlightenOverlay.ControlPanel
                 SetScroll(itemTop + ItemH - ViewportH);              // 아래에 가려짐
         }
 
+        // Close() 가 중복 호출되는 것을 막는다. OnDeactivate 와 ItemSelected 클릭,
+        // 그리고 부모 AbComboBox.CloseDropdown 이 서로 다른 타이밍에 Close 를 걸 수 있어,
+        // 첫 Close 이후의 호출은 모두 무시한다. 그렇지 않으면 이미 dispose 된 폼에
+        // 대해 Close/Show 가 재진입하며 ObjectDisposedException 이 발생한다.
+        bool closing;
+
+        void CloseOnce()
+        {
+            if (closing || IsDisposed) return;
+            closing = true;
+            try { Close(); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
         protected override void OnDeactivate(EventArgs e)
         {
             base.OnDeactivate(e);
-            Close();
+            // Show() 직후 잠깐 비활성화되는 찰나의 Deactivate 로 닫히는 것을 방지하기 위해
+            // 이미 닫히는 중이거나 dispose 됐으면 무시.
+            if (!closing && !IsDisposed)
+                CloseOnce();
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (keyData == Keys.Escape) { Close(); return true; }
+            if (keyData == Keys.Escape) { CloseOnce(); return true; }
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
@@ -814,7 +873,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             {
                 selectedIndex = idx;
                 ItemSelected?.Invoke(idx);
-                Close();
+                CloseOnce();
                 return;
             }
             base.OnMouseClick(e);

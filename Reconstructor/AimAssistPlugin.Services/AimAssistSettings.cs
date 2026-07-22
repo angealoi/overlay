@@ -1,7 +1,7 @@
 namespace AimAssistPlugin.Services;
 
 /// <summary>
-/// 어시스트 튜닝 — 경로추종 + 인간모션 모델의 5개 설정.
+/// 어시스트 튜닝 — 경로추종 + 인간모션 모델의 설정.
 /// </summary>
 public static class AimAssistSettings
 {
