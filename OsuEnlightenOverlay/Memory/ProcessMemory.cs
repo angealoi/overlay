@@ -350,6 +350,22 @@ namespace OsuEnlightenOverlay.Memory
         {
             if (stringPtr == IntPtr.Zero) return null;
 
+            // 맵 전환/GC 등으로 문자열이 교체되는 도중에 읽으면 length와 buf가 어긋나
+            // 깨진 유니코드가 나온다. 최대 3회 retry하며 length+buf 일관성을 검증한다.
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                string s = ReadSharpStringOnce(stringPtr);
+                if (s != null) return s;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// ReadSharpString 1회 분 — length와 buf를 별도 RPM 호출로 읽는다.
+        /// 두 읽기 사이 문자열이 교체되면 일관성 검증 실패로 null 반환 (retry 유도).
+        /// </summary>
+        string ReadSharpStringOnce(IntPtr stringPtr)
+        {
             int length;
             if (!ReadInt32(stringPtr + 0x4, out length))
                 return null;
@@ -362,9 +378,48 @@ namespace OsuEnlightenOverlay.Memory
             if (!ReadBytes(stringPtr + 0x8, buf, byteLen))
                 return null;
 
+            // ── 일관성 검증: length를 다시 읽어 같은지 확인 ──
+            // length 읽기 → buf 읽기 사이에 osu!가 문자열을 교체했으면 length가 바뀌어 있다.
+            // 이 경우 깨진 데이터이므로 null 반환 → 상위에서 retry.
+            int lengthAfter;
+            if (!ReadInt32(stringPtr + 0x4, out lengthAfter))
+                return null;
+            if (lengthAfter != length)
+                return null;   // 일관성 깨짐 — retry
+
             // 재사용 버퍼는 byteLen보다 클 수 있으므로 반드시 길이를 지정해 디코드한다
             // (안 하면 이전 큰 문자열의 잔여 바이트까지 문자열에 섞인다).
-            return System.Text.Encoding.Unicode.GetString(buf, 0, byteLen);
+            string result = System.Text.Encoding.Unicode.GetString(buf, 0, byteLen);
+
+            // ── 깨진 문자열 필터링 ──
+            // 폴더/파일명에 올 수 없는 문자(제어문자, 서로게이트 불완전쌍)가 있으면 깨진 것으로 간주.
+            // .osu 경로에 쓰이는 문자열이므로 파일명에 허용되지 않는 제어문자는 거른다.
+            bool hasInvalid = false;
+            for (int i = 0; i < result.Length; i++)
+            {
+                char c = result[i];
+                // 파일시스템에 허용되지 않는 제어문자 (0x00-0x1F) — 폴더/파일명엔 올 수 없다.
+                if (c < 0x20)
+                {
+                    hasInvalid = true;
+                    break;
+                }
+                // 서로게이트 쌍의 절반만 있는 경우 (D800-DFFF) — 깨진 UTF-16의 징후.
+                if (c >= 0xD800 && c <= 0xDFFF)
+                {
+                    // high surrogate 뒤에 low surrogate가 와야 함. 끝이거나 다음이 low가 아니면 깨짐.
+                    if (i + 1 >= result.Length || result[i + 1] < 0xDC00 || result[i + 1] > 0xDFFF)
+                    {
+                        hasInvalid = true;
+                        break;
+                    }
+                    i++;   // low surrogate까지 확인했으니 건너뜀
+                }
+            }
+            if (hasInvalid)
+                return null;   // 깨진 문자열 — retry
+
+            return result;
         }
 
         // .NET String 읽기용 재사용 버퍼 — 길이가 가변이라 필요 시 키운다. [ThreadStatic]로

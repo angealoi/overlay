@@ -150,36 +150,30 @@ public static class EnlightenService
         // Sequence가 홀수면 write 중 — 이번은 스킵 (다음 호출에서 읽음).
         if ((seqBefore & 1) != 0) return;
 
-        // 구조체 전체 read — blit.
+        // ── 임계 구간: 구조체 + 문자열 영역 모두 seqBefore/seqAfter 사이에 read ──
+        // 이전엔 구조체 read만 검증 안에 두고, 문자열 read(ReadStringArea)를 검증 밖에서 해
+        // writer가 검증 통과 후 문자열 영역을 덮어쓰는 torn read가 발생했다.
+        // 맵 전환 시 folder/filename이 섞여 깨진 경로 → FormatException의 원인.
+        // 모든 read를 seqBefore/seqAfter 사이에 두어 seqlock 정석으로 보호한다.
         SharedState state;
         acc.Read<SharedState>(0, out state);
+        acc.ReadArray(SharedStateLayout.StringAreaOffset, _stringAreaBuf, 0, SharedStateLayout.StringAreaSize);
 
-        // Sequence 재확인 — write 도중이 아니었는지.
-        // writer는 write 시작·끝에 Sequence를 같은 값으로 세팅하므로, 읽기 전후가 같으면 온전.
+        // Sequence 재확인 — 이 임계 구간 동안 writer가 write를 시작했는지.
+        // 홀수거나 값이 바뀌었으면 이번 스냅샷 폐기.
         acc.Read<int>(0, out int seqAfter);
         if (seqBefore != seqAfter) return;
         if ((seqAfter & 1) != 0) return;
 
-        // 온전한 스냅샷 — 문자열 영역도 같은 Sequence 컨텍스트에서 읽기
-        ReadStringArea(acc, seqAfter);
-
-        _latestBoxed = state; // 박싱 — volatile 필드에 참조 교체로 atomic publish
-    }
-
-    /// <summary>
-    /// 문자열 영역 전체를 한 번에 읽고 3개 슬롯에서 UTF-8 문자열을 파싱.
-    /// Sequence가 같을 때만 호출됨을 보장 — torn read 아님.
-    /// </summary>
-    static void ReadStringArea(MemoryMappedViewAccessor acc, int seq)
-    {
-        acc.ReadArray(SharedStateLayout.StringAreaOffset, _stringAreaBuf, 0, SharedStateLayout.StringAreaSize);
-
+        // 온전한 스냅샷 — 문자열 영역 파싱 (이제 torn read가 아님을 보장).
         _cachedBeatmapFolder      = ReadStringSlot(_stringAreaBuf, SharedStateLayout.BeatmapFolder);
         _cachedBeatmapOsuFilename = ReadStringSlot(_stringAreaBuf, SharedStateLayout.BeatmapOsuFilename);
         string? dir               = ReadStringSlot(_stringAreaBuf, SharedStateLayout.OsuInstallDir);
         if (!string.IsNullOrEmpty(dir)) _cachedOsuInstallDir = dir;
 
-        _lastDirSnapshotSeq = seq;
+        _lastDirSnapshotSeq = seqAfter;
+
+        _latestBoxed = state; // 박싱 — volatile 필드에 참조 교체로 atomic publish
     }
 
     /// <summary>
