@@ -135,7 +135,18 @@ public class AimAssistPlugin : IPositionedPipelineElement<IDeviceReport>, IPipel
 		{
 			if (HitObjectManager.hitObjects.Count == 0)
 			{
-				AimAssistService.Initialize();
+				// 맵 파싱 실패(깨진 파일/잘못된 인코딩 등) 시 FormatException 등이 발생할 수 있다.
+				// 이 예외가 Consume을 빠져나가면 OTD DeviceReader 스레드가 죽어 태블릿 감지가 풀린다.
+				// 따라서 Initialize를 try/catch로 감싸고, 실패 시 어시스트 없이 raw 출력으로 폴백한다.
+				try
+				{
+					AimAssistService.Initialize();
+				}
+				catch (Exception)
+				{
+					this.Emit?.Invoke((IDeviceReport)(object)val);
+					return;
+				}
 			}
 			lock (_syncLock)
 			{
