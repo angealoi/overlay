@@ -53,13 +53,22 @@ public class AimAssistPlugin : IPositionedPipelineElement<IDeviceReport>, IPipel
 		set => AimAssistSettings.MaxOffset = value;
 	}
 
-	[Property("Inertia")]
+	[Property("Attack Inertia")]
 	[DefaultPropertyValue(100f)]
-	[ToolTip("Default: 100ms\n\n어시스트 관성 (오프셋이 붙는 SmoothDamp 시간).\n  크게 = 느리고 부드럽게 (사람스러움)\n  작게 = 빠르게 반응\n스파이크/스냅 방지의 핵심.")]
-	public float Inertia
+	[ToolTip("Default: 100ms\n\nAttack 관성 — offset이 커질 때(어시스트 켜짐)의 SmoothDamp 시간.\n  크게 = 느리고 부드럽게 (사람스러움, 스파이크 방지)\n  작게 = 빠르게 반응\n노트로 끌려갈 때 커서가 부드럽게 가속합니다.")]
+	public float AttackInertia
 	{
-		get => AimAssistSettings.Inertia;
-		set => AimAssistSettings.Inertia = value;
+		get => AimAssistSettings.AttackInertia;
+		set => AimAssistSettings.AttackInertia = value;
+	}
+
+	[Property("Release Inertia")]
+	[DefaultPropertyValue(15f)]
+	[ToolTip("Default: 15ms\n\nRelease 관성 — offset이 작아질 때(어시스트 꺼짐/풀림)의 SmoothDamp 시간.\n  작게 = offset이 빨리 풀려 되돌아감이 안 보임 (권장)\n  크게 = 서서히 풀려 되돌아감이 보임\nResync와 함께 동작 — Resync가 손 움직임으로 offset을 깎고, Release Inertia가 나머지를 풉니다.")]
+	public float ReleaseInertia
+	{
+		get => AimAssistSettings.ReleaseInertia;
+		set => AimAssistSettings.ReleaseInertia = value;
 	}
 
 	[Property("Dead Zone")]
@@ -87,6 +96,15 @@ public class AimAssistPlugin : IPositionedPipelineElement<IDeviceReport>, IPipel
 	{
 		get => AimAssistSettings.IdleThreshold;
 		set => AimAssistSettings.IdleThreshold = value;
+	}
+
+	[Property("Resync Factor")]
+	[DefaultPropertyValue(0.6f)]
+	[ToolTip("Default: 0.6\n\n손 움직임 기반 offset 감쇠 비율. Inertia와 함께 동작.\n손이 움직일 때 offset을 0 쪽으로 깎아 손이 노트에 도달하면 offset이 자연스럽게 풀립니다.\n  0 = Resync 끔 (Inertia만으로 감쇠 — 되돌아감이 보일 수 있음)\n  0.6 = 권장\n  클수록 손 움직임에 더 빨리 offset이 풀림\n핵심: 손이 멈추면 offset이 유지되어 되돌아감이 사라집니다.")]
+	public float ResyncFactor
+	{
+		get => AimAssistSettings.ResyncFactor;
+		set => AimAssistSettings.ResyncFactor = value;
 	}
 
 	public event Action<IDeviceReport>? Emit;

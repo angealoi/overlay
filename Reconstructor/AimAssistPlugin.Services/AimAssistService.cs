@@ -55,6 +55,11 @@ public class AimAssistService
 	private static readonly Stopwatch _clock = Stopwatch.StartNew();
 	private static long _lastTicks;
 
+	// 이전 프레임 raw 커서 위치 — Resync(손 움직임 기반 offset 감쇠)용.
+	// SmoothDamp만 쓰면 손 멈췄을 때 offset이 Inertia 시간에 걸쳐 풀려 "되돌아감"이 보인다.
+	// Resync는 손 움직임(displacement)에 비례해 offset을 0 쪽으로 깎아, 손이 멈추면 offset을 유지한다.
+	private static Vector2 _lastRawPos;
+
 	// ── 이동 게이트 (idle drift 방지) ──
 	// 최근 커서 위치를 시간과 함께 저장. 게이트 시간창 안의 순수 이동거리를 측정.
 	// 단순히 (lastPos - curPos)를 쓰면 정지 중 어시스트 offset이 위치를 흔들어
@@ -76,6 +81,7 @@ public class AimAssistService
 		_offVelX = 0f;
 		_offVelY = 0f;
 		_lastTicks = _clock.ElapsedTicks;
+		_lastRawPos = Vector2.Zero;
 		_moveHead = 0;
 	}
 
@@ -88,6 +94,7 @@ public class AimAssistService
 		_offVelX = 0f;
 		_offVelY = 0f;
 		_lastTicks = _clock.ElapsedTicks;
+		_lastRawPos = Vector2.Zero;
 		_moveHead = 0;
 	}
 
@@ -156,14 +163,34 @@ public class AimAssistService
 		// 어시스트 offset으로 가공된 위치가 아닌, 손(raw) 위치만 기록한다.
 		float gateScale = ComputeIdleGate(cursorPosition, now);
 
+		// 손 이동량 (이전 프레임 raw 대비). Resync(손 움직임 기반 offset 감쇠)에 사용.
+		// offset이 가공된 위치가 아니라 순수 손 움직임만 봐야 한다.
+		Vector2 displacement = _lastRawPos - cursorPosition;
+		_lastRawPos = cursorPosition;
+
 		Vector2 rawTarget = ComputeTargetOffset(cursorPosition, time);
 		// 게이트가 닫히면 target을 0으로 → SmoothDamp이 부드럽게 offset을 풀어 드리프트 차단.
 		Vector2 target = rawTarget * gateScale;
 
-		// ── 인간 모션: 오프셋을 목표로 SmoothDamp + 크기 캡 ──
-		float st = Math.Clamp(AimAssistSettings.Inertia, 10f, 500f) / 1000f;
-		_offset.X = SmoothDamp(_offset.X, target.X, ref _offVelX, st, dt);
-		_offset.Y = SmoothDamp(_offset.Y, target.Y, ref _offVelY, st, dt);
+		// ── 인간 모션: 오프셋을 목표로 SmoothDamp (attack/release 분리) + 크기 캡 ──
+		// attack  = offset이 커지는 방향 (어시스트 켜짐) → AttackInertia로 부드럽게 (스파이크 방지)
+		// release = offset이 작아지는 방향 (어시스트 꺼짐/풀림) → ReleaseInertia로 빠르게 (되돌아감 방지)
+		// 축별로 |target| vs |현재 offset| 로 attack/release 판정.
+		float attackSt  = Math.Clamp(AimAssistSettings.AttackInertia, 1f, 500f) / 1000f;
+		float releaseSt = Math.Clamp(AimAssistSettings.ReleaseInertia, 1f, 500f) / 1000f;
+		float stX = Math.Abs(target.X) >= Math.Abs(_offset.X) ? attackSt : releaseSt;
+		float stY = Math.Abs(target.Y) >= Math.Abs(_offset.Y) ? attackSt : releaseSt;
+		_offset.X = SmoothDamp(_offset.X, target.X, ref _offVelX, stX, dt);
+		_offset.Y = SmoothDamp(_offset.Y, target.Y, ref _offVelY, stY, dt);
+
+		// ── Resync: 손 움직임 기반 offset 감쇠 ──
+		// SmoothDamp만으로는 손 멈췄을 때 offset이 Inertia 시간에 걸쳐 풀려 "되돌아감"이 보인다.
+		// Resync는 손 움직임(displacement)에 비례해 offset을 0 쪽으로만 깎는다 —
+		// 손이 멈추면 displacement=0 → offset 유지 (되돌아감 없음).
+		// 손이 노트로 움직이면 offset이 그 움직임에 맞춰 자연스럽게 0으로 수렴.
+		float resyncRate = Math.Clamp(AimAssistSettings.ResyncFactor, 0f, 2f);
+		if (resyncRate > 0f)
+			_offset = ResyncOffset(displacement, _offset, resyncRate);
 
 		float maxOff = Math.Clamp(AimAssistSettings.MaxOffset, 0f, 1000f);
 		float m = _offset.Length();
@@ -171,6 +198,29 @@ public class AimAssistService
 			_offset *= maxOff / m;
 
 		return _offset;
+	}
+
+	/// <summary>
+	/// 손 움직임(displacement)에 비례해 offset을 0 쪽으로만 감쇠 — 원본 Reconstructor Resync 포팅.
+	/// offset을 절대 반대 방향으로 키우지 않고, 손이 움직인 만큼만 0으로 깎는다.
+	/// 손이 멈추면 displacement=0 → offset 변화 없음 (되돌아감 차단).
+	/// </summary>
+	private static Vector2 ResyncOffset(Vector2 displacement, Vector2 offset, float resyncFactor)
+	{
+		if (offset.Length() <= float.Epsilon) return offset;
+		Vector2 v = displacement * resyncFactor;
+		// 각 축: offset 부호 방향으로 displacement만큼 깎되, 0을 넘어 반대로 가진 않음.
+		offset.X = ResyncAxis(offset.X, v.X);
+		offset.Y = ResyncAxis(offset.Y, v.Y);
+		return offset;
+	}
+
+	/// <summary>단일 축 Resync — offset을 0 방향으로만 감소시킨다.</summary>
+	private static float ResyncAxis(float offset, float v)
+	{
+		if (offset > 0f)
+			return Math.Max(0f, v >= 0f ? offset - v : offset + v);
+		return Math.Min(0f, v <= 0f ? offset - v : offset + v);
 	}
 
 	/// <summary>목표 오프셋 = (guide - cursor) × k. 바디 구간이거나 거리 밖이면 0.</summary>
@@ -315,8 +365,11 @@ public class AimAssistService
 	{
 		_assistOff = false;
 
+		// 첫 노트 StartTime 전 — 어시스트 끔.
+		// 곡 시작 직후(skip 버튼 타이밍)에 GameField 정보가 아직 갱신되지 않아 폴백 좌표가
+		// 쓰이면 엉뚱한 곳으로 끌려간다. 첫 노트가 화면에 나오기 전엔 어시스트할 필요가 없다.
+		if (time < _wpT[0]) { _assistOff = true; return Vector2.Zero; }
 		if (_wpN == 1) return ScreenWp(0);
-		if (time <= _wpT[0]) return ScreenWp(0);                 // 첫 노트 접근
 		if (time >= _wpT[_wpN - 1]) { _assistOff = true; return Vector2.Zero; } // 맵 끝
 
 		// 세그먼트 전진 — 되감기는 Initialize가 처리하므로 전진만.
