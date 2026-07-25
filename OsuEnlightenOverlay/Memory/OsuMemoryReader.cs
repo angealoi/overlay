@@ -771,18 +771,15 @@ namespace OsuEnlightenOverlay.Memory
         /// <summary>
         /// OverlayForm이 맵 파싱 후 호출 — .osu 교차검증용 StartTime + Type 목록 주입.
         /// reader 자체 파식(ParseOsuFile)보다 신뢰성 높음 (OverlayForm이 이미 파싱한 결과 재사용).
-        /// mapKey가 바뀌면 (맵 전환) 감지된 HOM 오프셋을 무효화하여 재감지 트리거.
+        /// mapKey 가 바뀌면 검증 데이터만 갱신한다 — HOM 오프셋은 PID 가 같은 한 불변이므로
+        /// 여기서 날리지 않는다. (맵 전환 감지는 ReadHitObjectJudgements 의 캐시 무결성 체크가 담당.)
         /// </summary>
         public void SetParsedStartTimes(List<int> startTimes, List<int> types, string mapKey)
         {
             parsedStartTimes = startTimes ?? new List<int>();
             parsedTypes = types ?? new List<int>();
             if (mapKey != parsedOsuKey)
-            {
                 parsedOsuKey = mapKey;
-                foundPlayerHomOff = -1; // 맵 변경 → 오프셋 재감지
-                foundHomListOff = -1;
-            }
         }
 
         string GetOsuFilePathFromBeatmap(IntPtr beatmapObj)
@@ -969,19 +966,22 @@ namespace OsuEnlightenOverlay.Memory
             // 맵 변경 감지 — Beatmap 객체 주소만 비교 (매 프레임 ReadPointer 1번)
             IntPtr beatmapObj;
             if (!pm.ReadPointer(beatmapStaticAddr, out beatmapObj) || beatmapObj == IntPtr.Zero)
+            {
                 return result;
+            }
 
-            // Beatmap 객체 주소가 바뀌면 맵 전환 — StartTime 캐시/오프셋 무효화
+            // Beatmap 객체 주소가 바뀌면 맵 전환 또는 GC compaction 으로 객체가 이동한 것.
+            // ★ 핵심: 오프셋(foundPlayerHomOff)은 Player/HOM 의 "클래스 필드 레이아웃" 이고,
+            // 이것은 PID 가 같은 한 절대 변하지 않는다 — 맵이 바뀌어도, GC 가 돌아도.
+            // 따라서 여기서 오프셋을 리셋하면 안 된다. StartTime 캐시도 downstream 의 내용 검증
+            // (hitCount 불일치 / 첫 객체 StartTime 불일치) 으로 무효화를 미룬다 — GC 로 인해
+            // 같은 맵이 조금 이동한 것뿐이라면 캐시를 그대로 써서 긴 맵 재빌드 비용을 피한다.
             if (beatmapObj != lastBeatmapObj)
             {
                 lastBeatmapObj = beatmapObj;
-                hoCacheReady = false;
-                cachedHoStartTimes = null;
-                cachedHoCount = 0;
-                foundPlayerHomOff = -1;
-                foundHomListOff = -1;
 
-                // .osu 파일 파싱 (맵 변경 시 1회) — 주입된 parsedStartTimes의 보조 폴백
+                // .osu 파일 파싱 (맵 변경 시 1회) — 주입된 parsedStartTimes의 보조 폴백.
+                // GC 로 인한 가짜 전환일 땐 osuPath 가 같으므로 재파싱 비용 0.
                 string osuPath = GetOsuFilePathFromBeatmap(beatmapObj);
                 if (osuPath != null && osuPath != parsedOsuPath)
                     ParseOsuFile(osuPath);
@@ -990,11 +990,18 @@ namespace OsuEnlightenOverlay.Memory
             // === 단일 흐름: 매 프레임 동일 경로. GC compaction 후에도 자가 복구. ===
             // 핵심: foundPlayerHomOff < 0 일 때마다 DetectHomOffsets 재시도 (hoCacheReady와 무관).
 
-            if (playerInstanceSlot == IntPtr.Zero) return result;
+            if (playerInstanceSlot == IntPtr.Zero)
+            {
+                return result;
+            }
 
             IntPtr playerObj;
             if (!pm.ReadPointer(playerInstanceSlot, out playerObj) || !LooksLikeHeapPtr((uint)playerObj.ToInt32()))
+            {
+                // ★ 오프셋 유지 — Player 가 없다고 HOM 필드 위치(Player 레이아웃)가 바뀌진 않는다.
+                // 다음 프레임에 Player 가 생기면 같은 오프셋으로 O(1) 복구.
                 return result;
+            }
 
             // 오프셋 미감지 시 매 프레임 재시도 (초기 진입 / GC 후 무효화 / 일시적 실패 후 자가 복구)
             if (foundPlayerHomOff < 0)
@@ -1004,40 +1011,75 @@ namespace OsuEnlightenOverlay.Memory
             }
 
             // 매 프레임 오프셋 체인 재읽기 — CLR이 GC 시 참조를 갱신하므로 항상 fresh 주소 획득.
-            // 일시적 실패 시 오프셋을 무효화하고 다음 프레임 DetectHomOffsets로 자가 복구.
+            // ★ 오프셋은 절대 여기서 날리지 않는다 — GC compaction 은 객체 주소만 옮길 뿐,
+            // Player/HOM/List 의 필드 레이아웃(클래스 정의)은 세션 내 불변이다. 포인터만
+            // 잠깐 invalid 일 뿐이므로 빈 반환 후 다음 프레임에 새 주소로 자연 복구된다.
             IntPtr hom;
             if (!pm.ReadPointer(playerObj + foundPlayerHomOff, out hom) || !LooksLikeHeapPtr((uint)hom.ToInt32()))
             {
-                foundPlayerHomOff = -1;
                 return result;
             }
 
             IntPtr listObj;
             if (!pm.ReadPointer(hom + foundHomListOff, out listObj) || !LooksLikeHeapPtr((uint)listObj.ToInt32()))
             {
-                foundPlayerHomOff = -1;
                 return result;
             }
 
             IntPtr itemsArr;
             if (!pm.ReadPointer(listObj + 0x04, out itemsArr) || !LooksLikeHeapPtr((uint)itemsArr.ToInt32()))
             {
-                foundPlayerHomOff = -1;
                 return result;
             }
 
             int hitCount;
             if (!pm.ReadInt32(listObj + 0x10, out hitCount) || hitCount <= 0)
             {
-                foundPlayerHomOff = -1;
+                // ★ retry 직후 새 HOM 은 아직 hitObjects 를 채우지 않아 count==0 이다.
+                // 오프셋은 맞으므로(레이아웃 불변) 유지 — osu!가 채우면 다음 프레임 정상 복구.
                 return result;
             }
-            // .osu 객체 수와 ±2 허용 (내부 객체 1~2개 차이 가능)
+            // .osu 객체 수와 비교 — 한 번 확정된 오프셋은 관대하게(불일치가 극단적일 때만 무효화).
+            // osuCount 보다 크게 많으면 잘못된 객체를 HOM 으로 오인한 것일 수 있으므로 그때만 리셋.
             int osuCount = parsedStartTimes.Count > 0 ? parsedStartTimes.Count : parsedHitObjects.Count;
-            if (osuCount > 0 && Math.Abs(hitCount - osuCount) > 2)
+            if (osuCount > 0 && hitCount > osuCount + 32)
             {
+                // mem count 가 osu count 보다 훨씬 크면 진짜 HOM 이 아니라 다른 List(capacity 등)일 가능성.
+                // 이때만 오프셋을 버린다.
                 foundPlayerHomOff = -1;
+                foundHomListOff = -1;
                 return result;
+            }
+            // hitCount < osuCount 인 경우(retry 중 점진 채움)는 시간창 필터로 처리되므로 통과.
+
+            // 캐시 무결성 체크 — 위쪽 beatmapObj 분기에서 오프셋을 날리지 않게 바꿨으므로,
+            // 진짜 "다른 맵" 감지를 여기로 옮긴다. 같은 맵 retry 라면:
+            //   1) hitCount == cachedHoCount
+            //   2) 첫 객체 StartTime == cachedHoStartTimes[0]
+            // 둘 다 일치해야 같은 맵으로 판정. 하나라도 다르면 캐시를 버리고 재빌드.
+            // (hitCount 가 같은 다른 난이도까지 잡으려면 StartTime 비교가 필요하다.)
+            if (hoCacheReady && cachedHoCount > 0)
+            {
+                bool countMismatch = hitCount != cachedHoCount;
+                bool firstObjMismatch = false;
+                if (!countMismatch && hitCount > 0)
+                {
+                    // 첫 객체의 현재 StartTime vs 캐시된 값. itemsArr[0] 만 읽어 비교.
+                    IntPtr ho0;
+                    int curSt0 = int.MinValue;
+                    if (pm.ReadPointer(itemsArr + 0x08, out ho0) && ho0 != IntPtr.Zero
+                        && LooksLikeHeapPtr((uint)ho0.ToInt32()))
+                        pm.ReadInt32(ho0 + Offsets.HitObject_StartTime, out curSt0);
+                    firstObjMismatch = curSt0 != int.MinValue && cachedHoStartTimes != null
+                                       && cachedHoCount > 0 && curSt0 != cachedHoStartTimes[0];
+                }
+                if (countMismatch || firstObjMismatch)
+                {
+                    hoCacheReady = false;
+                    cachedHoStartTimes = null;
+                    cachedHoEndTimes = null;
+                    cachedHoCount = 0;
+                }
             }
 
             // StartTime 배열 캐싱 — 맵 로드/재감지 후 1회만 (StartTime은 GC-불변).
@@ -1046,6 +1088,12 @@ namespace OsuEnlightenOverlay.Memory
             //       (이전에 Math.Min(hitCount, maxCount)로 500개만 캐싱 → 콤보 진행 시 창이 비어 끊김)
             if (!hoCacheReady)
             {
+                // retry 직후 HOM 이 점진 채워지는 중일 수 있다 — hitCount 가 아직 osuCount 에
+                // 못 미치면 캐싱을 미뤄, 부분 캐시로 이진탐색 창이 잘리는 "긴 맵 끊김"을 피한다.
+                // 그 사이엔 빈 반환만 하고 다음 프레임에 hitCount 가 차면 그때 한 번에 캐싱.
+                if (osuCount > 0 && hitCount < osuCount - 2)
+                    return result;
+
                 cachedHoStartTimes = new int[hitCount];
                 cachedHoEndTimes = new int[hitCount];
                 cachedHoCount = 0;
@@ -1204,15 +1252,19 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
-        /// hoCache 무효화 — retry 후 stale 포인터 방지.
-        /// ReadHitObjectJudgements가 다음 호출 시 HitObject 배열 재스캔.
+        /// retry 후 호출되는 hook — 같은 맵 retry 라면 StartTime/EndTime 캐시, 오프셋,
+        /// lastBeatmapObj 모두 유지한다. 새 Player 객체는 다른 주소에 있지만 같은 필드
+        /// 레이아웃/같은 hitObjects 이므로, 매 프레임 fresh 읽는 _items 포인터만 자연 갱신된다.
+        /// (lastBeatmapObj 를 0 으로 만들면 다음 호출이 같은 맵을 "맵 전환"으로 오인해
+        ///  캐시를 다시 날리는 버그가 있었다 — 이상점 F.)
+        /// 진짜 맵 전환(다른 beatmapObj)은 ReadHitObjectJudgements 내부의 맵 전환 분기가 처리.
         /// </summary>
         public void InvalidateHoCache()
         {
-            hoCacheReady = false;
-            cachedHoStartTimes = null;
-            cachedHoCount = 0;
-            lastBeatmapObj = IntPtr.Zero;
+            // 같은 맵 retry — 캐시/오프셋/lastBeatmapObj 모두 유지한다. 새 Player 객체는 다른
+            // 주소에 있지만 같은 필드 레이아웃/같은 hitObjects 이므로, 매 프레임 fresh 읽는
+            // _items 포인터만 자연 갱신된다. 진짜 맵 전환은 ReadHitObjectJudgements 의 캐시
+            // 무결성 체크(hitCount/StartTime 불일치)가 감지한다.
         }
     }
 }
