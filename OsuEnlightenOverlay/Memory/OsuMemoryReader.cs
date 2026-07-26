@@ -902,6 +902,8 @@ namespace OsuEnlightenOverlay.Memory
             public int SpinningState;         // 스피너 상태 (0=NotStarted, 1=Started, 2=Passed)
             public byte IsTracking;           // 슬라이더 tracking 중 (0=아님, 1=tracking)
             public byte StartIsHit;          // 슬라이더 시작원 IsHit (SliderStartCircle+0x84)
+            public int StartHitValue;        // 슬라이더 시작원 HitValue (IncreaseScoreType) — Arm(HitValue>0)과 동일
+            public int StartScoreValue;      // 슬라이더 시작원 ScoreValue (300/100/50/0) — IncreaseScore 이후
         }
 
         // ── HOM 스캔 (Player.Instance + .osu 파일 검증 방식) ──
@@ -1639,9 +1641,20 @@ namespace OsuEnlightenOverlay.Memory
                     IntPtr sliderStart = ProcessMemory.GetPointer(hoBatch, 0xC0);
                     if (sliderStart != IntPtr.Zero && LooksLikeHeapPtr((uint)sliderStart.ToInt32()))
                     {
+                        // StartIsHit만으로는 hit/miss 구분 불가 — timeout miss도 IsHit=1.
+                        // 판정은 osu-stable HitCircle.Hit과 같이 HitValue로:
+                        //   Arm(HitValue > 0). HitValue는 Hit() 안에서 IsHit와 같이 set.
+                        // ScoreValue는 IncreaseScore 이후에 쓰이므로 IsHit=1인데 아직 0인
+                        // 프레임이 있어, ScoreValue로 Arm하면 hit가 miss로 먼저 잠긴다.
                         byte startIsHit;
                         if (pm.ReadByte(sliderStart + Offsets.HitObject_IsHit, out startIsHit))
                             j.StartIsHit = startIsHit;
+                        int startHitValue;
+                        if (pm.ReadInt32(sliderStart + Offsets.HitObject_HitValue, out startHitValue))
+                            j.StartHitValue = startHitValue;
+                        int startScore;
+                        if (pm.ReadInt32(sliderStart + Offsets.HitObject_ScoreValue, out startScore))
+                            j.StartScoreValue = startScore;
                     }
                 }
 
