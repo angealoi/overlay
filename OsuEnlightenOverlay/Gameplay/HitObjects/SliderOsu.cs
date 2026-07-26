@@ -208,6 +208,8 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             double beatLength = BeatmapParser.BeatLengthAt(beatmap, startTime);
             int segmentCount = Math.Max(1, data.RepeatCount);
             virtualEndTime = (int)Math.Floor(data.Length * beatLength * segmentCount * 0.01 / beatmap.SliderMultiplier + startTime);
+            // AimAssist 등 BeatmapData 소비자용 — 파서는 EndTime=StartTime으로 둔다.
+            data.EndTime = virtualEndTime;
 
             // Velocity — osu! stable SliderVelocityAt
             // SliderVelocityAt = SliderScoringPointDistance * SliderTickRate * (1000 / BeatLength)
@@ -469,6 +471,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // virtualEndTime = currentTime — osu! stable: EndTime = (int)currentTime
             // 이렇게 하면 virtualEndTime과 segmentDuration이 정확히 일치함
             virtualEndTime = (int)currentTime;
+            data.EndTime = virtualEndTime;
 
             // 슬라이더 볼 — osu! stable: pAnimation, LoadAll("sliderb")
             // usingDefault이면 SliderBall 색상 적용, 아니면 White

@@ -13,9 +13,11 @@ using OsuEnlightenOverlay.Gameplay.Difficulty;
 using OsuEnlightenOverlay.Gameplay.HitObjects;
 using OsuEnlightenOverlay.Gameplay.Scoring;
 using OsuEnlightenOverlay.Gameplay.Cursor;
+using OsuEnlightenOverlay.Gameplay.AimAssist;
 using OsuEnlightenOverlay.Gameplay;
 using OsuEnlightenOverlay.Skinning;
 using OsuEnlightenOverlay.ControlPanel;
+using OsuEnlightenOverlay.Input;
 
 namespace OsuEnlightenOverlay.Overlay
 {
@@ -69,6 +71,9 @@ namespace OsuEnlightenOverlay.Overlay
 
         // Difficulty Changer 수학 (mod + 오버라이드 → DifficultyValues) — 생성자에서 생성
         DifficultyController difficultyController;
+
+        // 마우스 aim assist (lame-style WH_MOUSE_LL)
+        MouseAimAssist mouseAimAssist;
 
         // 지연된 스킨/커서 재로드 — 단일 UI 스레드지만 GL 작업은 GL 컨텍스트가 current인
         // 렌더 틱(OnSyncTick)에 모아 처리한다 ("ControlPanelForm이 다른 스레드라 불가"는 오해였음: F9)
@@ -134,6 +139,7 @@ namespace OsuEnlightenOverlay.Overlay
                             renderer.GameField.Width, renderer.GameField.Ratio);
                     if (hom != null)
                         hom.LoadBeatmap(currentBeatmap, currentDifficulty);
+                        InvalidateMouseAimMap();
                 }
                 return;
             }
@@ -253,7 +259,10 @@ namespace OsuEnlightenOverlay.Overlay
                         currentDifficulty = DifficultyCalculator.Calculate(currentBeatmap,
                             renderer.GameField.Width, renderer.GameField.Ratio);
                     if (hom != null)
+                    {
                         hom.LoadBeatmap(currentBeatmap, currentDifficulty);
+                        InvalidateMouseAimMap();
+                    }
                 }
 
                 // 커서 재로드
@@ -564,6 +573,10 @@ namespace OsuEnlightenOverlay.Overlay
             renderStopwatch = System.Diagnostics.Stopwatch.StartNew();
             // Application.Idle 기반 렌더링
             Application.Idle += OnApplicationIdle;
+
+            if (mouseAimAssist == null)
+                mouseAimAssist = new MouseAimAssist();
+            mouseAimAssist.Start();
         }
 
         /// <summary>
@@ -574,6 +587,8 @@ namespace OsuEnlightenOverlay.Overlay
             Application.Idle -= OnApplicationIdle;
             // 타이머 해상도 복원
             WindowInterop.timeEndPeriod(1);
+            if (mouseAimAssist != null)
+                mouseAimAssist.Stop();
         }
 
         void OnApplicationIdle(object sender, EventArgs e)
@@ -636,6 +651,7 @@ namespace OsuEnlightenOverlay.Overlay
                         currentDifficulty = DifficultyCalculator.Calculate(currentBeatmap,
                             renderer.GameField.Width, renderer.GameField.Ratio);
                     hom.LoadBeatmap(currentBeatmap, currentDifficulty);
+                    InvalidateMouseAimMap();
                 }
             }
 
@@ -705,6 +721,7 @@ namespace OsuEnlightenOverlay.Overlay
                         renderer.HitObjectManager = hom;
                     }
                     hom.LoadBeatmap(currentBeatmap, currentDifficulty);
+                    InvalidateMouseAimMap();
 
                     if (hitBurst == null)
                     {
@@ -842,16 +859,56 @@ namespace OsuEnlightenOverlay.Overlay
                 }
             }
 
-        // Reconstructor(OTD 플러그인)에 live 상태 브로드캐스트 — UI 스레드 매 프레임.
-        // RefreshLiveValues() 직후라 reader의 모든 값이 최신. currentDifficulty를 넘겨
-        // Difficulty Changer override가 반영된 PreEmpt/HitObjectRadius까지 함께 전달.
-        // renderer.GameField와 osu! 창 위치를 넘겨 좌표 변환 파라미터도 함께 전달.
-        if (stateBroadcaster != null)
-            stateBroadcaster.WriteSnapshot(reader, currentDifficulty,
-                renderer != null ? renderer.GameField : null,
-                gameFieldScreenX, gameFieldScreenY);
+            // Reconstructor(OTD 플러그인)에 live 상태 브로드캐스트 — UI 스레드 매 프레임.
+            // RefreshLiveValues() 직후라 reader의 모든 값이 최신. currentDifficulty를 넘겨
+            // Difficulty Changer override가 반영된 PreEmpt/HitObjectRadius까지 함께 전달.
+            // renderer.GameField와 osu! 창 위치를 넘겨 좌표 변환 파라미터도 함께 전달.
+            if (stateBroadcaster != null)
+                stateBroadcaster.WriteSnapshot(reader, currentDifficulty,
+                    renderer != null ? renderer.GameField : null,
+                    gameFieldScreenX, gameFieldScreenY);
+
+            // 마우스 aim assist — 타겟 스냅샷 (hook 스레드가 읽음)
+            UpdateMouseAimAssist();
 
             frameCount++;
+        }
+
+        void InvalidateMouseAimMap()
+        {
+            if (mouseAimAssist != null)
+                mouseAimAssist.InvalidateMap();
+        }
+
+        void UpdateMouseAimAssist()
+        {
+            if (mouseAimAssist == null || settings == null) return;
+
+            mouseAimAssist.Enabled = settings.AimAssistEnabled;
+
+            // Reconstructor AimAssistSettings와 동일 값
+            AimAssistSettings.Strength = settings.AimAssistStrength;
+            AimAssistSettings.Range = settings.AimAssistRange;
+            AimAssistSettings.Curviness = settings.AimAssistCurviness;
+            AimAssistSettings.MaxOffset = settings.AimAssistMaxOffset;
+            AimAssistSettings.AttackInertia = settings.AimAssistAttackInertia;
+            AimAssistSettings.ReleaseInertia = settings.AimAssistReleaseInertia;
+            AimAssistSettings.DeadZone = settings.AimAssistDeadZone;
+            AimAssistSettings.IdleGateWindow = settings.AimAssistIdleGateWindow;
+            AimAssistSettings.IdleThreshold = settings.AimAssistIdleThreshold;
+            AimAssistSettings.ResyncFactor = settings.AimAssistResyncFactor;
+
+            bool playing = reader.Mode == Offsets.Mode_Play
+                           && reader.AudioState == Offsets.AudioState_Playing;
+
+            mouseAimAssist.Update(
+                playing,
+                currentBeatmap,
+                currentDifficulty,
+                renderer != null ? renderer.GameField : null,
+                gameFieldScreenX,
+                gameFieldScreenY,
+                reader.TimeMs);
         }
 
         string lastGeoState = ""; // [Sync] 로그 — 지오메트리 변화 감지용
@@ -985,6 +1042,7 @@ namespace OsuEnlightenOverlay.Overlay
             if (geoState != lastGeoState)
             {
                 lastGeoState = geoState;
+                MouseInput.InvalidateVirtualDesktop();
                 Console.WriteLine($"[Sync] client=({clientX},{clientY}) {clientW}x{clientH}"
                     + $" desktop={reader.DesktopWidth}x{reader.DesktopHeight}"
                     + $" | LB={reader.IsLetterboxing} render={reader.WindowWidth}x{reader.WindowHeight}"
@@ -1146,6 +1204,11 @@ namespace OsuEnlightenOverlay.Overlay
             {
                 // 타이머 해상도 복원 (혹시 StopOverlay에서 안 됐을 경우)
                 try { WindowInterop.timeEndPeriod(1); } catch { }
+                if (mouseAimAssist != null)
+                {
+                    mouseAimAssist.Dispose();
+                    mouseAimAssist = null;
+                }
                 if (renderer != null)
                     renderer.Dispose();
                 if (glControl != null)

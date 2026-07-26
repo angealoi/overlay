@@ -55,6 +55,29 @@ namespace OsuEnlightenOverlay.ControlPanel
         public string SkinName = "Default";
         public bool InstaFade = false;  // hit animation 없이 즉시 사라짐
 
+        // Aim Assist (mouse — Reconstructor AimAssistService + lame SendInput)
+        public bool AimAssistEnabled = false;
+        public float AimAssistStrength = 1.6f;
+        public float AimAssistRange = 4.0f;
+        public float AimAssistCurviness = 0.6f;
+        public float AimAssistMaxOffset = 70f;
+        public float AimAssistAttackInertia = 100f;
+        public float AimAssistReleaseInertia = 15f;
+        public float AimAssistDeadZone = 0.5f;
+        public float AimAssistIdleGateWindow = 50f;
+        public float AimAssistIdleThreshold = 3f;
+        public float AimAssistResyncFactor = 0.6f;
+
+        public const float AimStrengthMin = 0f, AimStrengthMax = 10f;
+        public const float AimRangeMin = 1f, AimRangeMax = 20f;
+        public const float AimCurvinessMin = 0f, AimCurvinessMax = 1f;
+        public const float AimMaxOffsetMin = 0f, AimMaxOffsetMax = 300f;
+        public const float AimInertiaMin = 1f, AimInertiaMax = 500f;
+        public const float AimDeadZoneMin = 0f, AimDeadZoneMax = 1f;
+        public const float AimIdleWindowMin = 0f, AimIdleWindowMax = 500f;
+        public const float AimIdleThreshMin = 0f, AimIdleThreshMax = 50f;
+        public const float AimResyncMin = 0f, AimResyncMax = 2f;
+
         // Paths (캐시)
         public string OsuRoot = "";
 
@@ -87,6 +110,17 @@ namespace OsuEnlightenOverlay.ControlPanel
             c.HudEditSnap = HudEditSnap;
             c.SkinName = SkinName;
             c.InstaFade = InstaFade;
+            c.AimAssistEnabled = AimAssistEnabled;
+            c.AimAssistStrength = AimAssistStrength;
+            c.AimAssistRange = AimAssistRange;
+            c.AimAssistCurviness = AimAssistCurviness;
+            c.AimAssistMaxOffset = AimAssistMaxOffset;
+            c.AimAssistAttackInertia = AimAssistAttackInertia;
+            c.AimAssistReleaseInertia = AimAssistReleaseInertia;
+            c.AimAssistDeadZone = AimAssistDeadZone;
+            c.AimAssistIdleGateWindow = AimAssistIdleGateWindow;
+            c.AimAssistIdleThreshold = AimAssistIdleThreshold;
+            c.AimAssistResyncFactor = AimAssistResyncFactor;
             c.OsuRoot = OsuRoot;
             return c;
         }
@@ -109,6 +143,16 @@ namespace OsuEnlightenOverlay.ControlPanel
             ArDtValue = Clamp(ArDtValue, DtArMin, DtArMax, 10.3f);
             ArHtValue = Clamp(ArHtValue, HtArMin, HtArMax, 8.0f);
             HudHitErrorScale = Clamp(HudHitErrorScale, HudHitErrorScaleMin, HudHitErrorScaleMax, 1.0f);
+            AimAssistStrength = Clamp(AimAssistStrength, AimStrengthMin, AimStrengthMax, 1.6f);
+            AimAssistRange = Clamp(AimAssistRange, AimRangeMin, AimRangeMax, 4.0f);
+            AimAssistCurviness = Clamp(AimAssistCurviness, AimCurvinessMin, AimCurvinessMax, 0.6f);
+            AimAssistMaxOffset = Clamp(AimAssistMaxOffset, AimMaxOffsetMin, AimMaxOffsetMax, 70f);
+            AimAssistAttackInertia = Clamp(AimAssistAttackInertia, AimInertiaMin, AimInertiaMax, 100f);
+            AimAssistReleaseInertia = Clamp(AimAssistReleaseInertia, AimInertiaMin, AimInertiaMax, 15f);
+            AimAssistDeadZone = Clamp(AimAssistDeadZone, AimDeadZoneMin, AimDeadZoneMax, 0.5f);
+            AimAssistIdleGateWindow = Clamp(AimAssistIdleGateWindow, AimIdleWindowMin, AimIdleWindowMax, 50f);
+            AimAssistIdleThreshold = Clamp(AimAssistIdleThreshold, AimIdleThreshMin, AimIdleThreshMax, 3f);
+            AimAssistResyncFactor = Clamp(AimAssistResyncFactor, AimResyncMin, AimResyncMax, 0.6f);
 
             // HUD 배열은 항상 길이 4·non-null이어야 인덱싱이 안전하다.
             HudEnabled = EnsureLength(HudEnabled, 4, true);

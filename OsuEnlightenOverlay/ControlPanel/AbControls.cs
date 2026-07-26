@@ -1065,4 +1065,103 @@ namespace OsuEnlightenOverlay.ControlPanel
             }
         }
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  AbTabStrip — 상단 탭 바. 선택 탭은 TextBright + 하단 Accent 라인.
+    // ────────────────────────────────────────────────────────────────────────
+    internal class AbTabStrip : Control
+    {
+        static readonly Font TabFont = new Font("Tahoma", 9f, FontStyle.Bold);
+        readonly List<string> tabs = new List<string>();
+        int selected;
+        int hover = -1;
+
+        public int SelectedIndex
+        {
+            get { return selected; }
+            set
+            {
+                if (value < 0 || value >= tabs.Count || value == selected) return;
+                selected = value;
+                Invalidate();
+                if (SelectedIndexChanged != null)
+                    SelectedIndexChanged(selected);
+            }
+        }
+
+        public event Action<int> SelectedIndexChanged;
+
+        public AbTabStrip()
+        {
+            Height = 28;
+            BackColor = AbTheme.Gray;
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        }
+
+        public void AddTab(string title)
+        {
+            tabs.Add(title);
+            Invalidate();
+        }
+
+        int TabAt(Point p)
+        {
+            if (tabs.Count == 0) return -1;
+            int tw = Width / tabs.Count;
+            int i = p.X / Math.Max(1, tw);
+            if (i < 0 || i >= tabs.Count) return -1;
+            return i;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int h = TabAt(e.Location);
+            if (h != hover) { hover = h; Invalidate(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (hover != -1) { hover = -1; Invalidate(); }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            int i = TabAt(e.Location);
+            if (i >= 0) SelectedIndex = i;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            System.Drawing.Graphics g = e.Graphics;
+            using (SolidBrush bg = new SolidBrush(AbTheme.Gray))
+                g.FillRectangle(bg, ClientRectangle);
+
+            if (tabs.Count == 0) return;
+            int tw = Width / tabs.Count;
+
+            for (int i = 0; i < tabs.Count; i++)
+            {
+                Rectangle tr = new Rectangle(i * tw, 0, tw, Height);
+                Color fg = i == selected ? AbTheme.TextBright
+                    : (i == hover ? AbTheme.TextRegular : AbTheme.TextOff);
+                TextRenderer.DrawText(g, tabs[i], TabFont, tr, fg,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+
+                if (i == selected)
+                {
+                    using (Pen accent = new Pen(AbTheme.Accent, 2f))
+                        g.DrawLine(accent, tr.Left + 10, Height - 2, tr.Right - 10, Height - 2);
+                }
+            }
+
+            using (Pen sep = new Pen(AbTheme.GroupLight))
+                g.DrawLine(sep, 0, Height - 1, Width, Height - 1);
+        }
+    }
 }

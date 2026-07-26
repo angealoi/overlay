@@ -9,8 +9,8 @@ namespace OsuEnlightenOverlay.ControlPanel
     /// <summary>
     /// 컨트롤 패널 — AByteCheat 의 커스텀 VGUI 메뉴 스타일을 WinForms owner-draw 컨트롤로 재현.
     ///
-    /// 레이아웃/동작은 기존과 동일(세로 스크롤 + 5개 카드)하되, 컨트롤은 모두 AByteCheat
-    /// 원본 색상(28,28,28 다크 + 초록 액센트)과 owner-draw 스타일을 따른다.
+    /// GENERAL / AIM ASSIST 탭으로 분리. GENERAL은 2열 카드(Overlay/Diff/Cursor/HUD/Skin),
+    /// AIM ASSIST 탭에 마우스 aim 노브를 둔다.
     /// 외부 접점(생성자 시그니처, OverlayForm API 호출, 설정 저장/로드)은 변경 없다.
     /// </summary>
     public class ControlPanelForm : Form
@@ -31,6 +31,11 @@ namespace OsuEnlightenOverlay.ControlPanel
         AbSlider slCursorSize;
         AbComboBox cmbCursorPack;
         AbButton btnRefreshCursorPacks;
+
+        // Aim Assist 섹션
+        AbCheckBox chkAimEnabled;
+        AbSlider slAimStrength, slAimRange, slAimCurviness, slAimMaxOffset;
+        AbSlider slAimAttack, slAimRelease, slAimDeadZone, slAimIdleWindow, slAimIdleThresh, slAimResync;
 
         // HUD 섹션
         AbCheckBox chkHudFps, chkHudAcc, chkHudCombo, chkHudHitError;
@@ -112,7 +117,9 @@ namespace OsuEnlightenOverlay.ControlPanel
             // Padding 을 빼면 contentPanel 폭 = 858... 이 아니라 890-16=874 가 되고,
             // 우측 열 끝 col2X+cardW = 864 → 우측 여백 10 = marginX (대칭).
             this.Width = 890;
-            this.Height = 520;
+            // GENERAL 카드 합(~394) + 탭/상태(~98) + 타이틀/외곽(~48) + 하단 여백(~14) ≈ 554.
+            // Aim 탭 카드(280)도 이 높이 안에 들어간다.
+            this.Height = 560;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.None;
             this.BackColor = AbTheme.Gray;            // (28,28,28) 본체색
@@ -124,7 +131,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             // 타이틀바(Top)를 나중에 추가해야 타이틀바가 위쪽을 차지, Fill 패널이 그 아래.
             Panel contentPanel = new Panel();
             contentPanel.Dock = DockStyle.Fill;
-            contentPanel.AutoScroll = false;
+            contentPanel.AutoScroll = true;
             contentPanel.BorderStyle = BorderStyle.None;
             contentPanel.BackColor = AbTheme.Gray;
             this.Controls.Add(contentPanel);
@@ -191,11 +198,43 @@ namespace OsuEnlightenOverlay.ControlPanel
             lblBeatmap.Font = new Font("Verdana", 8.25f);
             contentPanel.Controls.Add(lblBeatmap);
 
-            // 카드 시작 y — 상태 바(36+18=54) 아래 충분한 여백(18)을 두어 타이틀바와 분리.
-            int cardY0 = 54 + 18;
+            // ── 탭 바 — GENERAL / AIM ASSIST ──
+            const int tabH = 28;
+            int tabY = 58;
+            AbTabStrip tabs = new AbTabStrip();
+            tabs.Location = new Point(marginX, tabY);
+            tabs.Size = new Size(contentW, tabH);
+            tabs.AddTab("GENERAL");
+            tabs.AddTab("AIM ASSIST");
+            contentPanel.Controls.Add(tabs);
+
+            // 탭 페이지 — 카드는 페이지 상대 좌표. 전환 시 Visible만 토글.
+            int cardY0 = tabY + tabH + 12;
+            int pageH = 410;
+            int pageW = contentW + marginX;
+
+            Panel pageGeneral = new Panel();
+            pageGeneral.Location = new Point(0, cardY0);
+            pageGeneral.Size = new Size(pageW, pageH);
+            pageGeneral.BackColor = AbTheme.Gray;
+            contentPanel.Controls.Add(pageGeneral);
+
+            Panel pageAim = new Panel();
+            pageAim.Location = new Point(0, cardY0);
+            pageAim.Size = new Size(pageW, pageH);
+            pageAim.BackColor = AbTheme.Gray;
+            pageAim.Visible = false;
+            contentPanel.Controls.Add(pageAim);
+
+            tabs.SelectedIndexChanged += idx =>
+            {
+                pageGeneral.Visible = idx == 0;
+                pageAim.Visible = idx == 1;
+            };
+
             // 좌/우 열 모두 같은 y에서 시작 — yR 이 yL 과 어긋나던 문제 수정.
-            int yL = cardY0;
-            int yR = cardY0;
+            int yL = 0;
+            int yR = 0;
 
             // ── Overlay ── [좌측 열] 카드높이 = 마지막 객체 끝(114) + bottomPad(12) = 126
             int overlayH = 114 + bottomPad;
@@ -251,7 +290,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             grpOverlay.Controls.Add(slFpsCap);
 
-            contentPanel.Controls.Add(grpOverlay);
+            pageGeneral.Controls.Add(grpOverlay);
             yL += grpOverlay.Height + cardGapY;
 
             // ── Difficulty Changer ── [우측 열] 최상단
@@ -281,7 +320,7 @@ namespace OsuEnlightenOverlay.ControlPanel
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
                 out slHtAR, out btnHtARAuto);
 
-            contentPanel.Controls.Add(grpDiff);
+            pageGeneral.Controls.Add(grpDiff);
             yR += grpDiff.Height + cardGapY;
 
             // ── Cursor ── [좌측 열] OVERLAY 아래
@@ -351,12 +390,10 @@ namespace OsuEnlightenOverlay.ControlPanel
             btnRefreshCursorPacks.Click += (s, e) => { RefreshCursorPacks(); };
             grpCursor.Controls.Add(btnRefreshCursorPacks);
 
-            contentPanel.Controls.Add(grpCursor);
+            pageGeneral.Controls.Add(grpCursor);
             yL += grpCursor.Height + cardGapY;
 
             // ── HUD ── [우측 열] DIFFICULTY 아래
-            // 힌트 2줄(압축) 끝 178 + bottomPad 12 = 카드높이 190.
-            // 우측 열 = 72 + 194 + 10 + 190 = 466 → 좌측 열(SKIN 끝 466)과 하단 일치.
             AbCard grpHud = new AbCard("GAMEPLAY HUD", col2X, yR, cardW, 190);
 
             chkHudFps = new AbCheckBox { Text = "FPS" };
@@ -419,7 +456,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             lblEditHint2.Font = new Font("Verdana", 8.25f);
             grpHud.Controls.Add(lblEditHint2);
 
-            contentPanel.Controls.Add(grpHud);
+            pageGeneral.Controls.Add(grpHud);
             yR += grpHud.Height + cardGapY;
 
             // ── Skin ── [좌측 열] OVERLAY CURSOR 아래
@@ -457,8 +494,61 @@ namespace OsuEnlightenOverlay.ControlPanel
             { settings.InstaFade = chkInstaFade.Checked; Save(); };
             grpSkin.Controls.Add(chkInstaFade);
 
-            contentPanel.Controls.Add(grpSkin);
+            pageGeneral.Controls.Add(grpSkin);
             yL += grpSkin.Height + cardGapY;
+
+            // ── AIM ASSIST 탭 — 2열 슬라이더로 GENERAL과 분리 ──
+            AbCard grpAim = new AbCard("MOUSE AIM ASSIST", marginX, 0, contentW, 280);
+
+            chkAimEnabled = new AbCheckBox { Text = "Enabled" };
+            chkAimEnabled.Location = new Point(colL, contentTopY);
+            chkAimEnabled.Width = ctrlW;
+            chkAimEnabled.Checked = settings.AimAssistEnabled;
+            chkAimEnabled.CheckedChanged += (s, e) => { settings.AimAssistEnabled = chkAimEnabled.Checked; Save(); };
+            grpAim.Controls.Add(chkAimEnabled);
+
+            const int aimRow0 = 72;
+            const int aimRowGap = 34;
+            const int aimLabelW = 110;
+            const int aimColGap = 24;
+            int aimColW = (contentW - pad * 2 - aimColGap) / 2;
+            int aimCol2X = pad + aimColW + aimColGap;
+            int aimSliderW = aimColW - aimLabelW - 8;
+            int arL = 0, arR = 0;
+
+            void AddAimRow(bool right, string label, float min, float max, float val, int decimals, Action<float> set, out AbSlider slider)
+            {
+                int colX = right ? aimCol2X : pad;
+                int row = right ? arR++ : arL++;
+                int y = aimRow0 + row * aimRowGap;
+                grpAim.Controls.Add(MakeLabel(label, colX, y + 3, aimLabelW, AbTheme.TextRegular));
+                slider = MakeAimSlider(colX + aimLabelW + 8, y, aimSliderW, min, max, val, decimals, set);
+                grpAim.Controls.Add(slider);
+            }
+
+            AddAimRow(false, "Strength:", OverlaySettings.AimStrengthMin, OverlaySettings.AimStrengthMax,
+                settings.AimAssistStrength, 2, v => { settings.AimAssistStrength = v; Save(); }, out slAimStrength);
+            AddAimRow(false, "Range:", OverlaySettings.AimRangeMin, OverlaySettings.AimRangeMax,
+                settings.AimAssistRange, 2, v => { settings.AimAssistRange = v; Save(); }, out slAimRange);
+            AddAimRow(false, "Curviness:", OverlaySettings.AimCurvinessMin, OverlaySettings.AimCurvinessMax,
+                settings.AimAssistCurviness, 2, v => { settings.AimAssistCurviness = v; Save(); }, out slAimCurviness);
+            AddAimRow(false, "Max Offset:", OverlaySettings.AimMaxOffsetMin, OverlaySettings.AimMaxOffsetMax,
+                settings.AimAssistMaxOffset, 1, v => { settings.AimAssistMaxOffset = v; Save(); }, out slAimMaxOffset);
+            AddAimRow(false, "Attack Inertia:", OverlaySettings.AimInertiaMin, OverlaySettings.AimInertiaMax,
+                settings.AimAssistAttackInertia, 0, v => { settings.AimAssistAttackInertia = v; Save(); }, out slAimAttack);
+
+            AddAimRow(true, "Release Inertia:", OverlaySettings.AimInertiaMin, OverlaySettings.AimInertiaMax,
+                settings.AimAssistReleaseInertia, 0, v => { settings.AimAssistReleaseInertia = v; Save(); }, out slAimRelease);
+            AddAimRow(true, "Dead Zone:", OverlaySettings.AimDeadZoneMin, OverlaySettings.AimDeadZoneMax,
+                settings.AimAssistDeadZone, 2, v => { settings.AimAssistDeadZone = v; Save(); }, out slAimDeadZone);
+            AddAimRow(true, "Idle Gate:", OverlaySettings.AimIdleWindowMin, OverlaySettings.AimIdleWindowMax,
+                settings.AimAssistIdleGateWindow, 0, v => { settings.AimAssistIdleGateWindow = v; Save(); }, out slAimIdleWindow);
+            AddAimRow(true, "Idle Threshold:", OverlaySettings.AimIdleThreshMin, OverlaySettings.AimIdleThreshMax,
+                settings.AimAssistIdleThreshold, 1, v => { settings.AimAssistIdleThreshold = v; Save(); }, out slAimIdleThresh);
+            AddAimRow(true, "Resync Factor:", OverlaySettings.AimResyncMin, OverlaySettings.AimResyncMax,
+                settings.AimAssistResyncFactor, 2, v => { settings.AimAssistResyncFactor = v; Save(); }, out slAimResync);
+
+            pageAim.Controls.Add(grpAim);
 
             // 스크롤 휠이 Ab* 컨트롤에서 값을 변경하지 않도록 차단.
             // 2열 레이아웃에선 스크롤이 없지만 컨트롤 위에서 휠이 의도치 않게 동작하지 않게.
@@ -493,6 +583,22 @@ namespace OsuEnlightenOverlay.ControlPanel
             };
             statusSync.Start();
             this.FormClosed += (s, e) => { statusSync.Stop(); statusSync.Dispose(); };
+        }
+
+        AbSlider MakeAimSlider(int x, int y, int width, float min, float max, float value, int decimals, Action<float> onChanged)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) value = min;
+            value = Math.Max(min, Math.Min(max, value));
+            AbSlider sl = new AbSlider();
+            sl.Location = new Point(x, y);
+            sl.Width = width;
+            sl.Height = 22;
+            sl.DecimalPlaces = decimals;
+            sl.Minimum = min;
+            sl.Maximum = max;
+            sl.Value = value;
+            sl.ValueChanged += (s, e) => onChanged(sl.Value);
+            return sl;
         }
 
         /// <summary>
