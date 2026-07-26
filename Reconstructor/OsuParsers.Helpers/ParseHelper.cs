@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
@@ -22,11 +21,11 @@ internal static class ParseHelper
 	{
 		return c switch
 		{
-			'C' => CurveType.Catmull, 
-			'B' => CurveType.Bezier, 
-			'L' => CurveType.Linear, 
-			'P' => CurveType.PerfectCurve, 
-			_ => CurveType.PerfectCurve, 
+			'C' => CurveType.Catmull,
+			'B' => CurveType.Bezier,
+			'L' => CurveType.Linear,
+			'P' => CurveType.PerfectCurve,
+			_ => CurveType.PerfectCurve,
 		};
 	}
 
@@ -44,13 +43,6 @@ internal static class ParseHelper
 			}
 		}
 		return list;
-	}
-
-	public static Color ParseColour(string line)
-	{
-		int[] array = (from c in line.Split(',')
-			select Convert.ToInt32(c)).ToArray();
-		return Color.FromArgb((array.Length == 4) ? array[3] : 255, array[0], array[1], array[2]);
 	}
 
 	public static bool IsLineValid(string line, FileSections currentSection)
@@ -73,9 +65,7 @@ internal static class ParseHelper
 		case FileSections.Colours:
 		case FileSections.CatchTheBeat:
 			if (line.Contains(','))
-			{
 				return line.Contains(':');
-			}
 			return false;
 		default:
 			return false;
@@ -85,9 +75,7 @@ internal static class ParseHelper
 	public static bool ToBool(this string value)
 	{
 		if (!(value == "1"))
-		{
 			return value.ToLower() == "true";
-		}
 		return true;
 	}
 

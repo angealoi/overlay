@@ -27,12 +27,6 @@ namespace AimAssistPlugin.Services;
 /// </summary>
 public class AimAssistService
 {
-	public static float Power
-	{
-		get => AimAssistSettings.Strength;
-		set => AimAssistSettings.Strength = value;
-	}
-
 	private static readonly Vector2 monitorOffsets = GameField.CalculateScreenOffset();
 
 	private static float hitObjectRadius;

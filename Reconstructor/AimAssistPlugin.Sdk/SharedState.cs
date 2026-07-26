@@ -139,9 +139,6 @@ public static class SharedStateLayout
             Offset = offset;
             Capacity = capacity;
         }
-
-        /// <summary>문자열 영역 기준 offset이 아닌 MMF 시작 기준 절대 offset.</summary>
-        public int AbsoluteOffset => StringAreaOffset + Offset;
     }
 }
 
