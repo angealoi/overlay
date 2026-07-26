@@ -89,6 +89,11 @@
     <Compile Include="Gameplay\HitObjects\SpinnerOsu.cs" />
     <Compile Include="Gameplay\Scoring\HitBurst.cs" />
     <Compile Include="Gameplay\Cursor\CursorRenderer.cs" />
+    <Compile Include="Gameplay\AimAssist\AimAssistService.cs" />
+    <Compile Include="Gameplay\AimAssist\AimAssistSettings.cs" />
+    <Compile Include="Gameplay\AimAssist\MouseAimAssist.cs" />
+    <Compile Include="Input\MouseInput.cs" />
+    <Compile Include="Input\MouseHook.cs" />
     <Compile Include="Rendering\FontRenderer.cs" />
     <Compile Include="Rendering\HudRenderer.cs" />
     <Compile Include="Skinning\SkinManager.cs" />
