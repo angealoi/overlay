@@ -206,12 +206,29 @@ namespace OsuEnlightenOverlay.Memory
             // HOM 캐시
             foundPlayerHomOff = -1;
             foundHomListOff = -1;
+            offsetsFromAob = false;
+            playerHomFromAob = false;
+            offsetsFromSeed = false;
+            preferredPlayerHomOff = -1;
+            preferredHomListOff = -1;
+            countAnomalyStreak = 0;
             cachedHoStartTimes = null;
             cachedHoEndTimes = null;
             cachedHoCount = 0;
             cachedMaxDuration = 0;
             hoCacheReady = false;
             lastBeatmapObj = IntPtr.Zero;
+            longObjectIndices.Clear();
+            lastHomLogTag = null;
+            lastHomLogTicks = 0;
+            lastHomAliveTicks = 0;
+            lastGoodJudgements.Clear();
+            lastGoodJudgementsTicks = 0;
+            fieldSuspectZeroSinceTicks = 0;
+            fieldSuspectLogged = false;
+            homAobRescanDone = false;
+            homAobRescanAttempts = 0;
+            lastHomAobRescanTicks = 0;
 
             // .osu 파싱/주입 캐시
             parsedHitObjects.Clear();
@@ -250,11 +267,20 @@ namespace OsuEnlightenOverlay.Memory
             var beatmap = new AobScanRequest(Signatures.CurrentBeatmap.Pattern, false);
             var ruleset = new AobScanRequest(Signatures.Ruleset.Pattern, false);
             var player = new AobScanRequest(Signatures.PlayerInstance.Pattern, false);
+            var playerHom15 = new AobScanRequest(Signatures.PlayerHomField.Pattern, true);
+            var playerHom0D = new AobScanRequest(Signatures.PlayerHomFieldEcx.Pattern, true);
+            var playerHom05 = new AobScanRequest(Signatures.PlayerHomFieldEax.Pattern, true);
+            var playerHom35 = new AobScanRequest(Signatures.PlayerHomFieldEsi.Pattern, true);
+            var playerHomA1 = new AobScanRequest(Signatures.PlayerHomFieldA1.Pattern, true);
             var config = new AobScanRequest(Signatures.ConfigDictionary.Pattern, false);
             // 커서는 JIT가 여러 코드 사이트에 같은 코드를 방출하므로 전체 매치가 필요
             var cursor = new AobScanRequest(Signatures.CursorXY.Pattern, true);
 
-            AobScanner.ScanBatch(pm, new[] { time, mode, mods, beatmap, ruleset, player, config, cursor });
+            AobScanner.ScanBatch(pm, new[] {
+                time, mode, mods, beatmap, ruleset, player,
+                playerHom15, playerHom0D, playerHom05, playerHom35, playerHomA1,
+                config, cursor
+            });
 
             timeSlot = ResolveVerifiedSlot(Signatures.AudioEngineTime, time, IsPlausibleTimeSlot, "AudioEngine.Time");
             if (timeSlot == IntPtr.Zero)
@@ -277,10 +303,120 @@ namespace OsuEnlightenOverlay.Memory
             ApplyCursorScan(cursor);
             if (player.First != IntPtr.Zero)
                 pm.ReadPointer(player.First + Signatures.PlayerInstance.OperandSkip, out playerInstanceSlot);
+            ApplyHomFieldAob(playerHom15, playerHom0D, playerHom05, playerHom35, playerHomA1);
             resolution.ApplyScan(config);
 
             staticSlotsReady = timeSlot != IntPtr.Zero; // G3: 완전 스캔 성공 표식
             return staticSlotsReady;
+        }
+
+        /// <summary>
+        /// Player→HOM 필드 오프셋만 JIT AOB 로 해석. list 는 AOB 하지 않음
+        /// (measured 0x48 / DetectHomOffsets 휴리스틱).
+        /// Play 전엔 JIT 미생성으로 실패할 수 있음 — RescanHomFieldAobInPlay 재시도.
+        /// </summary>
+        void ApplyHomFieldAob(
+            AobScanRequest req15, AobScanRequest req0D, AobScanRequest req05,
+            AobScanRequest req35, AobScanRequest reqA1)
+        {
+            int prevHom = foundPlayerHomOff;
+            int prevList = foundHomListOff;
+            bool prevFromAob = offsetsFromAob;
+            bool prevPlayerHomAob = playerHomFromAob;
+
+            offsetsFromAob = false;
+            playerHomFromAob = false;
+
+            if (playerInstanceSlot == IntPtr.Zero)
+                return;
+
+            var homVotes = new Dictionary<int, int>();
+
+            void VotePlayerHom(AobScanRequest req, AobSignature sig, int slotOperandOff)
+            {
+                if (req == null) return;
+                foreach (IntPtr match in req.Results)
+                {
+                    IntPtr slot;
+                    if (!pm.ReadPointer(match + slotOperandOff, out slot) || slot != playerInstanceSlot)
+                        continue;
+                    if (slotOperandOff == 2)
+                    {
+                        byte modrm;
+                        if (!pm.ReadByte(match + 1, out modrm) || !IsModRmAbsDisp32(modrm))
+                            continue;
+                    }
+                    int disp = AobScanner.ResolveDisp8At(pm, sig, match);
+                    if (disp < 0x04 || disp > 0x1FC || (disp & 3) != 0)
+                        continue;
+                    int n;
+                    homVotes.TryGetValue(disp, out n);
+                    homVotes[disp] = n + 1;
+                }
+            }
+
+            VotePlayerHom(req15, Signatures.PlayerHomField, 2);
+            VotePlayerHom(req0D, Signatures.PlayerHomFieldEcx, 2);
+            VotePlayerHom(req05, Signatures.PlayerHomFieldEax, 2);
+            VotePlayerHom(req35, Signatures.PlayerHomFieldEsi, 2);
+            VotePlayerHom(reqA1, Signatures.PlayerHomFieldA1, 1);
+
+            int bestHom = -1, bestHomVotes = 0;
+            foreach (var kv in homVotes)
+            {
+                if (kv.Value > bestHomVotes)
+                {
+                    bestHomVotes = kv.Value;
+                    bestHom = kv.Key;
+                }
+            }
+            if (bestHom >= 0)
+            {
+                if (homVotes.ContainsKey(0x44) && homVotes[0x44] == bestHomVotes)
+                    bestHom = 0x44;
+                else if (homVotes.ContainsKey(Offsets.Player_HitObjectManager)
+                         && homVotes[Offsets.Player_HitObjectManager] == bestHomVotes)
+                    bestHom = Offsets.Player_HitObjectManager;
+            }
+
+            if (bestHom < 0)
+            {
+                foundPlayerHomOff = prevHom;
+                foundHomListOff = prevList;
+                offsetsFromAob = prevFromAob;
+                playerHomFromAob = prevPlayerHomAob;
+                return;
+            }
+
+            foundPlayerHomOff = bestHom;
+            playerHomFromAob = true;
+            // list AOB 폐기 — DetectHomOffsets 가 measured 0x48 / heuristic 으로 채움
+            foundHomListOff = prevList;
+            offsetsFromAob = false;
+        }
+
+        static bool IsModRmAbsDisp32(byte modrm)
+        {
+            return (modrm & 0xC7) == 0x05;
+        }
+
+        /// <summary>
+        /// Play 중 JIT 생성된 뒤 Player→HOM AOB 재스캔 (기동 시 실패 보완).
+        /// </summary>
+        void RescanHomFieldAobInPlay()
+        {
+            if (playerInstanceSlot == IntPtr.Zero)
+                return;
+
+            var playerHom15 = new AobScanRequest(Signatures.PlayerHomField.Pattern, true);
+            var playerHom0D = new AobScanRequest(Signatures.PlayerHomFieldEcx.Pattern, true);
+            var playerHom05 = new AobScanRequest(Signatures.PlayerHomFieldEax.Pattern, true);
+            var playerHom35 = new AobScanRequest(Signatures.PlayerHomFieldEsi.Pattern, true);
+            var playerHomA1 = new AobScanRequest(Signatures.PlayerHomFieldA1.Pattern, true);
+            AobScanner.ScanBatch(pm, new[] {
+                playerHom15, playerHom0D, playerHom05, playerHom35, playerHomA1
+            });
+            ApplyHomFieldAob(playerHom15, playerHom0D, playerHom05, playerHom35, playerHomA1);
         }
 
         // ── E2: AOB slot 검증 (time/mode/mods) ──
@@ -546,6 +682,56 @@ namespace OsuEnlightenOverlay.Memory
                 score.Refresh();
             else
                 score.Clear();
+
+            TryHomPlayAobRescan();
+        }
+
+        // Play 중 Player→HOM AOB 재스캔 (기동 시 JIT 미생성 보완)
+        bool homAobRescanDone;
+        int homAobRescanAttempts;
+        long lastHomAobRescanTicks;
+        const int MaxHomAobRescanAttempts = 5;
+        static readonly long HomAobRescanIntervalTicks = TimeSpan.TicksPerSecond * 2;
+
+        void TryHomPlayAobRescan()
+        {
+            if (playerHomFromAob)
+            {
+                homAobRescanDone = true;
+                return;
+            }
+            if (homAobRescanDone)
+                return;
+            if (Mode != Offsets.Mode_Play)
+                return;
+            if (playerInstanceSlot == IntPtr.Zero)
+                return;
+            if (TimeMs < 2500)
+                return;
+
+            long now = DateTime.UtcNow.Ticks;
+            if (lastHomAobRescanTicks != 0
+                && now - lastHomAobRescanTicks < HomAobRescanIntervalTicks)
+                return;
+            lastHomAobRescanTicks = now;
+
+            try
+            {
+                RescanHomFieldAobInPlay();
+            }
+            catch
+            {
+            }
+
+            if (playerHomFromAob)
+            {
+                homAobRescanDone = true;
+                return;
+            }
+
+            homAobRescanAttempts++;
+            if (homAobRescanAttempts >= MaxHomAobRescanAttempts)
+                homAobRescanDone = true;
         }
 
         void RefreshCursor()
@@ -735,21 +921,96 @@ namespace OsuEnlightenOverlay.Memory
 
         IntPtr playerInstanceSlot = IntPtr.Zero;
 
-        // 발견된 고정 오프셋 (첫 스캔 시 자동 감지)
+        // 발견된 고정 오프셋 — AOB(우선) 또는 DetectHomOffsets 휴리스틱 / 세션 시드
         int foundPlayerHomOff = -1;
         int foundHomListOff = -1;
+        bool offsetsFromAob = false; // AOB로 둘 다 잡으면 count 이상치로 날리지 않음
+        bool playerHomFromAob = false; // Player→HOM만 AOB여도 리셋 시 유지
+        bool offsetsFromSeed = false;  // detect_ok 시드 고정 — count 이상치로 날리지 않음
+        int preferredPlayerHomOff = -1;
+        int preferredHomListOff = -1;
+        int countAnomalyStreak = 0;  // 휴리스틱 오프셋의 count>osu+32 연속 프레임
+        const int CountAnomalyResetFrames = 45;
+        // 긴 객체는 longObjectIndices 로만 보완 — StartTime 창을 duration 만큼 넓히지 않음
+        // (30s 캡이어도 고밀도 구간에서 win=300+ → isHit 창이 오염됨: 실측 16:48:27)
 
         // HitObject StartTime/EndTime 배열 캐시 (맵 로드 시 1회). StartTime/EndTime은 GC-불변이므로 안전.
-        // 포인터(cachedHoPtrs)는 GC compaction으로 이동하므로 캐싱하지 않고 매 프레임 재읽기.
-        // EndTime도 캐싱 — 스피너처럼 긴 지속시간 객체는 StartTime이 과거여도 진행 중일 수 있어
-        // 시간 창이 StartTime이 아닌 EndTime 기준으로 판단해야 함.
         int[] cachedHoStartTimes = null;
         int[] cachedHoEndTimes = null;
         int cachedHoCount = 0;
-        int cachedMaxDuration = 0; // 캐싱된 객체 중 최대 지속시간 (EndTime - StartTime)
-        // 맵 로드 시 오프셋 + StartTime 캐싱 완료 여부 (포인터는 매 프레임 읽음)
+        int cachedMaxDuration = 0;
         bool hoCacheReady = false;
         IntPtr lastBeatmapObj = IntPtr.Zero;
+        // 긴 객체(슬라이더/스피너) 인덱스 — StartTime 창 밖에 있어도 EndTime 기준 활성 시 읽음
+        readonly List<int> longObjectIndices = new List<int>(64);
+        readonly List<int> reusedReadIndices = new List<int>(128);
+        const int LongObjectMinDurationMs = 2000;
+
+        // Step2: 전환 공백 — 마지막 성공 스냅샷 (500ms 이내 재사용)
+        readonly List<HitObjectJudgement> lastGoodJudgements = new List<HitObjectJudgement>(64);
+        long lastGoodJudgementsTicks = 0;
+        static readonly long StaleReuseMaxTicks = TimeSpan.TicksPerMillisecond * 500;
+
+        // Step4: 판정 필드 의심 — win>=1 & isHit=0 연속 10초
+        long fieldSuspectZeroSinceTicks = 0;
+        bool fieldSuspectLogged = false;
+        static readonly long FieldSuspectTicks = TimeSpan.TicksPerSecond * 10;
+
+        // Phase0: early-return 원인 로그 (태그당 rate-limit)
+        string lastHomLogTag = null;
+        long lastHomLogTicks = 0;
+        static readonly long HomLogIntervalTicks = TimeSpan.TicksPerMillisecond * 500;
+        long lastHomAliveTicks = 0;
+        static readonly long HomAliveIntervalTicks = TimeSpan.TicksPerSecond * 2;
+
+        void LogHom(string tag, int hitCount = -1, int osuCount = -1)
+        {
+            long now = DateTime.UtcNow.Ticks;
+            if (tag == lastHomLogTag && now - lastHomLogTicks < HomLogIntervalTicks)
+                return;
+            lastHomLogTag = tag;
+            lastHomLogTicks = now;
+            Console.WriteLine("[HOM] " + tag
+                + " off=" + (foundPlayerHomOff < 0 ? "-" : "0x" + foundPlayerHomOff.ToString("X"))
+                + "/" + (foundHomListOff < 0 ? "-" : "0x" + foundHomListOff.ToString("X"))
+                + (offsetsFromAob ? " aob" : offsetsFromSeed ? " seed" : "")
+                + (hitCount >= 0 ? " hit=" + hitCount : "")
+                + (osuCount >= 0 ? " osu=" + osuCount : ""));
+        }
+
+        /// <summary>
+        /// early-return 시 Play 중 500ms 이내 마지막 성공 스냅샷을 돌려 Arm 엣지 놓침을 완화.
+        /// </summary>
+        List<HitObjectJudgement> ReturnStaleOrEmpty(string tag, int hitCount = -1, int osuCount = -1)
+        {
+            LogHom(tag, hitCount, osuCount);
+            if (Mode == Offsets.Mode_Play && lastGoodJudgements.Count > 0
+                && DateTime.UtcNow.Ticks - lastGoodJudgementsTicks < StaleReuseMaxTicks)
+            {
+                LogHom("stale_reuse");
+                reusedJudgements.Clear();
+                reusedJudgements.AddRange(lastGoodJudgements);
+                return reusedJudgements;
+            }
+            return reusedJudgements;
+        }
+
+        void SaveGoodJudgements(List<HitObjectJudgement> src)
+        {
+            lastGoodJudgements.Clear();
+            for (int i = 0; i < src.Count; i++)
+                lastGoodJudgements.Add(src[i]);
+            lastGoodJudgementsTicks = DateTime.UtcNow.Ticks;
+        }
+
+        void LockHomSeed(int playerOff, int listOff, string how)
+        {
+            preferredPlayerHomOff = playerOff;
+            preferredHomListOff = listOff;
+            offsetsFromSeed = true;
+            Console.WriteLine("[HOM] seed_lock 0x" + playerOff.ToString("X")
+                + "/0x" + listOff.ToString("X") + " (" + how + ")");
+        }
 
         // .osu 파일 파싱 결과 (검증용)
         class OsuHitObject
@@ -763,16 +1024,14 @@ namespace OsuEnlightenOverlay.Memory
 
         // OverlayForm 주입 .osu StartTime 목록 (HOM 교차검증용).
         // reader 자체 파싱(ParseOsuFile)보다 신뢰성 높음 — OverlayForm이 이미 파싱한 결과 재사용.
-        // mapKey 변경 시 foundPlayerHomOff를 -1로 무효화하여 오프셋 재감지 트리거.
         List<int> parsedStartTimes = new List<int>();
         List<int> parsedTypes = new List<int>(); // OverlayForm 주입 .osu Type 목록 (type & 0xF)
         string parsedOsuKey = null;
 
         /// <summary>
         /// OverlayForm이 맵 파싱 후 호출 — .osu 교차검증용 StartTime + Type 목록 주입.
-        /// reader 자체 파식(ParseOsuFile)보다 신뢰성 높음 (OverlayForm이 이미 파싱한 결과 재사용).
         /// mapKey 가 바뀌면 검증 데이터만 갱신한다 — HOM 오프셋은 PID 가 같은 한 불변이므로
-        /// 여기서 날리지 않는다. (맵 전환 감지는 ReadHitObjectJudgements 의 캐시 무결성 체크가 담당.)
+        /// 여기서 날리지 않는다.
         /// </summary>
         public void SetParsedStartTimes(List<int> startTimes, List<int> types, string mapKey)
         {
@@ -835,7 +1094,6 @@ namespace OsuEnlightenOverlay.Memory
                     int ty = type & 0xF;
                     int repeatCount = 1;
                     // 슬라이더(type&0xF==2)면 repeatCount 파싱: parts[6]이 slides
-                    // 슬라이더 줄: x,y,time,type,sound,curve|...,slides,length,...
                     if (ty == 2 && parts.Length > 6)
                     {
                         int slides;
@@ -849,8 +1107,7 @@ namespace OsuEnlightenOverlay.Memory
             catch { }
         }
 
-        // .osu 파싱 결과로부터 예상 HOM count 계산
-        // circle: 1개, slider: 1 + repeatCount개, spinner: 1개
+        // .osu 파싱 결과로부터 예상 HOM count (슬라이더 repeat 확장) — fallback 검증 참고용
         int CalcExpectedHomCount()
         {
             if (parsedHitObjects.Count == 0) return 0;
@@ -859,10 +1116,35 @@ namespace OsuEnlightenOverlay.Memory
             {
                 if (ho.Type == 2) // slider
                     total += 1 + ho.RepeatCount;
-                else // circle, spinner
+                else
                     total += 1;
             }
             return total;
+        }
+
+        int GetOsuVerifyCount()
+        {
+            if (parsedStartTimes.Count > 0) return parsedStartTimes.Count;
+            return parsedHitObjects.Count;
+        }
+
+        bool TryGetOsuVerifyAt(int index, out int startTime, out int type)
+        {
+            startTime = -1;
+            type = -1;
+            if (parsedStartTimes.Count > index)
+            {
+                startTime = parsedStartTimes[index];
+                type = parsedTypes.Count > index ? parsedTypes[index] : -1;
+                return true;
+            }
+            if (parsedHitObjects.Count > index)
+            {
+                startTime = parsedHitObjects[index].StartTime;
+                type = parsedHitObjects[index].Type;
+                return true;
+            }
+            return false;
         }
 
         // HOM 오프셋 탐색용 블록 읽기 버퍼 (D2) — 매 프레임 할당 방지
@@ -871,8 +1153,6 @@ namespace OsuEnlightenOverlay.Memory
 
         /// <summary>
         /// 블록 버퍼가 유효하면 거기서, 아니면 개별 syscall로 포인터를 읽는다.
-        /// ReadBytes는 범위 안에 못 읽는 페이지가 하나라도 있으면 통째로 실패하므로,
-        /// 블록 읽기가 실패한 경우에도 예전과 같은 결과가 나오도록 폴백을 둔다.
         /// </summary>
         bool ReadPtrCached(byte[] buf, bool bufValid, IntPtr baseAddr, int off, out IntPtr val)
         {
@@ -884,27 +1164,141 @@ namespace OsuEnlightenOverlay.Memory
             return pm.ReadPointer(baseAddr + off, out val);
         }
 
-        // HOM 오프셋 자동 감지 (Player.Instance → HOM → hitObjects List)
+        /// <summary>
+        /// items[0..n) 의 StartTime/Type 이 .osu 앞 n개와 일치하는지.
+        /// </summary>
+        bool VerifyHomItemsPrefix(IntPtr items, int count, int prefixLen)
+        {
+            int osuCount = GetOsuVerifyCount();
+            if (osuCount <= 0) return true; // 검증 데이터 없으면 스킵(탐지 자체는 count로)
+            int n = Math.Min(prefixLen, Math.Min(count, osuCount));
+            if (n < 1) return false;
+
+            for (int i = 0; i < n; i++)
+            {
+                int osuSt, osuTy;
+                if (!TryGetOsuVerifyAt(i, out osuSt, out osuTy)) return false;
+
+                IntPtr ho;
+                if (!pm.ReadPointer(items + 0x08 + i * 4, out ho)) return false;
+                if (!LooksLikeHeapPtr((uint)ho.ToInt32())) return false;
+
+                int st, et, ty;
+                if (!pm.ReadInt32(ho + 0x10, out st)) return false;
+                if (!pm.ReadInt32(ho + 0x14, out et)) return false;
+                if (!pm.ReadInt32(ho + 0x18, out ty)) return false;
+
+                if (st < 0 || st > 3600000) return false;
+                if (et < st || et > 3600000) return false;
+                if (ty == 0) return false;
+                if (osuSt >= 0 && st != osuSt) return false;
+                if (osuTy >= 0 && (ty & 0x0B) != (osuTy & 0x0B)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 주어진 Player→HOM / HOM→list 오프셋이 .osu 와 맞는지 검증.
+        /// </summary>
+        bool TryVerifyHomAt(IntPtr playerObj, int playerOff, int listOff, out int count)
+        {
+            count = 0;
+            IntPtr homCand;
+            if (!pm.ReadPointer(playerObj + playerOff, out homCand)) return false;
+            if (!LooksLikeHeapPtr((uint)homCand.ToInt32())) return false;
+
+            IntPtr listCand;
+            if (!pm.ReadPointer(homCand + listOff, out listCand)) return false;
+            if (!LooksLikeHeapPtr((uint)listCand.ToInt32())) return false;
+
+            IntPtr items;
+            if (!pm.ReadPointer(listCand + 0x04, out items)) return false;
+            if (!LooksLikeHeapPtr((uint)items.ToInt32())) return false;
+
+            if (!pm.ReadInt32(listCand + 0x10, out count) || count < 1) return false;
+
+            int osuCount = GetOsuVerifyCount();
+            int expectedExpanded = CalcExpectedHomCount();
+            bool countOk = osuCount <= 0
+                || Math.Abs(count - osuCount) <= 2
+                || (expectedExpanded > 0 && Math.Abs(count - expectedExpanded) <= 2);
+            if (!countOk) return false;
+
+            return VerifyHomItemsPrefix(items, count, Math.Min(3, count));
+        }
+
+        // HOM 오프셋 자동 감지 (AOB 실패 시 fallback). 시드 → 실측 상수 → 전수 스캔.
         bool DetectHomOffsets(IntPtr playerObj)
         {
             if (playerObj == IntPtr.Zero) return false;
 
-            // .osu 검증 데이터 — parsedStartTimes(OverlayForm 주입) 우선, parsedHitObjects(자체 파싱) 폴백
-            int osuCount = parsedStartTimes.Count > 0 ? parsedStartTimes.Count : parsedHitObjects.Count;
-            int osuSt0 = parsedStartTimes.Count > 0 ? parsedStartTimes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].StartTime : -1);
-            int osuTy0 = parsedTypes.Count > 0 ? parsedTypes[0] : (parsedHitObjects.Count > 0 ? parsedHitObjects[0].Type : -1);
+            int osuCount = GetOsuVerifyCount();
+            int expectedExpanded = CalcExpectedHomCount();
 
-            // Player 객체의 후보 슬롯 범위를 한 번에 읽는다 — 예전에는 오프셋마다 syscall이라
-            // 미검출 동안 프레임당 127 + (후보수 × 40)번의 ReadProcessMemory가 돌았다 (D2).
+            // 이미 잡힌 오프셋이 .osu 와 안 맞으면 폐기 (잘못된 AOB list 0x34 등)
+            if (foundHomListOff >= 0 && foundPlayerHomOff >= 0)
+            {
+                int c;
+                if (TryVerifyHomAt(playerObj, foundPlayerHomOff, foundHomListOff, out c))
+                    return true;
+
+                Console.WriteLine("[HOM] bad_off clear 0x" + foundPlayerHomOff.ToString("X")
+                    + "/0x" + foundHomListOff.ToString("X"));
+                if (preferredHomListOff == foundHomListOff)
+                    preferredHomListOff = -1;
+                foundHomListOff = -1;
+                offsetsFromAob = false;
+            }
+
+            // 1) 세션 시드 (이전 detect_ok)
+            if (foundHomListOff < 0)
+            {
+                if (preferredPlayerHomOff >= 0 && preferredHomListOff >= 0)
+                {
+                    int c;
+                    int pOff = foundPlayerHomOff >= 0 ? foundPlayerHomOff : preferredPlayerHomOff;
+                    if (TryVerifyHomAt(playerObj, pOff, preferredHomListOff, out c))
+                    {
+                        foundPlayerHomOff = pOff;
+                        foundHomListOff = preferredHomListOff;
+                        offsetsFromSeed = true;
+                        Console.WriteLine("[HOM] seed_hit off=0x" + foundPlayerHomOff.ToString("X")
+                            + "/0x" + foundHomListOff.ToString("X") + " count=" + c);
+                        return true;
+                    }
+                }
+
+                // 2) 실측 상수 0x44/0x48 (시드 없을 때 빠른 경로)
+                if (foundPlayerHomOff < 0 || foundPlayerHomOff == Offsets.Player_HitObjectManager_Measured)
+                {
+                    int c;
+                    int pOff = foundPlayerHomOff >= 0
+                        ? foundPlayerHomOff
+                        : Offsets.Player_HitObjectManager_Measured;
+                    if (TryVerifyHomAt(playerObj, pOff, Offsets.Hom_HitObjects_Measured, out c))
+                    {
+                        foundPlayerHomOff = pOff;
+                        foundHomListOff = Offsets.Hom_HitObjects_Measured;
+                        LockHomSeed(foundPlayerHomOff, foundHomListOff, "measured");
+                        Console.WriteLine("[HOM] detect_ok off=0x" + foundPlayerHomOff.ToString("X")
+                            + "/0x" + foundHomListOff.ToString("X") + " count=" + c);
+                        return true;
+                    }
+                }
+            }
+
+            bool playerHomFixed = foundPlayerHomOff >= 0;
+            int offStart = playerHomFixed ? foundPlayerHomOff : 0x04;
+            int offEnd = playerHomFixed ? foundPlayerHomOff : 0x1FC;
+
             bool playerBufOk = pm.ReadBytes(playerObj, homPlayerBuf, homPlayerBuf.Length);
 
-            for (int off = 0x04; off <= 0x1FC; off += 4)
+            for (int off = offStart; off <= offEnd; off += 4)
             {
                 IntPtr homCand;
                 if (!ReadPtrCached(homPlayerBuf, playerBufOk, playerObj, off, out homCand)) continue;
                 if (!LooksLikeHeapPtr((uint)homCand.ToInt32())) continue;
 
-                // 후보 객체의 리스트 슬롯 범위도 한 번에
                 bool candBufOk = pm.ReadBytes(homCand, homCandBuf, homCandBuf.Length);
 
                 for (int listOff = 0x04; listOff <= 0xA0; listOff += 4)
@@ -921,150 +1315,119 @@ namespace OsuEnlightenOverlay.Memory
                     if (!pm.ReadInt32(listCand + 0x10, out count)) continue;
                     if (count < 1) continue;
 
-                    // count 검증: .osu 객체 수와 ±2 허용 (내부 객체 1~2개 차이 가능)
-                    if (Math.Abs(count - osuCount) > 2)
+                    bool countOk = osuCount <= 0
+                        || Math.Abs(count - osuCount) <= 2
+                        || (expectedExpanded > 0 && Math.Abs(count - expectedExpanded) <= 2);
+                    if (!countOk) continue;
+
+                    int prefix = Math.Min(3, count);
+                    if (!VerifyHomItemsPrefix(items, count, prefix))
                         continue;
 
-                    // 첫 HitObject 검증 — StartTime + Type 일치
-                    IntPtr ho0;
-                    if (!pm.ReadPointer(items + 0x08, out ho0)) continue;
-                    if (!LooksLikeHeapPtr((uint)ho0.ToInt32())) continue;
-
-                    int st0, et0, ty0;
-                    if (!pm.ReadInt32(ho0 + 0x10, out st0)) continue;
-                    if (!pm.ReadInt32(ho0 + 0x14, out et0)) continue;
-                    if (!pm.ReadInt32(ho0 + 0x18, out ty0)) continue;
-
-                    if (st0 < 0 || st0 > 3600000) continue;
-                    if (et0 < st0 || et0 > 3600000) continue;
-                    if (ty0 == 0) continue;
-                    if (osuSt0 >= 0 && st0 != osuSt0) continue;
-                    // Type 검증 — NewCombo(4) 비트 제외하고 circle/slider/spinner 비트만 비교
-                    // osu!가 HOM에 객체를 넣을 때 NewCombo 비트를 추가할 수 있음
-                    if (osuTy0 >= 0 && (ty0 & 0x0B) != (osuTy0 & 0x0B)) continue;
-
-                    // count + 첫 객체 StartTime + Type 일치 → HOM 확정
                     foundPlayerHomOff = off;
                     foundHomListOff = listOff;
+                    LockHomSeed(off, listOff, "heuristic");
+                    Console.WriteLine("[HOM] detect_ok off=0x" + off.ToString("X")
+                        + "/0x" + listOff.ToString("X") + " count=" + count);
                     return true;
                 }
+
+                if (playerHomFixed) break;
             }
             return false;
         }
 
         /// <summary>
         /// HitObject 리스트에서 판정 데이터 읽기.
-        /// 맵 로드 시 1회: HOM → List → 포인터 + StartTime 캐싱.
-        /// 매 프레임: 캐싱된 포인터에서 시간 범위 내 객체만 IsHit/ScoreValue 읽기.
         /// </summary>
         public List<HitObjectJudgement> ReadHitObjectJudgements(int maxCount, int timeRangeMs = 0)
         {
-            // 재사용 리스트 — Clear만 하고 새 할당 없음
             reusedJudgements.Clear();
             List<HitObjectJudgement> result = reusedJudgements;
 
-            // 맵 변경 감지 — Beatmap 객체 주소만 비교 (매 프레임 ReadPointer 1번)
             IntPtr beatmapObj;
             if (!pm.ReadPointer(beatmapStaticAddr, out beatmapObj) || beatmapObj == IntPtr.Zero)
-            {
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_beatmap");
 
-            // Beatmap 객체 주소가 바뀌면 맵 전환 또는 GC compaction 으로 객체가 이동한 것.
-            // ★ 핵심: 오프셋(foundPlayerHomOff)은 Player/HOM 의 "클래스 필드 레이아웃" 이고,
-            // 이것은 PID 가 같은 한 절대 변하지 않는다 — 맵이 바뀌어도, GC 가 돌아도.
-            // 따라서 여기서 오프셋을 리셋하면 안 된다. StartTime 캐시도 downstream 의 내용 검증
-            // (hitCount 불일치 / 첫 객체 StartTime 불일치) 으로 무효화를 미룬다 — GC 로 인해
-            // 같은 맵이 조금 이동한 것뿐이라면 캐시를 그대로 써서 긴 맵 재빌드 비용을 피한다.
             if (beatmapObj != lastBeatmapObj)
             {
                 lastBeatmapObj = beatmapObj;
-
-                // .osu 파일 파싱 (맵 변경 시 1회) — 주입된 parsedStartTimes의 보조 폴백.
-                // GC 로 인한 가짜 전환일 땐 osuPath 가 같으므로 재파싱 비용 0.
+                // 맵 전환 — 이전 곡 판정 스냅샷이 새 맵에 흘러가지 않게
+                lastGoodJudgements.Clear();
+                lastGoodJudgementsTicks = 0;
                 string osuPath = GetOsuFilePathFromBeatmap(beatmapObj);
                 if (osuPath != null && osuPath != parsedOsuPath)
                     ParseOsuFile(osuPath);
             }
 
-            // === 단일 흐름: 매 프레임 동일 경로. GC compaction 후에도 자가 복구. ===
-            // 핵심: foundPlayerHomOff < 0 일 때마다 DetectHomOffsets 재시도 (hoCacheReady와 무관).
-
             if (playerInstanceSlot == IntPtr.Zero)
-            {
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_player_slot");
 
             IntPtr playerObj;
             if (!pm.ReadPointer(playerInstanceSlot, out playerObj) || !LooksLikeHeapPtr((uint)playerObj.ToInt32()))
-            {
-                // ★ 오프셋 유지 — Player 가 없다고 HOM 필드 위치(Player 레이아웃)가 바뀌진 않는다.
-                // 다음 프레임에 Player 가 생기면 같은 오프셋으로 O(1) 복구.
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_player");
 
-            // 오프셋 미감지 시 매 프레임 재시도 (초기 진입 / GC 후 무효화 / 일시적 실패 후 자가 복구)
-            if (foundPlayerHomOff < 0)
-            {
-                if (!DetectHomOffsets(playerObj))
-                    return result; // 다음 프레임 다시 시도
-            }
+            // 오프셋 미완이면 휴리스틱 (AOB가 list만 못 잡은 경우 포함)
+            // 매 프레임: 기존 off 검증 → 실패 시 클리어 후 재탐지 (잘못된 AOB 0x34 복구)
+            if (!DetectHomOffsets(playerObj))
+                return ReturnStaleOrEmpty("detect_fail");
 
-            // 매 프레임 오프셋 체인 재읽기 — CLR이 GC 시 참조를 갱신하므로 항상 fresh 주소 획득.
-            // ★ 오프셋은 절대 여기서 날리지 않는다 — GC compaction 은 객체 주소만 옮길 뿐,
-            // Player/HOM/List 의 필드 레이아웃(클래스 정의)은 세션 내 불변이다. 포인터만
-            // 잠깐 invalid 일 뿐이므로 빈 반환 후 다음 프레임에 새 주소로 자연 복구된다.
             IntPtr hom;
             if (!pm.ReadPointer(playerObj + foundPlayerHomOff, out hom) || !LooksLikeHeapPtr((uint)hom.ToInt32()))
-            {
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_hom_ptr");
 
             IntPtr listObj;
             if (!pm.ReadPointer(hom + foundHomListOff, out listObj) || !LooksLikeHeapPtr((uint)listObj.ToInt32()))
-            {
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_list");
 
             IntPtr itemsArr;
             if (!pm.ReadPointer(listObj + 0x04, out itemsArr) || !LooksLikeHeapPtr((uint)itemsArr.ToInt32()))
-            {
-                return result;
-            }
+                return ReturnStaleOrEmpty("no_items");
 
             int hitCount;
             if (!pm.ReadInt32(listObj + 0x10, out hitCount) || hitCount <= 0)
-            {
-                // ★ retry 직후 새 HOM 은 아직 hitObjects 를 채우지 않아 count==0 이다.
-                // 오프셋은 맞으므로(레이아웃 불변) 유지 — osu!가 채우면 다음 프레임 정상 복구.
-                return result;
-            }
-            // .osu 객체 수와 비교 — 한 번 확정된 오프셋은 관대하게(불일치가 극단적일 때만 무효화).
-            // osuCount 보다 크게 많으면 잘못된 객체를 HOM 으로 오인한 것일 수 있으므로 그때만 리셋.
-            int osuCount = parsedStartTimes.Count > 0 ? parsedStartTimes.Count : parsedHitObjects.Count;
+                return ReturnStaleOrEmpty("count0", hitCount, GetOsuVerifyCount());
+
+            int osuCount = GetOsuVerifyCount();
             if (osuCount > 0 && hitCount > osuCount + 32)
             {
-                // mem count 가 osu count 보다 훨씬 크면 진짜 HOM 이 아니라 다른 List(capacity 등)일 가능성.
-                // 이때만 오프셋을 버린다.
-                foundPlayerHomOff = -1;
-                foundHomListOff = -1;
+                // AOB/시드 오프셋은 레이아웃 불변 — 날리지 않음
+                if (offsetsFromAob || offsetsFromSeed)
+                {
+                    LogHom("count_anomaly_aob_keep", hitCount, osuCount);
+                    return result;
+                }
+
+                countAnomalyStreak++;
+                if (countAnomalyStreak >= CountAnomalyResetFrames)
+                {
+                    if (!playerHomFromAob)
+                        foundPlayerHomOff = -1;
+                    foundHomListOff = -1;
+                    countAnomalyStreak = 0;
+                    hoCacheReady = false;
+                    cachedHoStartTimes = null;
+                    cachedHoEndTimes = null;
+                    cachedHoCount = 0;
+                    longObjectIndices.Clear();
+                    LogHom("count_reset", hitCount, osuCount);
+                }
+                else
+                    LogHom("count_anomaly", hitCount, osuCount);
                 return result;
             }
-            // hitCount < osuCount 인 경우(retry 중 점진 채움)는 시간창 필터로 처리되므로 통과.
+            countAnomalyStreak = 0;
 
-            // 캐시 무결성 체크 — 위쪽 beatmapObj 분기에서 오프셋을 날리지 않게 바꿨으므로,
-            // 진짜 "다른 맵" 감지를 여기로 옮긴다. 같은 맵 retry 라면:
-            //   1) hitCount == cachedHoCount
-            //   2) 첫 객체 StartTime == cachedHoStartTimes[0]
-            // 둘 다 일치해야 같은 맵으로 판정. 하나라도 다르면 캐시를 버리고 재빌드.
-            // (hitCount 가 같은 다른 난이도까지 잡으려면 StartTime 비교가 필요하다.)
+            // 캐시 무결성
+            // ★ 맵 전환(1339→822)을 retry 축소로 오인하면 stale StartTime 캐시로
+            //   새 items[] 를 읽어 win>0 / isHit=0 또는 empty_read 가 난다 (실측 로그).
             if (hoCacheReady && cachedHoCount > 0)
             {
+                bool mapChanged = osuCount > 0 && Math.Abs(cachedHoCount - osuCount) > 2;
                 bool countMismatch = hitCount != cachedHoCount;
                 bool firstObjMismatch = false;
-                if (!countMismatch && hitCount > 0)
+                if (!mapChanged && !countMismatch && hitCount > 0)
                 {
-                    // 첫 객체의 현재 StartTime vs 캐시된 값. itemsArr[0] 만 읽어 비교.
                     IntPtr ho0;
                     int curSt0 = int.MinValue;
                     if (pm.ReadPointer(itemsArr + 0x08, out ho0) && ho0 != IntPtr.Zero
@@ -1073,30 +1436,60 @@ namespace OsuEnlightenOverlay.Memory
                     firstObjMismatch = curSt0 != int.MinValue && cachedHoStartTimes != null
                                        && cachedHoCount > 0 && curSt0 != cachedHoStartTimes[0];
                 }
-                if (countMismatch || firstObjMismatch)
+
+                if (mapChanged || firstObjMismatch)
                 {
                     hoCacheReady = false;
                     cachedHoStartTimes = null;
                     cachedHoEndTimes = null;
                     cachedHoCount = 0;
+                    longObjectIndices.Clear();
+                    fieldSuspectZeroSinceTicks = 0;
+                    fieldSuspectLogged = false;
+                    if (mapChanged)
+                        LogHom("cache_map_change", hitCount, osuCount);
+                }
+                else if (countMismatch && hitCount > 0 && hitCount < cachedHoCount
+                         && osuCount > 0 && Math.Abs(cachedHoCount - osuCount) <= 2)
+                {
+                    // 같은 맵 retry 점진 충전만 유지 — 첫 StartTime 이 같아야 함.
+                    // (osuCount 갱신 전 작은 맵으로 바뀌면 여기로 들어와 옛 캐시를 붙잡던 버그)
+                    IntPtr ho0;
+                    int curSt0 = int.MinValue;
+                    if (pm.ReadPointer(itemsArr + 0x08, out ho0) && ho0 != IntPtr.Zero
+                        && LooksLikeHeapPtr((uint)ho0.ToInt32()))
+                        pm.ReadInt32(ho0 + Offsets.HitObject_StartTime, out curSt0);
+                    bool sameMapRefill = curSt0 != int.MinValue && cachedHoStartTimes != null
+                                         && cachedHoCount > 0 && curSt0 == cachedHoStartTimes[0];
+                    if (!sameMapRefill)
+                    {
+                        hoCacheReady = false;
+                        cachedHoStartTimes = null;
+                        cachedHoEndTimes = null;
+                        cachedHoCount = 0;
+                        longObjectIndices.Clear();
+                    }
+                }
+                else if (countMismatch)
+                {
+                    hoCacheReady = false;
+                    cachedHoStartTimes = null;
+                    cachedHoEndTimes = null;
+                    cachedHoCount = 0;
+                    longObjectIndices.Clear();
                 }
             }
 
-            // StartTime 배열 캐싱 — 맵 로드/재감지 후 1회만 (StartTime은 GC-불변).
-            // 포인터는 매 프레임 itemsArr에서 재읽으므로 캐싱하지 않음.
-            // 주의: 맵 전체(hitCount)를 캐싱해야 시간이 흘러도 이진 탐색 창이 비지 않음.
-            //       (이전에 Math.Min(hitCount, maxCount)로 500개만 캐싱 → 콤보 진행 시 창이 비어 끊김)
             if (!hoCacheReady)
             {
-                // retry 직후 HOM 이 점진 채워지는 중일 수 있다 — hitCount 가 아직 osuCount 에
-                // 못 미치면 캐싱을 미뤄, 부분 캐시로 이진탐색 창이 잘리는 "긴 맵 끊김"을 피한다.
-                // 그 사이엔 빈 반환만 하고 다음 프레임에 hitCount 가 차면 그때 한 번에 캐싱.
+                // 부분 충전 중이고 이전 캐시도 없으면 대기 (빈 판정 폭주 방지)
                 if (osuCount > 0 && hitCount < osuCount - 2)
-                    return result;
+                    return ReturnStaleOrEmpty("partial_cache", hitCount, osuCount);
 
                 cachedHoStartTimes = new int[hitCount];
                 cachedHoEndTimes = new int[hitCount];
                 cachedHoCount = 0;
+                longObjectIndices.Clear();
                 int maxDuration = 0;
 
                 for (int i = 0; i < hitCount; i++)
@@ -1113,6 +1506,8 @@ namespace OsuEnlightenOverlay.Memory
                         cachedHoEndTimes[i] = et;
                         int dur = et - st;
                         if (dur > maxDuration) maxDuration = dur;
+                        if (dur >= LongObjectMinDurationMs)
+                            longObjectIndices.Add(i);
                     }
                     else
                     {
@@ -1122,34 +1517,40 @@ namespace OsuEnlightenOverlay.Memory
                     cachedHoCount++;
                 }
                 cachedMaxDuration = maxDuration;
-
                 hoCacheReady = true;
+
+                // Step4: 캐시 빌드 직후 첫 객체 StartTime/.osu 교차검증
+                int osuSt0, osuTy0;
+                if (cachedHoCount > 0 && cachedHoStartTimes[0] >= 0
+                    && TryGetOsuVerifyAt(0, out osuSt0, out osuTy0) && osuSt0 >= 0)
+                {
+                    if (cachedHoStartTimes[0] != osuSt0)
+                        LogHom("field_st0_mismatch", hitCount, osuCount);
+                    else
+                        Console.WriteLine("[HOM] field_sanity ok st0=" + osuSt0
+                            + " longObjs=" + longObjectIndices.Count);
+                }
             }
 
-            // 이진 탐색으로 시간 창 [idxStart, idxEnd) 산출 (cachedHoStartTimes 사용 — GC-불변)
+            // 시간 창: StartTime 은 [timeMin, timeMax] 만 (duration 확장 없음).
+            // 긴 객체는 longObjectIndices 에서 EndTime 활성인 것만 추가.
             int idxStart = 0, idxEnd = cachedHoCount;
+            int timeMin = 0, timeMax = int.MaxValue;
             if (timeRangeMs > 0)
             {
-                // 비대칭 시간 범위 — 과거는 timeRangeMs, 미래는 500ms만
-                int timeMin = TimeMs - timeRangeMs;
-                int timeMax = TimeMs + 500;
-
-                // 긴 객체(스피너/슬라이더) 예외: StartTime이 과거여도 EndTime이 현재 이후면 진행 중.
-                // cachedMaxDuration(맵에서 가장 긴 객체 지속시간)만큼 과거까지 검색해서
-                // 진행 중인 긴 객체가 빠지지 않도록 함.
-                // 실제 포함 여부는 루프에서 cachedHoEndTimes[i] >= timeMin으로 최종 판단.
-                int searchMin = timeMin - cachedMaxDuration;
+                timeMin = TimeMs - timeRangeMs;
+                timeMax = TimeMs + 500;
 
                 int lo = 0, hi = cachedHoCount;
                 while (lo < hi)
                 {
                     int mid = (lo + hi) >> 1;
-                    if (cachedHoStartTimes[mid] < searchMin)
+                    if (cachedHoStartTimes[mid] < timeMin)
                         lo = mid + 1;
                     else
                         hi = mid;
                 }
-                idxStart = Math.Max(0, lo - 5);
+                idxStart = Math.Max(0, lo - 2);
 
                 lo = 0; hi = cachedHoCount;
                 while (lo < hi)
@@ -1160,68 +1561,82 @@ namespace OsuEnlightenOverlay.Memory
                     else
                         hi = mid;
                 }
-                idxEnd = Math.Min(cachedHoCount, lo + 5);
+                idxEnd = Math.Min(cachedHoCount, lo + 2);
             }
 
-            // 배치 읽기 버퍼 — 재사용 (매 프레임 new 방지)
             byte[] hoBatch = reusedHoBatch;
+            int timeMinFilter = (timeRangeMs > 0) ? timeMin : int.MinValue;
+            int idxLimit = Math.Min(idxEnd, Math.Min(cachedHoCount, hitCount));
 
-            // 시간 창 내 객체만 — 매 프레임 itemsArr에서 포인터 재읽기 (GC-안전)
-            // cachedHoEndTimes로 이미 끝난 객체를 스킵하여 ReadProcessMemory 호출 최소화.
-            int timeMinFilter = (timeRangeMs > 0) ? (TimeMs - timeRangeMs) : int.MinValue;
-            int readCount = 0;
-            for (int i = idxStart; i < idxEnd; i++)
+            reusedReadIndices.Clear();
+            for (int i = idxStart; i < idxLimit; i++)
             {
+                if (cachedHoStartTimes[i] < 0) continue;
+                if (cachedHoEndTimes[i] < timeMinFilter) continue;
+                reusedReadIndices.Add(i);
+            }
+            // 긴 객체: StartTime 창 밖이어도 아직 진행 중이면 포함
+            if (timeRangeMs > 0)
+            {
+                for (int li = 0; li < longObjectIndices.Count; li++)
+                {
+                    int i = longObjectIndices[li];
+                    if (i < 0 || i >= cachedHoCount || i >= hitCount) continue;
+                    if (i >= idxStart && i < idxLimit) continue; // 이미 창 안
+                    int st = cachedHoStartTimes[i];
+                    int et = cachedHoEndTimes[i];
+                    if (st < 0) continue;
+                    if (et < timeMinFilter) continue; // 이미 끝
+                    if (st > timeMax) continue;       // 아직 시작 전
+                    reusedReadIndices.Add(i);
+                }
+            }
+
+            int readCount = 0;
+            for (int ri = 0; ri < reusedReadIndices.Count; ri++)
+            {
+                int i = reusedReadIndices[ri];
                 int startTimeVal = cachedHoStartTimes[i];
                 if (startTimeVal < 0) continue;
-
-                // EndTime이 timeMin 이전이면 이미 끝난 객체 — ReadProcessMemory 스킵
-                if (cachedHoEndTimes[i] < timeMinFilter) continue;
-
-                // maxCount 안전장치 — 실제 읽는 객체 수 제한
                 if (readCount >= maxCount) break;
                 readCount++;
 
-                // 매 프레임 fresh 포인터 — CLR이 GC 시 배열 내부 참조를 갱신하므로 항상 최신 위치
                 IntPtr hoPtr;
                 if (!pm.ReadPointer(itemsArr + 0x08 + i * 4, out hoPtr)) continue;
                 if (hoPtr == IntPtr.Zero) continue;
                 if (!LooksLikeHeapPtr((uint)hoPtr.ToInt32())) continue;
 
-                HitObjectJudgement j = new HitObjectJudgement(); // struct — 스택 할당, GC 없음
+                HitObjectJudgement j = new HitObjectJudgement();
                 j.StartTime = startTimeVal;
 
-                // Type을 먼저 읽기 — 0x0C바이트 (StartTime+EndTime+Type)
                 if (!pm.ReadBytes(hoPtr + 0x10, hoBatch, 0x0C)) continue;
 
-                j.EndTime = ProcessMemory.GetInt32(hoBatch, 0x04); // hoPtr+0x14
-                j.Type = ProcessMemory.GetInt32(hoBatch, 0x08);     // hoPtr+0x18
+                j.EndTime = ProcessMemory.GetInt32(hoBatch, 0x04);
+                j.Type = ProcessMemory.GetInt32(hoBatch, 0x08);
 
                 if (j.EndTime < j.StartTime || j.EndTime > 3600000) continue;
                 if (j.Type == 0) continue;
 
-                // 타입별 필요한 만큼만 추가 읽기
                 bool isSlider = (j.Type & 2) != 0;
                 bool isSpinner = (j.Type & 8) != 0;
                 int readSize;
                 if (isSpinner)
-                    readSize = 0x100; // hoPtr+0x10 ~ hoPtr+0x110 (FloatRotationCount 0x10C까지)
+                    readSize = 0x100;
                 else if (isSlider)
-                    readSize = 0x118; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120까지)
+                    readSize = 0x118;
                 else
-                    readSize = 0x78;  // 원 — HitValue/ScoreValue/IsHit만
+                    readSize = 0x78;
 
                 if (!pm.ReadBytes(hoPtr + 0x10, hoBatch, readSize)) continue;
 
-                j.HitValue = ProcessMemory.GetInt32(hoBatch, 0x4C); // hoPtr+0x5C
-                j.ScoreValue = ProcessMemory.GetInt32(hoBatch, 0x70); // hoPtr+0x80
-                j.IsHit = ProcessMemory.GetByte(hoBatch, 0x74);     // hoPtr+0x84
+                j.HitValue = ProcessMemory.GetInt32(hoBatch, 0x4C);
+                j.ScoreValue = ProcessMemory.GetInt32(hoBatch, 0x70);
+                j.IsHit = ProcessMemory.GetByte(hoBatch, 0x74);
 
                 if (isSlider)
                 {
-                    // 슬라이더 — IsTracking(0x120)과 SliderStartCircle(0xD0) 모두 배치 범위 내
-                    j.IsTracking = ProcessMemory.GetByte(hoBatch, 0x110); // hoPtr+0x120 - 0x10 = 0x110
-                    IntPtr sliderStart = ProcessMemory.GetPointer(hoBatch, 0xC0); // hoPtr+0xD0 - 0x10 = 0xC0
+                    j.IsTracking = ProcessMemory.GetByte(hoBatch, 0x110);
+                    IntPtr sliderStart = ProcessMemory.GetPointer(hoBatch, 0xC0);
                     if (sliderStart != IntPtr.Zero && LooksLikeHeapPtr((uint)sliderStart.ToInt32()))
                     {
                         byte startIsHit;
@@ -1232,16 +1647,67 @@ namespace OsuEnlightenOverlay.Memory
 
                 if (isSpinner)
                 {
-                    // 스피너 — 모든 필드가 배치 범위 내
-                    j.FloatRotationCount = ProcessMemory.GetFloat(hoBatch, 0xFC);  // hoPtr+0x10C - 0x10 = 0xFC
-                    j.ScoringRotationCount = ProcessMemory.GetInt32(hoBatch, 0xE4); // hoPtr+0xF4 - 0x10 = 0xE4
-                    j.RotationRequirement = ProcessMemory.GetInt32(hoBatch, 0xE8);  // hoPtr+0xF8 - 0x10 = 0xE8
-                    j.SpinningState = ProcessMemory.GetInt32(hoBatch, 0xF8);        // hoPtr+0x108 - 0x10 = 0xF8
+                    j.FloatRotationCount = ProcessMemory.GetFloat(hoBatch, 0xFC);
+                    j.ScoringRotationCount = ProcessMemory.GetInt32(hoBatch, 0xE4);
+                    j.RotationRequirement = ProcessMemory.GetInt32(hoBatch, 0xE8);
+                    j.SpinningState = ProcessMemory.GetInt32(hoBatch, 0xF8);
                 }
 
                 result.Add(j);
             }
 
+            // Play 중 진단
+            if (Mode == Offsets.Mode_Play && TimeMs > 0 && hoCacheReady)
+            {
+                int isHitN = 0;
+                for (int rii = 0; rii < result.Count; rii++)
+                {
+                    if (result[rii].IsHit != 0) isHitN++;
+                }
+
+                long nowAlive = DateTime.UtcNow.Ticks;
+                if (nowAlive - lastHomAliveTicks >= HomAliveIntervalTicks)
+                {
+                    lastHomAliveTicks = nowAlive;
+                    Console.WriteLine("[HOM] alive t=" + TimeMs
+                        + " win=" + result.Count
+                        + " isHit=" + isHitN
+                        + " cache=" + cachedHoCount
+                        + " mem=" + hitCount
+                        + " long=" + longObjectIndices.Count
+                        + " off=0x" + foundPlayerHomOff.ToString("X")
+                        + "/0x" + foundHomListOff.ToString("X")
+                        + (result.Count > 100 ? " wide_window" : ""));
+                }
+
+                if (result.Count == 0 && reusedReadIndices.Count > 0)
+                    LogHom("empty_read", hitCount, osuCount);
+                else if (result.Count > 0 && isHitN == 0 && TimeMs >= 3000)
+                    LogHom("no_ishit", hitCount, osuCount);
+
+                // win>=1 에서도 감지 (예전 win=3 구간은 임계 미달로 field_suspect 미발화)
+                if (result.Count >= 1 && TimeMs > 5000)
+                {
+                    if (isHitN == 0)
+                    {
+                        if (fieldSuspectZeroSinceTicks == 0)
+                            fieldSuspectZeroSinceTicks = nowAlive;
+                        else if (!fieldSuspectLogged
+                                 && nowAlive - fieldSuspectZeroSinceTicks >= FieldSuspectTicks)
+                        {
+                            LogHom("field_suspect", hitCount, osuCount);
+                            fieldSuspectLogged = true;
+                        }
+                    }
+                    else
+                    {
+                        fieldSuspectZeroSinceTicks = 0;
+                        fieldSuspectLogged = false;
+                    }
+                }
+            }
+
+            SaveGoodJudgements(result);
             return result;
         }
 
@@ -1252,19 +1718,21 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
-        /// retry 후 호출되는 hook — 같은 맵 retry 라면 StartTime/EndTime 캐시, 오프셋,
-        /// lastBeatmapObj 모두 유지한다. 새 Player 객체는 다른 주소에 있지만 같은 필드
-        /// 레이아웃/같은 hitObjects 이므로, 매 프레임 fresh 읽는 _items 포인터만 자연 갱신된다.
-        /// (lastBeatmapObj 를 0 으로 만들면 다음 호출이 같은 맵을 "맵 전환"으로 오인해
-        ///  캐시를 다시 날리는 버그가 있었다 — 이상점 F.)
-        /// 진짜 맵 전환(다른 beatmapObj)은 ReadHitObjectJudgements 내부의 맵 전환 분기가 처리.
+        /// retry 후 hook — HO StartTime 캐시와 lastGood 스냅샷을 비운다.
+        /// 오프셋 시드(0x44/0x48)는 유지. 같은 맵이면 다음 프레임에 캐시 재빌드.
         /// </summary>
         public void InvalidateHoCache()
         {
-            // 같은 맵 retry — 캐시/오프셋/lastBeatmapObj 모두 유지한다. 새 Player 객체는 다른
-            // 주소에 있지만 같은 필드 레이아웃/같은 hitObjects 이므로, 매 프레임 fresh 읽는
-            // _items 포인터만 자연 갱신된다. 진짜 맵 전환은 ReadHitObjectJudgements 의 캐시
-            // 무결성 체크(hitCount/StartTime 불일치)가 감지한다.
+            hoCacheReady = false;
+            cachedHoStartTimes = null;
+            cachedHoEndTimes = null;
+            cachedHoCount = 0;
+            cachedMaxDuration = 0;
+            longObjectIndices.Clear();
+            lastGoodJudgements.Clear();
+            lastGoodJudgementsTicks = 0;
+            fieldSuspectZeroSinceTicks = 0;
+            fieldSuspectLogged = false;
         }
     }
 }

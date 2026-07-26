@@ -44,10 +44,11 @@ namespace OsuEnlightenOverlay.Memory
         public const int HitObject_SliderStartCircle = 0xD0; // ref (슬라이더만)
         public const int HitObject_IsTracking = 0x120;   // byte; slider-hold flag
 
-        // ── Ruleset → HitObjectManager 체인 ──
-        // 고정 오프셋 상수는 두지 않음: Eazfuscator가 빌드마다 필드를 재배열하므로
-        // 참조 구현들의 값(Ruleset+0x18 / +0x48 / +0x68→+0x3C)이 이 빌드에서 맞다는 보장이 없음.
-        // OsuMemoryReader.DetectHomOffsets()가 .osu 파싱 결과와 교차검증해 런타임에 감지함.
+        // ── Player → HitObjectManager 체인 ──
+        // 구 문서 시드 0x3C. 실측 빌드(2026-07)는 0x44 / hitObjects 0x48.
+        public const int Player_HitObjectManager = 0x3C;
+        public const int Player_HitObjectManager_Measured = 0x44;
+        public const int Hom_HitObjects_Measured = 0x48;
 
         // ── .NET List<T> 내부 레이아웃 ──
         public const int List_Items = 0x04;    // _items 배열 참조
