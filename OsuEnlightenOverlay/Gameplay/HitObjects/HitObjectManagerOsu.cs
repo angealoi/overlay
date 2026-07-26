@@ -885,6 +885,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     continue;
 
                 byte tracking = 0;
+                byte startIsHit = 0;
+                int startHitValue = 0;
+                int startScoreValue = 0;
                 if (judgements != null)
                 {
                     foreach (var j in judgements)
@@ -892,15 +895,31 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         if (j.StartTime == slider.Data.StartTime && (j.Type & 2) != 0)
                         {
                             tracking = j.IsTracking;
-                            // 시작원 hit — StartIsHit로 판단 (osu-stable: slider.StartIsHit)
-                            if (j.StartIsHit == 1 && !slider.StartCircleArmed)
-                            {
-                                slider.ArmStartCircle(true, timeMs);
-                            }
+                            startIsHit = j.StartIsHit;
+                            startHitValue = j.StartHitValue;
+                            startScoreValue = j.StartScoreValue;
                             break;
                         }
                     }
                 }
+
+                // StartIsHit는 판정 완료 여부만 (miss도 1).
+                // osu-stable: Arm(HitValue > 0). HitValue는 Hit()에서 IsHit와 동기 set.
+                // ScoreValue는 IncreaseScore 이후라 IsHit=1 & ScoreValue=0 프레임에
+                // Arm(false) 하면 hit 애니메이션이 영구히 씹힌다.
+                if (!slider.StartCircleArmed && startIsHit == 1)
+                {
+                    if (startHitValue > 0 || startScoreValue > 0)
+                        slider.ArmStartCircle(true, timeMs);
+                    else if (startHitValue < 0) // IncreaseScoreType.Miss = -131072
+                        slider.ArmStartCircle(false, timeMs);
+                    // HitValue==0 && ScoreValue==0: 값 미기록 — timeout까지 대기
+                }
+
+                // osu-stable: StartTime+HitWindow50 < Time && !StartIsHit → Hit(start) → Arm(false)
+                if (!slider.StartCircleArmed && timeMs > slider.Data.StartTime + difficulty.HitWindow50)
+                    slider.ArmStartCircle(false, timeMs);
+
                 slider.SetTracking(tracking);
                 slider.UpdateSprites(timeMs);
             }
