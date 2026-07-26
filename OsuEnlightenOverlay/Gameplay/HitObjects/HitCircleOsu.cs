@@ -312,15 +312,8 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             spriteApproachCircle.Transformations.Add(new Transformation(
                 TransformationType.Scale, 4f, 1f,
                 startTime - p, startTime, EasingTypes.None));
-            // Approach Circle 제거 — osu-stable(H18): AC는 히트/미스 판정 순간까지 0.9로 남는다.
-            //   히트: Arm(hit)의 즉시 페이드(armTime). 미스: 판정 마감(StartTime+HitWindow50)에 60ms 페이드.
-            // 예전엔 startTime→+60에 페이드해 늦은 히트/미스에서 AC가 조기 소멸했다(startTime을 미스
-            // 마감으로 오인). 이 폴백 페이드는 판정이 안 오는 경우의 제거도 겸하며, EndTime을 히트창
-            // 끝까지 확장해 Arm의 hit/miss 변환이 Draw 컬링(currentTime>EndTime)에 걸리지 않게 한다.
-            // HD는 Disarm의 HD 페이드가 접근 중 먼저 제거(리스트 뒤라 이 폴백을 덮어씀)한다.
-            spriteApproachCircle.Transformations.Add(new Transformation(
-                TransformationType.Fade, 0.9f, 0f,
-                startTime + difficulty.HitWindow50, startTime + difficulty.HitWindow50 + 60, EasingTypes.None));
+            // Approach Circle 제거는 Arm에서만 — osu-stable HitCircleOsu 생성자와 동일.
+            // (fade-in + scale만; HitWindow50 폴백 페이드 없음. 미스/히트 시 Arm이 처리)
         }
 
         /// <summary>
@@ -384,10 +377,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 spriteApproachCircle.Transformations.Add(new Transformation(
                     TransformationType.Scale, 4f, 1f,
                     startTime - p, startTime, EasingTypes.None));
-                // H18: 미스 판정 마감(StartTime+HitWindow50)에 페이드 — 생성자와 동일 (조기 소멸 수정)
-                spriteApproachCircle.Transformations.Add(new Transformation(
-                    TransformationType.Fade, 0.9f, 0f,
-                    startTime + newDifficulty.HitWindow50, startTime + newDifficulty.HitWindow50 + 60, EasingTypes.None));
+                // Approach Circle 제거는 Arm에서만 — osu-stable과 동일 (폴백 페이드 없음)
             }
 
             // Hit Circle / Overlay / Text Fade In 재구성
@@ -447,14 +437,6 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (IsArmed) return;
             IsArmed = true;
 
-            // 과거 객체 — 판정 윈도우를 넘었으면 이미 판정된 과거 객체
-            if (armTime > data.StartTime + difficulty.HitWindow50)
-            {
-                IsHit = isHit;
-                ArmTime = armTime;
-                return;
-            }
-
             IsHit = isHit;
             ArmTime = armTime;
 
@@ -465,7 +447,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (spriteHitCircle == null)
                 return;
 
-            // 기존 ARMED transformation 제거
+            // 기존 ARMED transformation 제거 — osu-stable HitObject.Arm base.
+            // timeout miss는 armTime > StartTime+HitWindow50 이므로 early return 하면 안 됨
+            // (osu-stable HitObjectManager: EndTime+HitWindow50 < Time 일 때 Hit→Arm).
             RemoveArmedTransformations(spriteHitCircle);
             RemoveArmedTransformations(spriteHitCircleOverlay);
             foreach (pSprite textSprite in spriteHitCircleText)
@@ -504,10 +488,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         spriteHitCircleOverlay.Transformations.Add(scaleOut.Clone());
                 }
 
+                // osu-stable: SpriteApproachCircle.Alpha (live). overlay는 CurrentAlpha가 live.
                 if (spriteApproachCircle != null)
                 {
                     Transformation acFade = new Transformation(
-                        TransformationType.Fade, spriteApproachCircle.Alpha, 0f,
+                        TransformationType.Fade, spriteApproachCircle.CurrentAlpha, 0f,
                         armTime, armTime, EasingTypes.None);
                     acFade.TagNumeric = ARMED;
                     spriteApproachCircle.Transformations.Add(acFade);
@@ -554,9 +539,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
             else
             {
-                // Miss — Fade (currentAlpha→0, 60ms), Scale 리셋
-                // HD mod에서는 이미 alpha가 0이므로 0에서 시작 (osu-stable: !hidden ? Alpha : 0)
-                float missStartAlpha = HiddenActive ? 0f : spriteHitCircle.Alpha;
+                // Miss — Fade (CurrentAlpha→0, 60ms), Scale 리셋
+                // osu-stable: !hidden ? Sprite.Alpha : 0 — Alpha는 live 값. overlay는 CurrentAlpha.
+                float missStartAlpha = HiddenActive ? 0f : spriteHitCircle.CurrentAlpha;
                 Transformation missFade = new Transformation(
                     TransformationType.Fade, missStartAlpha, 0f,
                     armTime, armTime + 60, EasingTypes.None);
@@ -567,7 +552,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     spriteHitCircleOverlay.Transformations.Add(missFade.Clone());
                 foreach (pSprite textSprite in spriteHitCircleText)
                 {
-                    float textMissStartAlpha = HiddenActive ? 0f : textSprite.Alpha;
+                    float textMissStartAlpha = HiddenActive ? 0f : textSprite.CurrentAlpha;
                     Transformation textMissFade = new Transformation(
                         TransformationType.Fade, textMissStartAlpha, 0f,
                         armTime, armTime + 60, EasingTypes.None);
@@ -577,7 +562,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 if (spriteApproachCircle != null)
                 {
-                    float acMissStartAlpha = HiddenActive ? 0f : spriteApproachCircle.Alpha;
+                    float acMissStartAlpha = HiddenActive ? 0f : spriteApproachCircle.CurrentAlpha;
                     Transformation acFade = new Transformation(
                         TransformationType.Fade, acMissStartAlpha, 0f,
                         armTime, armTime + 60, EasingTypes.None);

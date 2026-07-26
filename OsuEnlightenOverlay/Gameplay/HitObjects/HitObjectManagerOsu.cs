@@ -851,7 +851,10 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             {
                 HitCircleOsu circle = sortedCircles[i];
 
-                if (judgements != null && !circle.IsArmed)
+                if (circle.IsArmed)
+                    continue;
+
+                if (judgements != null)
                 {
                     foreach (var j in judgements)
                     {
@@ -866,6 +869,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         }
                     }
                 }
+
+                // osu-stable HitObjectManager.UpdateHitObject:
+                // EndTime + HitWindow50 < Time && !IsHit → Hit() → Arm(false)
+                // 메모리 판정이 늦어도 AC/미스 페이드가 stable 타이밍에 맞게 들어가게 한다.
+                if (!circle.IsArmed && timeMs > circle.Data.StartTime + difficulty.HitWindow50)
+                    circle.Arm(false, timeMs);
             }
 
             // Slider tracking 상태 전달 + 판정 Arm — 전체 순회 (긴 슬라이더 지원)
