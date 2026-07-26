@@ -639,18 +639,18 @@ namespace OsuEnlightenOverlay.Overlay
                 }
             }
 
-            // HitObject 판정 데이터 읽기 — 3프레임에 한 번 (ReadProcessMemory 빈도 감소)
-            hojCounter++;
-            if (hojCounter >= 3 || pendingJudgements == null)
+            // HitObject 판정 데이터 읽기 — Play 중 매 프레임 (IsHit 엣지 놓침 방지)
+            if (reader.Mode == Offsets.Mode_Play)
+            {
+                pendingJudgements = reader.ReadHitObjectJudgements(500, 2000);
+                if (renderer != null)
+                    renderer.PendingJudgements = pendingJudgements;
+            }
+            else
             {
                 pendingJudgements = null;
-                if (reader.Mode == Offsets.Mode_Play)
-                {
-                    pendingJudgements = reader.ReadHitObjectJudgements(500, 2000);
-                    if (renderer != null)
-                        renderer.PendingJudgements = pendingJudgements;
-                }
-                hojCounter = 0;
+                if (renderer != null)
+                    renderer.PendingJudgements = null;
             }
 
             // 현재 맵 파싱 — 곡 선택창(SelectPlay)에서 파싱 → Play 진입 시 같은 맵이므로 자동 스킵
@@ -858,7 +858,6 @@ namespace OsuEnlightenOverlay.Overlay
         int frameCount = 0;
         int lastFrameTime = -1; // Retry 감지용
         int syncCounter = 0; // SyncToOsu 빈도 제어
-        int hojCounter = 0; // ReadHitObjectJudgements 빈도 제어
         // 게임 필드 좌상단 화면 좌표 — SyncToOsu가 갱신.
         // 렌터박싱(=native resolution OFF)일 때 게임 필드는 클라이언트 영역 내에 검은 여백을 두고
         // 위치하므로 clientX/Y와 다르다. Reconstructor 좌표 변환은 이 값을 기준으로 해야 정확 —

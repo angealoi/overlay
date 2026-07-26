@@ -116,6 +116,54 @@ namespace OsuEnlightenOverlay.Memory
             PostAdd = 0
         };
 
+        // Player → HitObjectManager 필드 오프셋 (disp8)
+        // 실측 JIT dump (2026-07): 8B 15 [slot] 8B 72 44  — test/jz 없음
+        // mov r32,[Player.Instance]; mov r32,[r32+disp8]
+        // OperandSkip = HOM disp8. slot imm32 는 ApplyHomFieldAob 에서 +2 로 교차검증.
+        public static readonly AobSignature PlayerHomField = new AobSignature
+        {
+            Name = "Player→HOM (8B-15 edx)",
+            Pattern = "8B 15 ?? ?? ?? ?? 8B ?? ??",
+            OperandSkip = 8,
+            PostAdd = 0
+        };
+
+        public static readonly AobSignature PlayerHomFieldEcx = new AobSignature
+        {
+            Name = "Player→HOM (8B-0D ecx)",
+            Pattern = "8B 0D ?? ?? ?? ?? 8B ?? ??",
+            OperandSkip = 8,
+            PostAdd = 0
+        };
+
+        public static readonly AobSignature PlayerHomFieldEax = new AobSignature
+        {
+            Name = "Player→HOM (8B-05 eax)",
+            Pattern = "8B 05 ?? ?? ?? ?? 8B ?? ??",
+            OperandSkip = 8,
+            PostAdd = 0
+        };
+
+        public static readonly AobSignature PlayerHomFieldEsi = new AobSignature
+        {
+            Name = "Player→HOM (8B-35 esi)",
+            Pattern = "8B 35 ?? ?? ?? ?? 8B ?? ??",
+            OperandSkip = 8,
+            PostAdd = 0
+        };
+
+        // A1 변형: mov eax,[slot]; mov r32,[r32+disp8]
+        public static readonly AobSignature PlayerHomFieldA1 = new AobSignature
+        {
+            Name = "Player→HOM (A1)",
+            Pattern = "A1 ?? ?? ?? ?? 8B ?? ??",
+            OperandSkip = 7,
+            PostAdd = 0
+        };
+
+        // list 오프셋은 AOB 하지 않음 — DetectHomOffsets 의 measured 0x48 / heuristic.
+        // (체인 AOB 는 가상호출 오탐으로 0x34 등을 잠그던 이력이 있어 폐기)
+
         // ── Render at Native Resolution 관련 ──
         // 여기 있던 WindowManager 시그니처는 제거했다.
         //

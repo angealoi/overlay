@@ -298,6 +298,21 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
+        /// 매치+OperandSkip 위치의 disp8(필드 오프셋)을 읽는다.
+        /// Player→HOM / HOM→hitObjects 같은 인스턴스 필드 오프셋 AOB용.
+        /// 실패 시 -1.
+        /// </summary>
+        public static int ResolveDisp8At(ProcessMemory pm, AobSignature sig, IntPtr match)
+        {
+            if (match == IntPtr.Zero)
+                return -1;
+            byte b;
+            if (!pm.ReadByte(match + sig.OperandSkip, out b))
+                return -1;
+            return (int)b + sig.PostAdd;
+        }
+
+        /// <summary>
         /// 패턴 문자열("5E 5F 5D C3 A1 ?? ?? ?? ?? 89 ?? 04")을 바이트 배열과 마스크로 변환.
         /// </summary>
         public static void ParsePattern(string patternString, out byte[] pattern, out string mask)
