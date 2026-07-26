@@ -227,6 +227,8 @@ namespace OsuEnlightenOverlay.Memory
             fieldSuspectZeroSinceTicks = 0;
             fieldSuspectLogged = false;
             homAobRescanDone = false;
+            homAobRescanAttempts = 0;
+            lastHomAobRescanTicks = 0;
 
             // .osu 파싱/주입 캐시
             parsedHitObjects.Clear();
@@ -686,9 +688,18 @@ namespace OsuEnlightenOverlay.Memory
 
         // Play 중 Player→HOM AOB 재스캔 (기동 시 JIT 미생성 보완)
         bool homAobRescanDone;
+        int homAobRescanAttempts;
+        long lastHomAobRescanTicks;
+        const int MaxHomAobRescanAttempts = 5;
+        static readonly long HomAobRescanIntervalTicks = TimeSpan.TicksPerSecond * 2;
 
         void TryHomPlayAobRescan()
         {
+            if (playerHomFromAob)
+            {
+                homAobRescanDone = true;
+                return;
+            }
             if (homAobRescanDone)
                 return;
             if (Mode != Offsets.Mode_Play)
@@ -697,14 +708,13 @@ namespace OsuEnlightenOverlay.Memory
                 return;
             if (TimeMs < 2500)
                 return;
-            // 이미 Player HOM 을 AOB 로 잡았으면 스킵
-            if (playerHomFromAob)
-            {
-                homAobRescanDone = true;
-                return;
-            }
 
-            homAobRescanDone = true;
+            long now = DateTime.UtcNow.Ticks;
+            if (lastHomAobRescanTicks != 0
+                && now - lastHomAobRescanTicks < HomAobRescanIntervalTicks)
+                return;
+            lastHomAobRescanTicks = now;
+
             try
             {
                 RescanHomFieldAobInPlay();
@@ -712,6 +722,16 @@ namespace OsuEnlightenOverlay.Memory
             catch
             {
             }
+
+            if (playerHomFromAob)
+            {
+                homAobRescanDone = true;
+                return;
+            }
+
+            homAobRescanAttempts++;
+            if (homAobRescanAttempts >= MaxHomAobRescanAttempts)
+                homAobRescanDone = true;
         }
 
         void RefreshCursor()
@@ -1332,6 +1352,9 @@ namespace OsuEnlightenOverlay.Memory
             if (beatmapObj != lastBeatmapObj)
             {
                 lastBeatmapObj = beatmapObj;
+                // 맵 전환 — 이전 곡 판정 스냅샷이 새 맵에 흘러가지 않게
+                lastGoodJudgements.Clear();
+                lastGoodJudgementsTicks = 0;
                 string osuPath = GetOsuFilePathFromBeatmap(beatmapObj);
                 if (osuPath != null && osuPath != parsedOsuPath)
                     ParseOsuFile(osuPath);
@@ -1429,7 +1452,23 @@ namespace OsuEnlightenOverlay.Memory
                 else if (countMismatch && hitCount > 0 && hitCount < cachedHoCount
                          && osuCount > 0 && Math.Abs(cachedHoCount - osuCount) <= 2)
                 {
-                    // 같은 맵 retry 중 점진 충전만 캐시 유지
+                    // 같은 맵 retry 점진 충전만 유지 — 첫 StartTime 이 같아야 함.
+                    // (osuCount 갱신 전 작은 맵으로 바뀌면 여기로 들어와 옛 캐시를 붙잡던 버그)
+                    IntPtr ho0;
+                    int curSt0 = int.MinValue;
+                    if (pm.ReadPointer(itemsArr + 0x08, out ho0) && ho0 != IntPtr.Zero
+                        && LooksLikeHeapPtr((uint)ho0.ToInt32()))
+                        pm.ReadInt32(ho0 + Offsets.HitObject_StartTime, out curSt0);
+                    bool sameMapRefill = curSt0 != int.MinValue && cachedHoStartTimes != null
+                                         && cachedHoCount > 0 && curSt0 == cachedHoStartTimes[0];
+                    if (!sameMapRefill)
+                    {
+                        hoCacheReady = false;
+                        cachedHoStartTimes = null;
+                        cachedHoEndTimes = null;
+                        cachedHoCount = 0;
+                        longObjectIndices.Clear();
+                    }
                 }
                 else if (countMismatch)
                 {
@@ -1679,11 +1718,21 @@ namespace OsuEnlightenOverlay.Memory
         }
 
         /// <summary>
-        /// retry 후 hook — 같은 맵이면 캐시/오프셋 유지.
+        /// retry 후 hook — HO StartTime 캐시와 lastGood 스냅샷을 비운다.
+        /// 오프셋 시드(0x44/0x48)는 유지. 같은 맵이면 다음 프레임에 캐시 재빌드.
         /// </summary>
         public void InvalidateHoCache()
         {
-            // no-op — 캐시 무결성 체크가 담당
+            hoCacheReady = false;
+            cachedHoStartTimes = null;
+            cachedHoEndTimes = null;
+            cachedHoCount = 0;
+            cachedMaxDuration = 0;
+            longObjectIndices.Clear();
+            lastGoodJudgements.Clear();
+            lastGoodJudgementsTicks = 0;
+            fieldSuspectZeroSinceTicks = 0;
+            fieldSuspectLogged = false;
         }
     }
 }
