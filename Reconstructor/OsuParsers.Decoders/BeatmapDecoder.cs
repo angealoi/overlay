@@ -5,31 +5,27 @@ using System.Linq;
 using System.Numerics;
 using OsuParsers.Beatmaps;
 using OsuParsers.Beatmaps.Objects;
-using OsuParsers.Beatmaps.Objects.Catch;
-using OsuParsers.Beatmaps.Objects.Mania;
-using OsuParsers.Beatmaps.Objects.Taiko;
-using OsuParsers.Beatmaps.Sections.Events;
 using OsuParsers.Enums;
 using OsuParsers.Enums.Beatmaps;
-using OsuParsers.Enums.Storyboards;
 using OsuParsers.Helpers;
 
 namespace OsuParsers.Decoders;
 
+/// <summary>
+/// AimAssist용 최소 .osu 디코더.
+/// HitObjects / TimingPoints / StackLeniency / SliderMultiplier 만 실제로 쓰인다.
+/// Storyboard·DB·Replay·논스탠다드 모드 타입은 포함하지 않는다.
+/// </summary>
 public static class BeatmapDecoder
 {
 	private static Beatmap Beatmap;
 
 	private static FileSections currentSection = FileSections.None;
 
-	private static List<string> sbLines = new List<string>();
-
 	public static Beatmap Decode(string path)
 	{
 		if (File.Exists(path))
-		{
 			return Decode(File.ReadAllLines(path));
-		}
 		throw new FileNotFoundException();
 	}
 
@@ -37,26 +33,25 @@ public static class BeatmapDecoder
 	{
 		Beatmap = new Beatmap();
 		currentSection = FileSections.Format;
-		sbLines.Clear();
 		foreach (string line in lines)
 		{
-			if (!string.IsNullOrWhiteSpace(line) && !line.StartsWith("//"))
+			if (string.IsNullOrWhiteSpace(line) || line.StartsWith("//"))
+				continue;
+			if (ParseHelper.GetCurrentSection(line) != FileSections.None)
 			{
-				if (ParseHelper.GetCurrentSection(line) != FileSections.None)
-				{
-					currentSection = ParseHelper.GetCurrentSection(line);
-				}
-				else if (ParseHelper.IsLineValid(line, currentSection))
-				{
-					ParseLine(line);
-				}
+				currentSection = ParseHelper.GetCurrentSection(line);
+			}
+			else if (ParseHelper.IsLineValid(line, currentSection))
+			{
+				ParseLine(line);
 			}
 		}
-		Beatmap.EventsSection.Storyboard = StoryboardDecoder.Decode(sbLines.ToArray());
-		Beatmap.GeneralSection.CirclesCount = Beatmap.HitObjects.Count((HitObject c) => c is HitCircle || c is TaikoHit || c is ManiaNote || c is CatchFruit);
-		Beatmap.GeneralSection.SlidersCount = Beatmap.HitObjects.Count((HitObject c) => c is Slider || c is TaikoDrumroll || c is ManiaHoldNote || c is CatchJuiceStream);
-		Beatmap.GeneralSection.SpinnersCount = Beatmap.HitObjects.Count((HitObject c) => c is Spinner || c is TaikoSpinner || c is CatchBananaRain);
-		Beatmap.GeneralSection.Length = (Beatmap.HitObjects.Any() ? Beatmap.HitObjects.Last().EndTime : 0);
+		// null 히트오브젝트(미지원 Hold 등) 제거
+		Beatmap.HitObjects.RemoveAll(h => h == null);
+		Beatmap.GeneralSection.CirclesCount = Beatmap.HitObjects.Count(c => c is HitCircle);
+		Beatmap.GeneralSection.SlidersCount = Beatmap.HitObjects.Count(c => c is Slider);
+		Beatmap.GeneralSection.SpinnersCount = Beatmap.HitObjects.Count(c => c is Spinner);
+		Beatmap.GeneralSection.Length = Beatmap.HitObjects.Any() ? Beatmap.HitObjects.Last().EndTime : 0;
 		return Beatmap;
 	}
 
@@ -75,27 +70,16 @@ public static class BeatmapDecoder
 		case FileSections.General:
 			ParseGeneral(line);
 			break;
-		case FileSections.Editor:
-			ParseEditor(line);
-			break;
-		case FileSections.Metadata:
-			ParseMetadata(line);
-			break;
 		case FileSections.Difficulty:
 			ParseDifficulty(line);
-			break;
-		case FileSections.Events:
-			ParseEvents(line);
 			break;
 		case FileSections.TimingPoints:
 			ParseTimingPoints(line);
 			break;
-		case FileSections.Colours:
-			ParseColours(line);
-			break;
 		case FileSections.HitObjects:
 			ParseHitObjects(line);
 			break;
+		// Editor / Metadata / Events / Colours — AimAssist 미사용, 스킵
 		}
 	}
 
@@ -104,232 +88,14 @@ public static class BeatmapDecoder
 		int num = line.IndexOf(':');
 		string text = line.Remove(num).Trim();
 		string text2 = line.Remove(0, num + 1).Trim();
-		if (text == null)
-		{
-			return;
-		}
-		switch (text.Length)
-		{
-		case 13:
-			switch (text[0])
-			{
-			case 'A':
-				if (text == "AudioFilename")
-				{
-					Beatmap.GeneralSection.AudioFilename = text2;
-				}
-				break;
-			case 'S':
-				if (text == "StackLeniency")
-				{
-					Beatmap.GeneralSection.StackLeniency = text2.ToDouble();
-				}
-				break;
-			}
-			break;
-		case 11:
-			switch (text[0])
-			{
-			case 'A':
-				if (text == "AudioLeadIn")
-				{
-					Beatmap.GeneralSection.AudioLeadIn = Convert.ToInt32(text2);
-				}
-				break;
-			case 'P':
-				if (text == "PreviewTime")
-				{
-					Beatmap.GeneralSection.PreviewTime = Convert.ToInt32(text2);
-				}
-				break;
-			}
-			break;
-		case 9:
-			switch (text[0])
-			{
-			case 'C':
-				if (text == "Countdown")
-				{
-					Beatmap.GeneralSection.Countdown = text2.ToBool();
-				}
-				break;
-			case 'S':
-				if (text == "SampleSet")
-				{
-					Beatmap.GeneralSection.SampleSet = (SampleSet)Enum.Parse(typeof(SampleSet), text2);
-				}
-				break;
-			}
-			break;
-		case 4:
-			if (text == "Mode")
-			{
-				Beatmap.GeneralSection.Mode = (Ruleset)Enum.Parse(typeof(Ruleset), text2);
-				Beatmap.GeneralSection.ModeId = Convert.ToInt32(text2);
-			}
-			break;
-		case 17:
-			if (text == "LetterboxInBreaks")
-			{
-				Beatmap.GeneralSection.LetterboxInBreaks = text2.ToBool();
-			}
-			break;
-		case 20:
-			if (text == "WidescreenStoryboard")
-			{
-				Beatmap.GeneralSection.WidescreenStoryboard = text2.ToBool();
-			}
-			break;
-		case 16:
-			if (text == "StoryFireInFront")
-			{
-				Beatmap.GeneralSection.StoryFireInFront = text2.ToBool();
-			}
-			break;
-		case 12:
-			if (text == "SpecialStyle")
-			{
-				Beatmap.GeneralSection.SpecialStyle = text2.ToBool();
-			}
-			break;
-		case 15:
-			if (text == "EpilepsyWarning")
-			{
-				Beatmap.GeneralSection.EpilepsyWarning = text2.ToBool();
-			}
-			break;
-		case 14:
-			if (text == "UseSkinSprites")
-			{
-				Beatmap.GeneralSection.UseSkinSprites = text2.ToBool();
-			}
-			break;
-		case 5:
-		case 6:
-		case 7:
-		case 8:
-		case 10:
-		case 18:
-		case 19:
-			break;
-		}
-	}
-
-	private static void ParseEditor(string line)
-	{
-		int num = line.IndexOf(':');
-		string text = line.Remove(num).Trim();
-		string text2 = line.Remove(0, num + 1).Trim();
 		switch (text)
 		{
-		case "Bookmarks":
-			Beatmap.EditorSection.Bookmarks = (from b in text2.Split(new char[1] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-				select Convert.ToInt32(b)).ToArray();
+		case "StackLeniency":
+			Beatmap.GeneralSection.StackLeniency = text2.ToDouble();
 			break;
-		case "DistanceSpacing":
-			Beatmap.EditorSection.DistanceSpacing = text2.ToDouble();
-			break;
-		case "BeatDivisor":
-			Beatmap.EditorSection.BeatDivisor = Convert.ToInt32(text2);
-			break;
-		case "GridSize":
-			Beatmap.EditorSection.GridSize = Convert.ToInt32(text2);
-			break;
-		case "TimelineZoom":
-			Beatmap.EditorSection.TimelineZoom = text2.ToFloat();
-			break;
-		}
-	}
-
-	private static void ParseMetadata(string line)
-	{
-		int num = line.IndexOf(':');
-		string text = line.Remove(num).Trim();
-		string text2 = line.Remove(0, num + 1).Trim();
-		if (text == null)
-		{
-			return;
-		}
-		switch (text.Length)
-		{
-		case 12:
-			switch (text[0])
-			{
-			case 'T':
-				if (text == "TitleUnicode")
-				{
-					Beatmap.MetadataSection.TitleUnicode = text2;
-				}
-				break;
-			case 'B':
-				if (text == "BeatmapSetID")
-				{
-					Beatmap.MetadataSection.BeatmapSetID = Convert.ToInt32(text2);
-				}
-				break;
-			}
-			break;
-		case 6:
-			switch (text[0])
-			{
-			case 'A':
-				if (text == "Artist")
-				{
-					Beatmap.MetadataSection.Artist = text2;
-				}
-				break;
-			case 'S':
-				if (text == "Source")
-				{
-					Beatmap.MetadataSection.Source = text2;
-				}
-				break;
-			}
-			break;
-		case 7:
-			switch (text[0])
-			{
-			case 'C':
-				if (text == "Creator")
-				{
-					Beatmap.MetadataSection.Creator = text2;
-				}
-				break;
-			case 'V':
-				if (text == "Version")
-				{
-					Beatmap.MetadataSection.Version = text2;
-				}
-				break;
-			}
-			break;
-		case 5:
-			if (text == "Title")
-			{
-				Beatmap.MetadataSection.Title = text2;
-			}
-			break;
-		case 13:
-			if (text == "ArtistUnicode")
-			{
-				Beatmap.MetadataSection.ArtistUnicode = text2;
-			}
-			break;
-		case 4:
-			if (text == "Tags")
-			{
-				Beatmap.MetadataSection.Tags = text2.Split(new char[2] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-			}
-			break;
-		case 9:
-			if (text == "BeatmapID")
-			{
-				Beatmap.MetadataSection.BeatmapID = Convert.ToInt32(text2);
-			}
-			break;
-		case 8:
-		case 10:
-		case 11:
+		case "Mode":
+			Beatmap.GeneralSection.Mode = (Ruleset)Enum.Parse(typeof(Ruleset), text2);
+			Beatmap.GeneralSection.ModeId = Convert.ToInt32(text2);
 			break;
 		}
 	}
@@ -362,45 +128,6 @@ public static class BeatmapDecoder
 		}
 	}
 
-	private static void ParseEvents(string line)
-	{
-		string[] array = line.Split(',');
-		EventType eventType;
-		if (Enum.TryParse<EventType>(array[0], out var _))
-		{
-			eventType = (EventType)Enum.Parse(typeof(EventType), array[0]);
-		}
-		else
-		{
-			if (!line.StartsWith(" ") && !line.StartsWith("_"))
-			{
-				return;
-			}
-			eventType = EventType.StoryboardCommand;
-		}
-		switch (eventType)
-		{
-		case EventType.Background:
-			Beatmap.EventsSection.BackgroundImage = array[2].Trim('"');
-			break;
-		case EventType.Video:
-			Beatmap.EventsSection.Video = array[2].Trim('"');
-			Beatmap.EventsSection.VideoOffset = Convert.ToInt32(array[1]);
-			break;
-		case EventType.Break:
-			Beatmap.EventsSection.Breaks.Add(new BeatmapBreakEvent(Convert.ToInt32(array[1]), Convert.ToInt32(array[2])));
-			break;
-		case EventType.Sprite:
-		case EventType.Sample:
-		case EventType.Animation:
-		case EventType.StoryboardCommand:
-			sbLines.Add(line);
-			break;
-		case EventType.Colour:
-			break;
-		}
-	}
-
 	private static void ParseTimingPoints(string line)
 	{
 		string[] array = line.Split(',');
@@ -413,29 +140,17 @@ public static class BeatmapDecoder
 		bool inherited = true;
 		Effects effects = Effects.None;
 		if (array.Length >= 3)
-		{
 			timeSignature = (TimeSignature)Convert.ToInt32(array[2]);
-		}
 		if (array.Length >= 4)
-		{
 			sampleSet = (SampleSet)Convert.ToInt32(array[3]);
-		}
 		if (array.Length >= 5)
-		{
 			customSampleSet = Convert.ToInt32(array[4]);
-		}
 		if (array.Length >= 6)
-		{
 			volume = Convert.ToInt32(array[5]);
-		}
 		if (array.Length >= 7)
-		{
 			inherited = !array[6].ToBool();
-		}
 		if (array.Length >= 8)
-		{
 			effects = (Effects)Convert.ToInt32(array[7]);
-		}
 		Beatmap.TimingPoints.Add(new TimingPoint
 		{
 			Offset = offset,
@@ -447,28 +162,6 @@ public static class BeatmapDecoder
 			Inherited = inherited,
 			Effects = effects
 		});
-	}
-
-	private static void ParseColours(string line)
-	{
-		int num = line.IndexOf(':');
-		string text = line.Remove(num).Trim();
-		string line2 = line.Remove(0, num + 1).Trim();
-		if (!(text == "SliderTrackOverride"))
-		{
-			if (text == "SliderBorder")
-			{
-				Beatmap.ColoursSection.SliderBorder = ParseHelper.ParseColour(line2);
-			}
-			else
-			{
-				Beatmap.ColoursSection.ComboColours.Add(ParseHelper.ParseColour(line2));
-			}
-		}
-		else
-		{
-			Beatmap.ColoursSection.SliderTrackOverride = ParseHelper.ParseColour(line2);
-		}
 	}
 
 	private static void ParseHitObjects(string line)
@@ -493,25 +186,12 @@ public static class BeatmapDecoder
 			Volume = ((array2.Length > 3 + num2) ? Convert.ToInt32(array2[3 + num2]) : 0),
 			SampleFileName = ((array2.Length > 4 + num2) ? array2[4 + num2] : string.Empty)
 		} : new Extras());
+
+		// 스탠다드 타입만 생성 — AimAssist는 osu!standard 전용.
 		switch (hitObjectType)
 		{
 		case HitObjectType.Circle:
-			if (Beatmap.GeneralSection.Mode == Ruleset.Standard)
-			{
-				item = new HitCircle(position, num, num, hitSound, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Taiko)
-			{
-				item = new TaikoHit(position, num, num, hitSound, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Fruits)
-			{
-				item = new CatchFruit(position, num, num, hitSound, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Mania)
-			{
-				item = new ManiaNote(position, num, num, hitSound, extras, isNewCombo, comboOffset);
-			}
+			item = new HitCircle(position, num, num, hitSound, extras, isNewCombo, comboOffset);
 			break;
 		case HitObjectType.Slider:
 		{
@@ -523,69 +203,35 @@ public static class BeatmapDecoder
 			List<HitSoundType> edgeHitSounds = null;
 			if (array.Length > 8 && array[8].Length > 0)
 			{
-				edgeHitSounds = new List<HitSoundType>();
 				edgeHitSounds = Array.ConvertAll(array[8].Split('|'), (string s) => (HitSoundType)Convert.ToInt32(s)).ToList();
 			}
 			List<Tuple<SampleSet, SampleSet>> list = null;
 			if (array.Length > 9 && array[9].Length > 0)
 			{
 				list = new List<Tuple<SampleSet, SampleSet>>();
-				string[] array3 = array[9].Split('|');
-				foreach (string text in array3)
+				foreach (string text in array[9].Split('|'))
 				{
-					list.Add(new Tuple<SampleSet, SampleSet>((SampleSet)Convert.ToInt32(text.Split(':').First()), (SampleSet)Convert.ToInt32(text.Split(':').Last())));
+					list.Add(new Tuple<SampleSet, SampleSet>(
+						(SampleSet)Convert.ToInt32(text.Split(':').First()),
+						(SampleSet)Convert.ToInt32(text.Split(':').Last())));
 				}
 			}
-			if (Beatmap.GeneralSection.Mode == Ruleset.Standard)
-			{
-				item = new Slider(position, num, endTime3, hitSound, curveType, sliderPoints, repeats, pixelLength, isNewCombo, comboOffset, edgeHitSounds, list, extras);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Taiko)
-			{
-				item = new TaikoDrumroll(position, num, endTime3, hitSound, curveType, sliderPoints, repeats, pixelLength, edgeHitSounds, list, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Fruits)
-			{
-				item = new CatchJuiceStream(position, num, endTime3, hitSound, curveType, sliderPoints, repeats, pixelLength, isNewCombo, comboOffset, edgeHitSounds, list, extras);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Mania)
-			{
-				item = new ManiaHoldNote(position, num, endTime3, hitSound, extras, isNewCombo, comboOffset);
-			}
+			item = new Slider(position, num, endTime3, hitSound, curveType, sliderPoints, repeats, pixelLength, isNewCombo, comboOffset, edgeHitSounds, list, extras);
 			break;
 		}
 		case HitObjectType.Spinner:
 		{
 			int endTime2 = Convert.ToInt32(array[5].Trim());
-			if (Beatmap.GeneralSection.Mode == Ruleset.Standard)
-			{
-				item = new Spinner(position, num, endTime2, hitSound, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Taiko)
-			{
-				item = new TaikoSpinner(position, num, endTime2, hitSound, extras, isNewCombo, comboOffset);
-			}
-			else if (Beatmap.GeneralSection.Mode == Ruleset.Fruits)
-			{
-				item = new CatchBananaRain(position, num, endTime2, hitSound, extras, isNewCombo, comboOffset);
-			}
-			break;
-		}
-		case HitObjectType.Hold:
-		{
-			int endTime = Convert.ToInt32(array[5].Split(':')[0].Trim());
-			item = new ManiaHoldNote(position, num, endTime, hitSound, extras, isNewCombo, comboOffset);
+			item = new Spinner(position, num, endTime2, hitSound, extras, isNewCombo, comboOffset);
 			break;
 		}
 		}
-		// stacking 알고리즘용 — Type 비트마스크(1=circle, 2=slider, 8=spinner)와
-		// BasePosition(stack 적용 전 원본 위치)을 채운다. osu! stable UpdateStacking이
-		// BasePosition 기준으로 겹침을 판정하고 Position을 덮어쓴다.
+
 		if (item != null)
 		{
-			item.Type = (int)hitObjectType & 0x0B; // NewCombo 비트(4)와 ColourHax 제외 — circle/slider/spinner만
+			item.Type = (int)hitObjectType & 0x0B;
 			item.BasePosition = position;
+			Beatmap.HitObjects.Add(item);
 		}
-		Beatmap.HitObjects.Add(item);
 	}
 }

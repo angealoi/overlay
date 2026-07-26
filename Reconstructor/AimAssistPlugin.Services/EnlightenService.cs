@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -54,7 +53,6 @@ public static class EnlightenService
     static string? _cachedOsuInstallDir;
     static string? _cachedBeatmapFolder;
     static string? _cachedBeatmapOsuFilename;
-    static int _lastDirSnapshotSeq = -1; // 문자열이 같은 Sequence에서 읽혔는지 검증
 
     public static bool IsRunning { get; private set; }
 
@@ -170,8 +168,6 @@ public static class EnlightenService
         _cachedBeatmapOsuFilename = ReadStringSlot(_stringAreaBuf, SharedStateLayout.BeatmapOsuFilename);
         string? dir               = ReadStringSlot(_stringAreaBuf, SharedStateLayout.OsuInstallDir);
         if (!string.IsNullOrEmpty(dir)) _cachedOsuInstallDir = dir;
-
-        _lastDirSnapshotSeq = seqAfter;
 
         _latestBoxed = state; // 박싱 — volatile 필드에 참조 교체로 atomic publish
     }

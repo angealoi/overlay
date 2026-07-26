@@ -1,18 +1,6 @@
-using System.Collections.Generic;
-using OsuParsers.Beatmaps.Sections.Events;
-using OsuParsers.Storyboards;
-
 namespace OsuParsers.Beatmaps.Sections;
 
+/// <summary>Events 섹션 스텁 — AimAssist는 storyboard/breaks를 쓰지 않는다.</summary>
 public class BeatmapEventsSection
 {
-	public string BackgroundImage { get; set; }
-
-	public string Video { get; set; }
-
-	public int VideoOffset { get; set; }
-
-	public List<BeatmapBreakEvent> Breaks { get; set; } = new List<BeatmapBreakEvent>();
-
-	public Storyboard Storyboard { get; set; } = new Storyboard();
 }

@@ -39,12 +39,6 @@ internal class GameField
     }
 
     /// <summary>
-    /// 멀티 모니터 가상 화면 좌표계 → 주 모니터 로컬 좌표계 보정용 offset.
-    /// Reconstructor가 받는 태블릿 좌표는 주 모니터 로컬 기준이므로 이 값을 빼야 맞춤.
-    /// </summary>
-    private static readonly Vector2 monitorOffsets = CalculateScreenOffset();
-
-    /// <summary>
     /// HitObject 크기 스케일링용 ratio. OsuEnlightenOverlay2의 GameField.Ratio를 그대로 사용.
     /// 폴백: GameFieldReady가 0일 때 기존 공식 (Height*0.8/384).
     /// </summary>
@@ -84,19 +78,6 @@ internal class GameField
 		}
         // 폴백 — 오버레이 미연결 시. 기존 Reconstructor 공식.
         return field * GetRatio() + GetOffset();
-    }
-
-    /// <summary>화면 좌표 → playfield 좌표. FieldToDisplay의 역변환.</summary>
-    public static Vector2 DisplayToField(Vector2 display)
-    {
-        var state = EnlightenService.LatestState;
-        if (state != null && state.Value.GameFieldReady == 1 && state.Value.GameFieldRatio > 0f)
-        {
-            return new Vector2(
-                (display.X - state.Value.GameFieldOffsetX) / state.Value.GameFieldRatio,
-                (display.Y - state.Value.GameFieldOffsetY) / state.Value.GameFieldRatio);
-        }
-        return (display - GetOffset()) / GetRatio();
     }
 
     // ── 폴백용 기존 공식 (오버레이가 안 켜졌을 때만 사용) ──
