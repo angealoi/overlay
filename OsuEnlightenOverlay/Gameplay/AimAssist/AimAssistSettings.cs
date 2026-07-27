@@ -1,6 +1,6 @@
 namespace OsuEnlightenOverlay.Gameplay.AimAssist
 {
-    /// <summary>Reconstructor AimAssistSettings와 동일 기본값/의미.</summary>
+    /// <summary>마우스 aim assist 설정 — Release/Resync는 태블릿 절대좌표용이므로 제외.</summary>
     internal static class AimAssistSettings
     {
         public static float Strength = 1.6f;
@@ -8,10 +8,8 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
         public static float Curviness = 0.6f;
         public static float MaxOffset = 70f;
         public static float AttackInertia = 100f;
-        public static float ReleaseInertia = 15f;
         public static float DeadZone = 0.5f;
         public static float IdleGateWindow = 50f;
         public static float IdleThreshold = 3f;
-        public static float ResyncFactor = 0.6f;
     }
 }

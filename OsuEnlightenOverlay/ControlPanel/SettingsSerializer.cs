@@ -83,18 +83,16 @@ namespace OsuEnlightenOverlay.ControlPanel
             // [Skin]
             settings.SkinName = ReadString(path, "Skin", "Name", settings.SkinName);
 
-            // [AimAssist] — Reconstructor AimAssistSettings와 동일 키
+            // [AimAssist] — 마우스용 (Release/Resync 없음)
             settings.AimAssistEnabled = ReadBool(path, "AimAssist", "Enabled", settings.AimAssistEnabled);
             settings.AimAssistStrength = ReadFloat(path, "AimAssist", "Strength", settings.AimAssistStrength);
             settings.AimAssistRange = ReadFloat(path, "AimAssist", "Range", settings.AimAssistRange);
             settings.AimAssistCurviness = ReadFloat(path, "AimAssist", "Curviness", settings.AimAssistCurviness);
             settings.AimAssistMaxOffset = ReadFloat(path, "AimAssist", "MaxOffset", settings.AimAssistMaxOffset);
             settings.AimAssistAttackInertia = ReadFloat(path, "AimAssist", "AttackInertia", settings.AimAssistAttackInertia);
-            settings.AimAssistReleaseInertia = ReadFloat(path, "AimAssist", "ReleaseInertia", settings.AimAssistReleaseInertia);
             settings.AimAssistDeadZone = ReadFloat(path, "AimAssist", "DeadZone", settings.AimAssistDeadZone);
             settings.AimAssistIdleGateWindow = ReadFloat(path, "AimAssist", "IdleGateWindow", settings.AimAssistIdleGateWindow);
             settings.AimAssistIdleThreshold = ReadFloat(path, "AimAssist", "IdleThreshold", settings.AimAssistIdleThreshold);
-            settings.AimAssistResyncFactor = ReadFloat(path, "AimAssist", "ResyncFactor", settings.AimAssistResyncFactor);
 
             // [Paths]
             settings.OsuRoot = ReadString(path, "Paths", "OsuRoot", settings.OsuRoot);
@@ -144,11 +142,9 @@ namespace OsuEnlightenOverlay.ControlPanel
             WriteFloat(path, "AimAssist", "Curviness", settings.AimAssistCurviness);
             WriteFloat(path, "AimAssist", "MaxOffset", settings.AimAssistMaxOffset);
             WriteFloat(path, "AimAssist", "AttackInertia", settings.AimAssistAttackInertia);
-            WriteFloat(path, "AimAssist", "ReleaseInertia", settings.AimAssistReleaseInertia);
             WriteFloat(path, "AimAssist", "DeadZone", settings.AimAssistDeadZone);
             WriteFloat(path, "AimAssist", "IdleGateWindow", settings.AimAssistIdleGateWindow);
             WriteFloat(path, "AimAssist", "IdleThreshold", settings.AimAssistIdleThreshold);
-            WriteFloat(path, "AimAssist", "ResyncFactor", settings.AimAssistResyncFactor);
 
             // [Paths]
             WriteString(path, "Paths", "OsuRoot", settings.OsuRoot);

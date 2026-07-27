@@ -9,7 +9,8 @@ using OpenTK;
 namespace OsuEnlightenOverlay.Gameplay.AimAssist
 {
     /// <summary>
-    /// Reconstructor AimAssistService 포팅 — 경로추종 + SmoothDamp + Resync + idle gate.
+    /// 마우스 aim assist — 경로추종 + SmoothDamp(Attack) + idle gate.
+    /// Release/Resync는 태블릿 절대좌표 snap-back 대응용이라 제외.
     /// 좌표: field → GameField.FieldToDisplay + gameFieldScreen origin (절대 화면 좌표).
     /// </summary>
     internal static class AimAssistService
@@ -33,7 +34,6 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
         static float _offVelX, _offVelY;
         static readonly Stopwatch _clock = Stopwatch.StartNew();
         static long _lastTicks;
-        static Vector2 _lastRawPos;
 
         const int MoveHistoryMax = 64;
         static readonly long[] _moveTicks = new long[MoveHistoryMax];
@@ -67,7 +67,6 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
             _offVelX = 0f;
             _offVelY = 0f;
             _lastTicks = _clock.ElapsedTicks;
-            _lastRawPos = Vector2.Zero;
             _moveHead = 0;
             Array.Clear(_moveTicks, 0, _moveTicks.Length);
         }
@@ -82,8 +81,8 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
             _offVelX = 0f;
             _offVelY = 0f;
             _lastTicks = _clock.ElapsedTicks;
-            _lastRawPos = Vector2.Zero;
             _moveHead = 0;
+            Array.Clear(_moveTicks, 0, _moveTicks.Length);
         }
 
         public static void SetAudioTime(int timeMs)
@@ -197,7 +196,6 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
                 _offset = Vector2.Zero;
                 _offVelX = 0f;
                 _offVelY = 0f;
-                _lastRawPos = Vector2.Zero;
                 _moveHead = 0;
                 Array.Clear(_moveTicks, 0, _moveTicks.Length);
                 _lastTicks = _clock.ElapsedTicks;
@@ -211,22 +209,26 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
 
             float gateScale = ComputeIdleGate(cursorPosition, now);
 
-            Vector2 displacement = _lastRawPos - cursorPosition;
-            _lastRawPos = cursorPosition;
-
             Vector2 rawTarget = ComputeTargetOffset(cursorPosition, time);
             Vector2 target = rawTarget * gateScale;
 
+            // Attack만 SmoothDamp. Release는 즉시 target으로 — 화면 snap-back은
+            // MouseAimAssist가 offset 감소분을 bake 해서 막는다.
             float attackSt = Clamp(AimAssistSettings.AttackInertia, 1f, 500f) / 1000f;
-            float releaseSt = Clamp(AimAssistSettings.ReleaseInertia, 1f, 500f) / 1000f;
-            float stX = Math.Abs(target.X) >= Math.Abs(_offset.X) ? attackSt : releaseSt;
-            float stY = Math.Abs(target.Y) >= Math.Abs(_offset.Y) ? attackSt : releaseSt;
-            _offset.X = SmoothDamp(_offset.X, target.X, ref _offVelX, stX, dt);
-            _offset.Y = SmoothDamp(_offset.Y, target.Y, ref _offVelY, stY, dt);
-
-            float resyncRate = Clamp(AimAssistSettings.ResyncFactor, 0f, 2f);
-            if (resyncRate > 0f)
-                _offset = ResyncOffset(displacement, _offset, resyncRate);
+            if (Math.Abs(target.X) >= Math.Abs(_offset.X))
+                _offset.X = SmoothDamp(_offset.X, target.X, ref _offVelX, attackSt, dt);
+            else
+            {
+                _offset.X = target.X;
+                _offVelX = 0f;
+            }
+            if (Math.Abs(target.Y) >= Math.Abs(_offset.Y))
+                _offset.Y = SmoothDamp(_offset.Y, target.Y, ref _offVelY, attackSt, dt);
+            else
+            {
+                _offset.Y = target.Y;
+                _offVelY = 0f;
+            }
 
             float maxOff = Clamp(AimAssistSettings.MaxOffset, 0f, 1000f);
             float m = _offset.Length;
@@ -234,22 +236,6 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
                 _offset *= maxOff / m;
 
             return _offset;
-        }
-
-        static Vector2 ResyncOffset(Vector2 displacement, Vector2 offset, float resyncFactor)
-        {
-            if (offset.Length <= float.Epsilon) return offset;
-            Vector2 v = displacement * resyncFactor;
-            offset.X = ResyncAxis(offset.X, v.X);
-            offset.Y = ResyncAxis(offset.Y, v.Y);
-            return offset;
-        }
-
-        static float ResyncAxis(float offset, float v)
-        {
-            if (offset > 0f)
-                return Math.Max(0f, v >= 0f ? offset - v : offset + v);
-            return Math.Min(0f, v <= 0f ? offset - v : offset + v);
         }
 
         static Vector2 ComputeTargetOffset(Vector2 cursor, int time)

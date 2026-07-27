@@ -9,7 +9,8 @@ using OpenTK;
 namespace OsuEnlightenOverlay.Gameplay.AimAssist
 {
     /// <summary>
-    /// 마우스 aim — AimAssistService(Reconstructor 동일) + lame WH_MOUSE_LL / SendInput.
+    /// 마우스 aim — AimAssistService + WH_MOUSE_LL / SendInput.
+    /// offset이 줄 때(어시스트 풀림) 커서를 되돌리지 않고 현재 화면에 bake한다.
     /// </summary>
     internal sealed class MouseAimAssist : IDisposable
     {
@@ -133,8 +134,15 @@ namespace OsuEnlightenOverlay.Gameplay.AimAssist
 
                 Vector2 offset = AimAssistService.GetOffset(new Vector2(rawX, rawY));
 
-                float outX = rawX + offset.X;
-                float outY = rawY + offset.Y;
+                // Release bake: offset이 같은 부호로 줄어들 때만 커서 되돌림을 막고 손 이동(pt) 유지.
+                // (부호가 바뀌면 새 방향으로 적용)
+                bool releaseX = Math.Abs(offset.X) < Math.Abs(_lastOffsetX)
+                    && offset.X * _lastOffsetX >= 0f;
+                bool releaseY = Math.Abs(offset.Y) < Math.Abs(_lastOffsetY)
+                    && offset.Y * _lastOffsetY >= 0f;
+
+                float outX = releaseX ? pt.X : rawX + offset.X;
+                float outY = releaseY ? pt.Y : rawY + offset.Y;
 
                 result.X = (int)Math.Round(outX);
                 result.Y = (int)Math.Round(outY);
