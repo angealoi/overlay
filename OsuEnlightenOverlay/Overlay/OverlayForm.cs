@@ -886,17 +886,15 @@ namespace OsuEnlightenOverlay.Overlay
 
             mouseAimAssist.Enabled = settings.AimAssistEnabled;
 
-            // Reconstructor AimAssistSettings와 동일 값
+            // 마우스 aim 설정 동기화
             AimAssistSettings.Strength = settings.AimAssistStrength;
             AimAssistSettings.Range = settings.AimAssistRange;
             AimAssistSettings.Curviness = settings.AimAssistCurviness;
             AimAssistSettings.MaxOffset = settings.AimAssistMaxOffset;
             AimAssistSettings.AttackInertia = settings.AimAssistAttackInertia;
-            AimAssistSettings.ReleaseInertia = settings.AimAssistReleaseInertia;
             AimAssistSettings.DeadZone = settings.AimAssistDeadZone;
             AimAssistSettings.IdleGateWindow = settings.AimAssistIdleGateWindow;
             AimAssistSettings.IdleThreshold = settings.AimAssistIdleThreshold;
-            AimAssistSettings.ResyncFactor = settings.AimAssistResyncFactor;
 
             bool playing = reader.Mode == Offsets.Mode_Play
                            && reader.AudioState == Offsets.AudioState_Playing;

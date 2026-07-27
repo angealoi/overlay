@@ -35,7 +35,7 @@ namespace OsuEnlightenOverlay.ControlPanel
         // Aim Assist 섹션
         AbCheckBox chkAimEnabled;
         AbSlider slAimStrength, slAimRange, slAimCurviness, slAimMaxOffset;
-        AbSlider slAimAttack, slAimRelease, slAimDeadZone, slAimIdleWindow, slAimIdleThresh, slAimResync;
+        AbSlider slAimAttack, slAimDeadZone, slAimIdleWindow, slAimIdleThresh;
 
         // HUD 섹션
         AbCheckBox chkHudFps, chkHudAcc, chkHudCombo, chkHudHitError;
@@ -497,23 +497,28 @@ namespace OsuEnlightenOverlay.ControlPanel
             pageGeneral.Controls.Add(grpSkin);
             yL += grpSkin.Height + cardGapY;
 
-            // ── AIM ASSIST 탭 — 2열 슬라이더로 GENERAL과 분리 ──
-            AbCard grpAim = new AbCard("MOUSE AIM ASSIST", marginX, 0, contentW, 280);
+            // ── AIM ASSIST 탭 — 2열 4+4 대칭 ──
+            const int aimRow0 = 72;
+            const int aimRowGap = 36;
+            const int aimRows = 4;
+            const int aimLabelW = 100;
+            const int aimLabelGap = 10;
+            const int aimColGap = 28;
+            const int aimBottomPad = 16;
+            int aimCardH = aimRow0 + (aimRows - 1) * aimRowGap + 22 + aimBottomPad;
+            AbCard grpAim = new AbCard("MOUSE AIM ASSIST", marginX, 0, contentW, aimCardH);
 
             chkAimEnabled = new AbCheckBox { Text = "Enabled" };
-            chkAimEnabled.Location = new Point(colL, contentTopY);
-            chkAimEnabled.Width = ctrlW;
+            chkAimEnabled.Location = new Point(pad, contentTopY);
+            chkAimEnabled.Width = 120;
             chkAimEnabled.Checked = settings.AimAssistEnabled;
             chkAimEnabled.CheckedChanged += (s, e) => { settings.AimAssistEnabled = chkAimEnabled.Checked; Save(); };
             grpAim.Controls.Add(chkAimEnabled);
 
-            const int aimRow0 = 72;
-            const int aimRowGap = 34;
-            const int aimLabelW = 110;
-            const int aimColGap = 24;
-            int aimColW = (contentW - pad * 2 - aimColGap) / 2;
+            int aimInnerW = contentW - pad * 2;
+            int aimColW = (aimInnerW - aimColGap) / 2;
             int aimCol2X = pad + aimColW + aimColGap;
-            int aimSliderW = aimColW - aimLabelW - 8;
+            int aimSliderW = aimColW - aimLabelW - aimLabelGap;
             int arL = 0, arR = 0;
 
             void AddAimRow(bool right, string label, float min, float max, float val, int decimals, Action<float> set, out AbSlider slider)
@@ -521,11 +526,14 @@ namespace OsuEnlightenOverlay.ControlPanel
                 int colX = right ? aimCol2X : pad;
                 int row = right ? arR++ : arL++;
                 int y = aimRow0 + row * aimRowGap;
-                grpAim.Controls.Add(MakeLabel(label, colX, y + 3, aimLabelW, AbTheme.TextRegular));
-                slider = MakeAimSlider(colX + aimLabelW + 8, y, aimSliderW, min, max, val, decimals, set);
+                Label lbl = MakeLabel(label, colX, y + 3, aimLabelW, AbTheme.TextRegular);
+                lbl.TextAlign = ContentAlignment.MiddleRight;
+                grpAim.Controls.Add(lbl);
+                slider = MakeAimSlider(colX + aimLabelW + aimLabelGap, y, aimSliderW, min, max, val, decimals, set);
                 grpAim.Controls.Add(slider);
             }
 
+            // 좌: 어시스트 세기 / 우: 응답·게이트 — 4+4
             AddAimRow(false, "Strength:", OverlaySettings.AimStrengthMin, OverlaySettings.AimStrengthMax,
                 settings.AimAssistStrength, 2, v => { settings.AimAssistStrength = v; Save(); }, out slAimStrength);
             AddAimRow(false, "Range:", OverlaySettings.AimRangeMin, OverlaySettings.AimRangeMax,
@@ -534,19 +542,15 @@ namespace OsuEnlightenOverlay.ControlPanel
                 settings.AimAssistCurviness, 2, v => { settings.AimAssistCurviness = v; Save(); }, out slAimCurviness);
             AddAimRow(false, "Max Offset:", OverlaySettings.AimMaxOffsetMin, OverlaySettings.AimMaxOffsetMax,
                 settings.AimAssistMaxOffset, 1, v => { settings.AimAssistMaxOffset = v; Save(); }, out slAimMaxOffset);
-            AddAimRow(false, "Attack Inertia:", OverlaySettings.AimInertiaMin, OverlaySettings.AimInertiaMax,
-                settings.AimAssistAttackInertia, 0, v => { settings.AimAssistAttackInertia = v; Save(); }, out slAimAttack);
 
-            AddAimRow(true, "Release Inertia:", OverlaySettings.AimInertiaMin, OverlaySettings.AimInertiaMax,
-                settings.AimAssistReleaseInertia, 0, v => { settings.AimAssistReleaseInertia = v; Save(); }, out slAimRelease);
+            AddAimRow(true, "Inertia:", OverlaySettings.AimInertiaMin, OverlaySettings.AimInertiaMax,
+                settings.AimAssistAttackInertia, 0, v => { settings.AimAssistAttackInertia = v; Save(); }, out slAimAttack);
             AddAimRow(true, "Dead Zone:", OverlaySettings.AimDeadZoneMin, OverlaySettings.AimDeadZoneMax,
                 settings.AimAssistDeadZone, 2, v => { settings.AimAssistDeadZone = v; Save(); }, out slAimDeadZone);
             AddAimRow(true, "Idle Gate:", OverlaySettings.AimIdleWindowMin, OverlaySettings.AimIdleWindowMax,
                 settings.AimAssistIdleGateWindow, 0, v => { settings.AimAssistIdleGateWindow = v; Save(); }, out slAimIdleWindow);
-            AddAimRow(true, "Idle Threshold:", OverlaySettings.AimIdleThreshMin, OverlaySettings.AimIdleThreshMax,
+            AddAimRow(true, "Idle Thresh:", OverlaySettings.AimIdleThreshMin, OverlaySettings.AimIdleThreshMax,
                 settings.AimAssistIdleThreshold, 1, v => { settings.AimAssistIdleThreshold = v; Save(); }, out slAimIdleThresh);
-            AddAimRow(true, "Resync Factor:", OverlaySettings.AimResyncMin, OverlaySettings.AimResyncMax,
-                settings.AimAssistResyncFactor, 2, v => { settings.AimAssistResyncFactor = v; Save(); }, out slAimResync);
 
             pageAim.Controls.Add(grpAim);
 
