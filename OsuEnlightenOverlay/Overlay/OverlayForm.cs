@@ -408,6 +408,11 @@ namespace OsuEnlightenOverlay.Overlay
             glControl.MakeCurrent();
             Console.WriteLine("OK");
 
+            // VSYNC 끄기 — 켜져 있으면 SwapBuffers가 모니터 주사율(예: 320Hz)에 블록되어
+            // FPS Cap 설정과 무관하게 루프가 주사율로 고정된다. 설정 FPS대로 동작시키려면
+            // swap interval 0이 필요하다. MakeCurrent 직후(컨텍스트 current 상태)에 설정해야 적용된다.
+            try { glControl.VSync = false; } catch { }
+
             // default skin은 임베디드 리소스에서 로드 (defaultSkinFolder=null)
             string defaultSkin = null;
             Console.Write("[Load] OsuGlRenderer Initialize... ");
@@ -608,10 +613,17 @@ namespace OsuEnlightenOverlay.Overlay
                 if (fpsCapInterval > 0 && renderStopwatch != null)
                 {
                     double elapsedMs = renderStopwatch.Elapsed.TotalMilliseconds;
-                    if (elapsedMs < fpsCapInterval)
+                    double remainingMs = fpsCapInterval - elapsedMs;
+                    if (remainingMs > 0.0)
                     {
-                        int waitMs = (int)(fpsCapInterval - elapsedMs);
-                        if (waitMs > 0) System.Threading.Thread.Sleep(waitMs);
+                        // Thread.Sleep은 ±1ms 이상 오버슈트가 나서 그대로 자면 설정 FPS보다 낮게 나온다.
+                        // 마감 1ms 전까지만 Sleep으로 벌크 대기하고, 잔여 sub-ms는 스핀으로 정밀하게 맞춘다.
+                        // continue로 AppStillIdle을 재검사하므로 대기 중 메시지가 오면 루프를 빠져나가 양보한다.
+                        int sleepMs = (int)(remainingMs - 1.0);
+                        if (sleepMs > 0)
+                            System.Threading.Thread.Sleep(sleepMs);
+                        else
+                            System.Threading.Thread.SpinWait(100);
                         continue;
                     }
                     renderStopwatch.Restart();
