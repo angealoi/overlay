@@ -28,6 +28,11 @@ namespace OsuEnlightenOverlay.Graphics.Batches
             vertices = new TexturedVertex3d[size];
         }
 
+        public void SetAutoFlushShader(Shader shader)
+        {
+            autoFlushShader = shader;
+        }
+
         public void Initialize()
         {
             if (vboInitialized) return;
@@ -116,6 +121,11 @@ namespace OsuEnlightenOverlay.Graphics.Batches
             vertices = new TexturedVertex3d[size];
         }
 
+        public void SetAutoFlushShader(Shader shader)
+        {
+            autoFlushShader = shader;
+        }
+
         public void Initialize()
         {
             if (vboInitialized) return;
@@ -168,6 +178,99 @@ namespace OsuEnlightenOverlay.Graphics.Batches
                 if (shader.PositionLoc >= 0) GL.DisableVertexAttribArray(shader.PositionLoc);
                 if (shader.ColourAttrLoc >= 0) GL.DisableVertexAttribArray(shader.ColourAttrLoc);
                 if (shader.TexCoordLoc >= 0) GL.DisableVertexAttribArray(shader.TexCoordLoc);
+            }
+
+            vertexCount = 0;
+        }
+
+        public void Dispose()
+        {
+            if (vboInitialized && vboId > 0)
+            {
+                GL.DeleteBuffers(1, ref vboId);
+                vboId = 0;
+                vboInitialized = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// lazer Path.DrawNode 쿼드 배치 — PathVertex를 Triangles로 렌더링.
+    /// </summary>
+    internal class PathBatch : IDisposable
+    {
+        PathVertex[] vertices;
+        int vertexCount;
+        int vboId;
+        bool vboInitialized;
+        Shader autoFlushShader;
+
+        public PathBatch(int size)
+        {
+            vertices = new PathVertex[size];
+        }
+
+        public void SetAutoFlushShader(Shader shader)
+        {
+            autoFlushShader = shader;
+        }
+
+        public void Initialize()
+        {
+            if (vboInitialized) return;
+            GL.GenBuffers(1, out vboId);
+            vboInitialized = true;
+        }
+
+        public void Add(PathVertex vertex)
+        {
+            if (vertexCount >= vertices.Length)
+                Draw(autoFlushShader);
+            vertices[vertexCount++] = vertex;
+        }
+
+        public void Draw(Shader shader)
+        {
+            if (vertexCount == 0) return;
+            if (!vboInitialized) Initialize();
+
+            autoFlushShader = shader;
+
+            int stride = PathVertex.Stride;
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, vboId);
+            GL.BufferData(BufferTarget.ArrayBuffer, (IntPtr)(vertexCount * stride),
+                vertices, BufferUsageHint.DynamicDraw);
+
+            if (shader != null && shader.IsValid)
+            {
+                if (shader.PositionLoc >= 0)
+                {
+                    GL.EnableVertexAttribArray(shader.PositionLoc);
+                    GL.VertexAttribPointer(shader.PositionLoc, 2, VertexAttribPointerType.Float, false, stride, IntPtr.Zero);
+                }
+                if (shader.StartPosLoc >= 0)
+                {
+                    GL.EnableVertexAttribArray(shader.StartPosLoc);
+                    GL.VertexAttribPointer(shader.StartPosLoc, 2, VertexAttribPointerType.Float, false, stride, (IntPtr)(2 * sizeof(float)));
+                }
+                if (shader.EndPosLoc >= 0)
+                {
+                    GL.EnableVertexAttribArray(shader.EndPosLoc);
+                    GL.VertexAttribPointer(shader.EndPosLoc, 2, VertexAttribPointerType.Float, false, stride, (IntPtr)(4 * sizeof(float)));
+                }
+                if (shader.RadiusLoc >= 0)
+                {
+                    GL.EnableVertexAttribArray(shader.RadiusLoc);
+                    GL.VertexAttribPointer(shader.RadiusLoc, 1, VertexAttribPointerType.Float, false, stride, (IntPtr)(6 * sizeof(float)));
+                }
+
+                GL.DrawArrays(PrimitiveType.Triangles, 0, vertexCount);
+
+                if (shader.PositionLoc >= 0) GL.DisableVertexAttribArray(shader.PositionLoc);
+                if (shader.StartPosLoc >= 0) GL.DisableVertexAttribArray(shader.StartPosLoc);
+                if (shader.EndPosLoc >= 0) GL.DisableVertexAttribArray(shader.EndPosLoc);
+                if (shader.RadiusLoc >= 0) GL.DisableVertexAttribArray(shader.RadiusLoc);
             }
 
             vertexCount = 0;

@@ -35,8 +35,29 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         const double Pi = Math.PI;
 
         /// <summary>
+        /// 커브 경로 복제. 캐시는 BasePosition 기준이고, 인스턴스는 스택으로 옮길 수 있다.
+        /// </summary>
+        public static List<Line> ClonePath(List<Line> src)
+        {
+            if (src == null || src.Count == 0)
+                return new List<Line>();
+            List<Line> dst = new List<Line>(src.Count);
+            for (int i = 0; i < src.Count; i++)
+            {
+                Line s = src[i];
+                Line d = new Line(s.p1, s.p2);
+                d.forceEnd = s.forceEnd;
+                d.straight = s.straight;
+                dst.Add(d);
+            }
+            return dst;
+        }
+
+        /// <summary>
         /// 컨트롤 포인트들로부터 커브 경로(List<Line>) 생성.
         /// osu! stable SliderOsu.UpdateCalculations 포팅.
+        /// spatialLength에 도달하면 나머지 제어점/세그먼트는 테셀레이트하지 않는다.
+        /// 트림 결과는 전체 테셀 후 자르는 것과 같고, 스크리블 슬라이더의 미사용 꼬리만 건너뛴다.
         /// </summary>
         public static List<Line> CalculateCurve(List<Vector2> controlPoints, CurveTypes curveType, double spatialLength)
         {
@@ -45,26 +66,29 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (controlPoints == null || controlPoints.Count == 0)
                 return path;
 
+            double lengthBudget = spatialLength > 0 ? spatialLength : double.MaxValue;
+            double total = 0;
+
             switch (curveType)
             {
                 case CurveTypes.Catmull:
-                    CalculateCatmull(controlPoints, path);
+                    CalculateCatmull(controlPoints, path, lengthBudget, ref total);
                     break;
                 case CurveTypes.Bezier:
-                    CalculateBezier(controlPoints, path);
+                    CalculateBezier(controlPoints, path, lengthBudget, ref total);
                     break;
                 case CurveTypes.PerfectCurve:
-                    CalculatePerfect(controlPoints, path);
+                    CalculatePerfect(controlPoints, path, lengthBudget, ref total);
                     break;
                 case CurveTypes.Linear:
-                    CalculateLinear(controlPoints, path);
+                    CalculateLinear(controlPoints, path, lengthBudget, ref total);
                     break;
             }
 
             // SpatialLength에 맞춰 경로 트림/연장
             if (path.Count > 0 && spatialLength > 0)
             {
-                double total = 0;
+                total = 0;
                 foreach (Line l in path)
                     total += l.Rho;
 
@@ -121,7 +145,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         // ── Catmull Rom ──
 
-        static void CalculateCatmull(List<Vector2> points, List<Line> path)
+        static bool AddPathLine(List<Line> path, Line line, double lengthBudget, ref double total)
+        {
+            path.Add(line);
+            total += line.Rho;
+            return lengthBudget < double.MaxValue && total >= lengthBudget;
+        }
+
+        static void CalculateCatmull(List<Vector2> points, List<Line> path, double lengthBudget, ref double total)
         {
             for (int j = 0; j < points.Count - 1; j++)
             {
@@ -132,9 +163,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
                 for (int k = 0; k < SLIDER_DETAIL_LEVEL; k++)
                 {
-                    path.Add(new Line(
+                    Line seg = new Line(
                         CatmullRom(v1, v2, v3, v4, (float)k / SLIDER_DETAIL_LEVEL),
-                        CatmullRom(v1, v2, v3, v4, (float)(k + 1) / SLIDER_DETAIL_LEVEL)));
+                        CatmullRom(v1, v2, v3, v4, (float)(k + 1) / SLIDER_DETAIL_LEVEL));
+                    if (AddPathLine(path, seg, lengthBudget, ref total))
+                    {
+                        path[path.Count - 1].forceEnd = true;
+                        return;
+                    }
                 }
                 path[path.Count - 1].forceEnd = true;
             }
@@ -153,7 +189,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         // ── Bezier ──
 
-        static void CalculateBezier(List<Vector2> points, List<Line> path)
+        static void CalculateBezier(List<Vector2> points, List<Line> path, double lengthBudget, ref double total)
         {
             int lastIndex = 0;
 
@@ -173,14 +209,26 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         // 2점은 선형
                         Line l = new Line(thisLength[0], thisLength[1]);
                         l.straight = true;
-                        path.Add(l);
+                        if (AddPathLine(path, l, lengthBudget, ref total))
+                        {
+                            path[path.Count - 1].forceEnd = true;
+                            return;
+                        }
                     }
-                    else
+                    else if (thisLength.Count > 2)
                     {
-                        // BezierApproximator 사용 (osu! stable과 동일)
-                        List<Vector2> bezierPoints = CreateBezier(thisLength);
+                        float remain = lengthBudget < double.MaxValue
+                            ? (float)Math.Max(0, lengthBudget - total)
+                            : float.MaxValue;
+                        List<Vector2> bezierPoints = CreateBezier(thisLength, remain);
                         for (int j = 1; j < bezierPoints.Count; j++)
-                            path.Add(new Line(bezierPoints[j - 1], bezierPoints[j]));
+                        {
+                            if (AddPathLine(path, new Line(bezierPoints[j - 1], bezierPoints[j]), lengthBudget, ref total))
+                            {
+                                path[path.Count - 1].forceEnd = true;
+                                return;
+                            }
+                        }
                     }
 
                     if (path.Count > 0)
@@ -196,7 +244,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// BezierApproximator — osu! stable OsuMathHelper.BezierApproximator 정확 포팅.
         /// subdivisionBuffer1, subdivisionBuffer2 사용.
         /// </summary>
-        static List<Vector2> CreateBezier(List<Vector2> input)
+        static List<Vector2> CreateBezier(List<Vector2> input, float maxLength)
         {
             int count = input.Count;
             if (count == 0) return new List<Vector2>();
@@ -215,6 +263,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
             toFlatten.Push(input.ToArray());
             Vector2[] leftChild = subdivisionBuffer2;
+            float acc = 0;
+            Vector2 lastOut = input[0];
+            bool hasOut = false;
 
             while (toFlatten.Count > 0)
             {
@@ -256,12 +307,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         l[count + i] = r[i + 1];
 
                     // output에 점 추가
-                    output.Add(parent[0]);
+                    if (AddBezierOutput(output, parent[0], maxLength, ref acc, ref lastOut, ref hasOut))
+                        return output;
                     for (int i = 1; i < count - 1; ++i)
                     {
                         int index = 2 * i;
                         Vector2 p = 0.25f * (l[index - 1] + 2 * l[index] + l[index + 1]);
-                        output.Add(p);
+                        if (AddBezierOutput(output, p, maxLength, ref acc, ref lastOut, ref hasOut))
+                            return output;
                     }
 
                     freeBuffers.Push(parent);
@@ -291,22 +344,37 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 toFlatten.Push(parent);
             }
 
-            output.Add(input[count - 1]);
+            AddBezierOutput(output, input[count - 1], maxLength, ref acc, ref lastOut, ref hasOut);
             return output;
+        }
+
+        static bool AddBezierOutput(List<Vector2> output, Vector2 p, float maxLength, ref float acc, ref Vector2 last, ref bool hasOut)
+        {
+            if (hasOut && maxLength < float.MaxValue)
+            {
+                acc += (p - last).Length;
+                output.Add(p);
+                last = p;
+                return acc >= maxLength;
+            }
+            output.Add(p);
+            last = p;
+            hasOut = true;
+            return false;
         }
 
         // ── Perfect Curve (원형) ──
 
-        static void CalculatePerfect(List<Vector2> points, List<Line> path)
+        static void CalculatePerfect(List<Vector2> points, List<Line> path, double lengthBudget, ref double total)
         {
             if (points.Count < 3)
             {
-                CalculateLinear(points, path);
+                CalculateLinear(points, path, lengthBudget, ref total);
                 return;
             }
             if (points.Count > 3)
             {
-                CalculateBezier(points, path);
+                CalculateBezier(points, path, lengthBudget, ref total);
                 return;
             }
 
@@ -317,7 +385,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // 일직선 체크
             if (IsStraightLine(a, b, c))
             {
-                CalculateLinear(points, path);
+                CalculateLinear(points, path, lengthBudget, ref total);
                 return;
             }
 
@@ -328,23 +396,29 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             CircleThroughPoints(a, b, c, out centre, out radius, out tInitial, out tFinal);
 
             double curveLength = Math.Abs((tFinal - tInitial) * radius);
-            int segments = (int)(curveLength * 0.125f);
+            double needed = curveLength;
+            if (lengthBudget < double.MaxValue)
+                needed = Math.Min(curveLength, Math.Max(0, lengthBudget - total));
+            int segments = (int)(needed * 0.125f);
             if (segments < 1) segments = 1;
 
             Vector2 lastPoint = a;
+            double span = curveLength > 0 ? needed / curveLength : 1;
 
             for (int i = 1; i < segments; i++)
             {
-                double progress = (double)i / (double)segments;
+                double progress = span * ((double)i / (double)segments);
                 double t = tFinal * progress + tInitial * (1 - progress);
 
                 Vector2 newPoint = CirclePoint(centre, radius, t);
-                path.Add(new Line(lastPoint, newPoint));
+                if (AddPathLine(path, new Line(lastPoint, newPoint), lengthBudget, ref total))
+                    return;
 
                 lastPoint = newPoint;
             }
 
-            path.Add(new Line(lastPoint, c));
+            Vector2 endPoint = needed >= curveLength - 1e-4 ? c : CirclePoint(centre, radius, tFinal * span + tInitial * (1 - span));
+            AddPathLine(path, new Line(lastPoint, endPoint), lengthBudget, ref total);
         }
 
         static bool IsStraightLine(Vector2 a, Vector2 b, Vector2 c)
@@ -387,13 +461,17 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         // ── Linear ──
 
-        static void CalculateLinear(List<Vector2> points, List<Line> path)
+        static void CalculateLinear(List<Vector2> points, List<Line> path, double lengthBudget, ref double total)
         {
             for (int i = 1; i < points.Count; i++)
             {
                 Line l = new Line(points[i - 1], points[i]);
                 l.straight = true;
-                path.Add(l);
+                if (AddPathLine(path, l, lengthBudget, ref total))
+                {
+                    path[path.Count - 1].forceEnd = true;
+                    return;
+                }
                 path[path.Count - 1].forceEnd = true;
             }
         }

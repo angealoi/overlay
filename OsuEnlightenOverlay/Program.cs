@@ -4,7 +4,6 @@ using System.Windows.Forms;
 using OsuEnlightenOverlay.Memory;
 using OsuEnlightenOverlay.Overlay;
 using OsuEnlightenOverlay.ControlPanel;
-using OsuEnlightenOverlay.Helpers;
 
 namespace OsuEnlightenOverlay
 {
@@ -23,9 +22,6 @@ namespace OsuEnlightenOverlay
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // exe 옆 overlay.log 에 기록 — WinExe라 콘솔이 없어 이게 유일한 진단 경로
-            Logger.Init();
-
             Console.WriteLine("=== osu! Enlighten Overlay ===");
             Console.WriteLine();
 
@@ -43,7 +39,6 @@ namespace OsuEnlightenOverlay
                     "osu!가 실행 중인지 확인한 뒤 다시 실행하세요.",
                     "osu! Enlighten Overlay",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                Logger.Shutdown();
                 return;
             }
             Console.WriteLine("[OK] 메모리 리더 초기화 성공");
@@ -100,7 +95,6 @@ namespace OsuEnlightenOverlay
             Application.ApplicationExit += delegate
             {
                 reader.Dispose();
-                Logger.Shutdown();
             };
 
             // 컨트롤 패널을 메인 폼으로 실행

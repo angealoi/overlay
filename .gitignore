@@ -3,6 +3,9 @@
 [Oo]bj/
 build_*/
 
+# Runtime logs
+*.log
+
 # IDE / tooling
 .codegraph/
 .ua/

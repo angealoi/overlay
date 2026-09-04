@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using OpenTK;
 using OpenTK.Graphics.OpenGL;
+using OsuEnlightenOverlay.Graphics.Renderers;
 using OsuEnlightenOverlay.Rendering.Batches;
 using OsuEnlightenOverlay.Rendering.Sprites;
 using OsuEnlightenOverlay.Rendering.Textures;
@@ -28,13 +30,19 @@ namespace OsuEnlightenOverlay.Rendering
         int currentTime = 0; // Draw 시간 기반 컬링용
         long stableOrderCounter = 0; // Add 전역 삽입 순서 — Depth 동점 안정 정렬 tiebreak (C5). long이라 오버플로 불가
 
-        // Depth 오름차순 + 동점은 삽입 순서(StableOrder)로 결정하는 전순서 비교자.
-        // static readonly IComparer로 캐싱해 List.Sort(Comparison<T>)의 매 호출 FunctorComparer
-        // 할당(net48)을 피한다 — 정렬은 사실상 매 프레임 돈다.
+        // 슬라이더 바디를 FBO 쿼드가 아니라 경로 메시로 그릴 때 사용. HOM이 설정.
+        public MmSliderRenderer SliderBodyRenderer;
+
+        // Depth 오름차순(먼저 그린다 = 아래). 동점은 먼저 Add한 스프라이트가 위.
+        // osu-stable SpriteManager.Add: BinarySearch 후 같은 Depth면 그 index에 Insert →
+        // 새 항목이 리스트 앞(아래), 기존이 뒤(위). lazer HitObjectContainer도 같은 시각
+        // (StartTime 동점이면 CompareReverseChildID = 먼저 넣은 오브젝트가 위).
+        // 예전엔 StableOrder 오름차순이라 나중에 넣은 게 위였고, 슬라이더 끝원과 다음
+        // 시작원이 같은 시각이면 다음 노트가 진행 중인 끝원을 덮었다.
         static readonly IComparer<pSprite> DepthOrderComparer = Comparer<pSprite>.Create((a, b) =>
         {
             int c = a.Depth.CompareTo(b.Depth);
-            return c != 0 ? c : a.StableOrder.CompareTo(b.StableOrder);
+            return c != 0 ? c : b.StableOrder.CompareTo(a.StableOrder);
         });
 
         public void SetViewportSize(int width, int height)
@@ -43,23 +51,44 @@ namespace OsuEnlightenOverlay.Rendering
             viewportHeight = height;
         }
 
-        // ── drawOrder — osu! stable SpriteManager 포팅 ──
-        // drawOrderBwd: 0.8 - (number % 6000000) / 10000000 (내림차순, hitcircle용)
+        // ── drawOrder — osu-lazer OsuPlayfield 층 (뒤→앞) ────────────────
+        // spinnerProxies < FollowPoints < HitObjectContainer < judgementAbove
+        //   < approachCircles < Cursor. HUD는 플레이필드 밖(위).
+        //
+        // 0.00–0.10  스피너 / 판정 파티클 (FwdLowPrio)
+        // 0.12       팔로포인트
+        // 0.20–0.80  히트오브젝트 (Bwd, 이른 노트일수록 위)
+        // 0.81–0.83  판정 숫자 (오브젝트 위, 어프로치 아래)
+        // 0.86–0.88  어프로치 서클
+        // 0.95       HUD
+        // 0.999/1.0  커서
+        public const float FollowPointDepth = 0.12f;
+
         public static float DrawOrderBwd(float number)
         {
             return 0.8f - (number % 6000000) / 10000000f;
         }
 
-        // drawOrderFwdLowPrio: (number % 1999999) / 10000000 (0~0.2, 스피너용)
         public static float DrawOrderFwdLowPrio(float number)
         {
-            return (number % 1999999) / 10000000f;
+            return (number % 1999999) / 20000000f;
         }
 
-        // drawOrderFwdPrio: 0.8 + (number % 6000000) / 30000000 (오름차순, approach circle용)
         public static float DrawOrderFwdPrio(float number)
         {
             return 0.8f + (number % 6000000) / 30000000f;
+        }
+
+        /// <summary>lazer judgementAboveHitObjectLayer — 오브젝트 위, 어프로치 아래.</summary>
+        public static float DrawOrderJudgement(float number)
+        {
+            return 0.81f + (number % 6000000) / 300000000f;
+        }
+
+        /// <summary>lazer approachCircles 레이어 — 오브젝트·판정 위, HUD·커서 아래.</summary>
+        public static float DrawOrderApproach(float number)
+        {
+            return 0.86f + (number % 6000000) / 300000000f;
         }
 
         public SpriteManager(GameField gameField, ShaderManager shaderManager)
@@ -76,6 +105,16 @@ namespace OsuEnlightenOverlay.Rendering
 
         public void Add(pSprite sprite)
         {
+            // 이미 리스트에 있는데 제거 예약만 된 상태(Remove 후 같은 프레임에 재Add)면
+            // 물리적으로 다시 넣지 않고 예약만 취소한다 — 안 그러면 리스트에 중복이 생긴다.
+            if (sprite.PendingRemove)
+            {
+                sprite.PendingRemove = false;
+                sprite.StableOrder = stableOrderCounter++;
+                spriteSet.Add(sprite);
+                needsSort = true;
+                return;
+            }
             // O(1) append + lazy sort — avoids O(n) List.Insert per sprite
             // 삽입 순서를 기록해 Depth 동점 시 안정 정렬 tiebreak로 쓴다 (C5).
             sprite.StableOrder = stableOrderCounter++;
@@ -87,10 +126,12 @@ namespace OsuEnlightenOverlay.Rendering
         public void Remove(pSprite sprite)
         {
             // 없으면 O(1)에 끝낸다 — 예전에는 리스트에 없는 스프라이트도 전체를 훑었다 (D4).
-            // 트레일 스프라이트는 Update의 자동 Discard로 이미 빠진 뒤에 CursorRenderer가
-            // 다시 Remove를 부르므로, 이 조기 종료가 헛도는 O(n) 스캔을 통째로 없앤다.
             if (!spriteSet.Remove(sprite)) return;
-            sprites.Remove(sprite);
+            // 리스트에서 즉시 빼지 않는다. List.Remove는 선형 탐색+시프트로 O(n)이라
+            // 스프라이트 수천 개를 한 프레임에 제거하면 O(n²) — Aspire 맵의 2048회 반복
+            // 슬라이더가 윈도우를 벗어날 때 ~1.5만 개를 제거하며 40초 멈췄다.
+            // 마킹만 하고 Update의 단일 O(n) 압축 패스(Discard와 동일 경로)가 걷어낸다.
+            sprite.PendingRemove = true;
         }
 
         public bool Contains(pSprite sprite)
@@ -105,6 +146,10 @@ namespace OsuEnlightenOverlay.Rendering
 
         public void Clear()
         {
+            // 제거 예약 플래그를 내려야 한다 — 리스트를 비운 뒤에도 플래그가 남으면
+            // 그 스프라이트를 다시 Add할 때 "아직 리스트에 있다"로 오판해 영영 안 그려진다.
+            for (int i = 0; i < sprites.Count; i++)
+                sprites[i].PendingRemove = false;
             sprites.Clear();
             spriteSet.Clear();
             needsSort = false;
@@ -128,6 +173,13 @@ namespace OsuEnlightenOverlay.Rendering
             for (int i = 0; i < count; i++)
             {
                 pSprite sprite = sprites[i];
+                // Remove()가 예약한 스프라이트 — 여기서 실제로 리스트를 떠난다.
+                // 플래그를 내려야 이후 새로 Add될 때 "아직 리스트에 있다"로 오판하지 않는다.
+                if (sprite.PendingRemove)
+                {
+                    sprite.PendingRemove = false;
+                    continue;
+                }
                 if (sprite.Update(time) == UpdateResult.Discard)
                 {
                     spriteSet.Remove(sprite);
@@ -145,8 +197,8 @@ namespace OsuEnlightenOverlay.Rendering
         public void Draw()
         {
             // lazy sort — 정렬이 필요할 때만 (청크 추가 후 1회)
-            // Depth 오름차순 + 동점은 삽입 순서(StableOrder)로 결정 → 전순서라 결과가 유일하게
-            // 정해져 List.Sort(불안정)여도 프레임 간 z-플리커가 없다 (C5/H21).
+            // Depth 오름차순 + 동점은 먼저 Add한 쪽이 위(StableOrder 내림차순).
+            // 전순서라 List.Sort(불안정)여도 프레임 간 z-플리커가 없다 (C5/H21).
             // 캐싱된 비교자라 매 호출 추가 할당 없음.
             if (needsSort)
             {
@@ -156,20 +208,25 @@ namespace OsuEnlightenOverlay.Rendering
 
             pTexture currentTexture = null;
             bool currentAdditive = false;
+            bool usingPathResolve = false;
+            int currentGradientId = 0;
 
             quadBatch.Initialize();
 
             // 셰이더 바인딩 — TextureShader2D (generic vertex attributes)
-            Shader shader = shaderManager.TextureShader2D;
-            if (shader != null && shader.IsValid)
+            Shader textureShader = shaderManager.TextureShader2D;
+            Shader pathResolve = shaderManager.PathResolve;
+            Shader activeShader = textureShader;
+            if (textureShader != null && textureShader.IsValid)
             {
-                shader.Begin();
-                shader.SetProjectionMatrix(ref projectionMatrix);
-                shader.SetColour(System.Drawing.Color.White);
+                textureShader.Begin();
+                textureShader.SetProjectionMatrix(ref projectionMatrix);
+                textureShader.SetColour(System.Drawing.Color.White);
+                textureShader.SetTexture(0);
             }
 
             // 배치가 가득 차 Add 중간에 자동 flush될 때도 이 셰이더를 쓰게 한다 (E3).
-            quadBatch.SetActiveShader(shader);
+            quadBatch.SetActiveShader(activeShader);
 
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Texture2D);
             GL.Enable(OpenTK.Graphics.OpenGL.EnableCap.Blend);
@@ -177,6 +234,10 @@ namespace OsuEnlightenOverlay.Rendering
 
             foreach (pSprite sprite in sprites)
             {
+                // 제거 예약됐지만 아직 압축 전인 스프라이트는 그리지 않는다.
+                if (sprite.PendingRemove)
+                    continue;
+
                 // 시간 기반 컬링 — 시간 범위 밖 스프라이트 스킵
                 if (sprite.TimeRangeCached)
                 {
@@ -212,7 +273,7 @@ namespace OsuEnlightenOverlay.Rendering
                 // Additive 변경 시 flush
                 if (sprite.Additive != currentAdditive)
                 {
-                    quadBatch.Flush(shader);
+                    quadBatch.Flush(activeShader);
                     if (sprite.Additive)
                     {
                         GL.BlendFunc(OpenTK.Graphics.OpenGL.BlendingFactor.SrcAlpha, OpenTK.Graphics.OpenGL.BlendingFactor.One);
@@ -224,10 +285,59 @@ namespace OsuEnlightenOverlay.Rendering
                     currentAdditive = sprite.Additive;
                 }
 
+                bool wantPath = sprite.SliderPathGradientTexId > 0
+                    && pathResolve != null && pathResolve.IsValid;
+                if (wantPath != usingPathResolve
+                    || (wantPath && currentGradientId != sprite.SliderPathGradientTexId))
+                {
+                    quadBatch.Flush(activeShader);
+                    if (wantPath)
+                    {
+                        if (!usingPathResolve)
+                        {
+                            if (textureShader != null && textureShader.IsValid)
+                                textureShader.End();
+                            pathResolve.Begin();
+                            pathResolve.SetProjectionMatrix(ref projectionMatrix);
+                            pathResolve.SetColour(System.Drawing.Color.White);
+                            pathResolve.SetTexture(0);
+                            pathResolve.SetGradient(1);
+                            activeShader = pathResolve;
+                            quadBatch.SetActiveShader(pathResolve);
+                            usingPathResolve = true;
+                        }
+                        GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture1);
+                        GL.BindTexture(OpenTK.Graphics.OpenGL.TextureTarget.Texture2D, sprite.SliderPathGradientTexId);
+                        GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture0);
+                        currentGradientId = sprite.SliderPathGradientTexId;
+                    }
+                    else
+                    {
+                        GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture1);
+                        GL.BindTexture(OpenTK.Graphics.OpenGL.TextureTarget.Texture2D, 0);
+                        GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture0);
+                        currentGradientId = 0;
+                        if (usingPathResolve)
+                        {
+                            pathResolve.End();
+                            if (textureShader != null && textureShader.IsValid)
+                            {
+                                textureShader.Begin();
+                                textureShader.SetProjectionMatrix(ref projectionMatrix);
+                                textureShader.SetColour(System.Drawing.Color.White);
+                                textureShader.SetTexture(0);
+                            }
+                            activeShader = textureShader;
+                            quadBatch.SetActiveShader(textureShader);
+                            usingPathResolve = false;
+                        }
+                    }
+                }
+
                 // 텍스처 변경 시 flush
                 if (sprite.Texture != currentTexture)
                 {
-                    quadBatch.Flush(shader);
+                    quadBatch.Flush(activeShader);
                     currentTexture = sprite.Texture;
                     currentTexture.Bind();
                 }
@@ -307,10 +417,19 @@ namespace OsuEnlightenOverlay.Rendering
                 quadBatch.Add(sprite, screenPos, texW, texH, spriteScale, drawTopRatio, drawHeightRatio);
             }
 
-            quadBatch.Flush(shader);
+            quadBatch.Flush(activeShader);
 
-            if (shader != null && shader.IsValid)
-                shader.End();
+            GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture1);
+            GL.BindTexture(OpenTK.Graphics.OpenGL.TextureTarget.Texture2D, 0);
+            GL.ActiveTexture(OpenTK.Graphics.OpenGL.TextureUnit.Texture0);
+
+            if (usingPathResolve)
+            {
+                if (pathResolve != null && pathResolve.IsValid)
+                    pathResolve.End();
+            }
+            else if (textureShader != null && textureShader.IsValid)
+                textureShader.End();
 
             GL.Disable(OpenTK.Graphics.OpenGL.EnableCap.Texture2D);
         }

@@ -84,6 +84,7 @@ namespace OsuEnlightenOverlay.Memory
         // 재사용 버퍼 — 매 프레임 new 할당 방지 (GC 스톨 방지)
         List<HitObjectJudgement> reusedJudgements = new List<HitObjectJudgement>(64);
         byte[] reusedHoBatch = new byte[0x118]; // hoPtr+0x10 ~ hoPtr+0x128 (IsTracking 0x120 포함)
+        byte[] reusedStartBatch = new byte[0x2C]; // sliderStart+0x5C .. IsHit 0x84
 
         public bool IsOpen { get { return pm.IsOpen; } }
         public int ProcessId { get { return pm.ProcessId; } }
@@ -240,6 +241,7 @@ namespace OsuEnlightenOverlay.Memory
             parsedOsuPath = null;
             parsedStartTimes = new List<int>();
             parsedTypes = new List<int>();
+            parsedEndByStart.Clear();
             parsedOsuKey = null;
 
             // 설치 경로 — 새 PID는 다른 경로일 수 있음
@@ -969,6 +971,7 @@ namespace OsuEnlightenOverlay.Memory
         // 긴 객체(슬라이더/스피너) 인덱스 — StartTime 창 밖에 있어도 EndTime 기준 활성 시 읽음
         readonly List<int> longObjectIndices = new List<int>(64);
         readonly List<int> reusedReadIndices = new List<int>(128);
+        byte[] lastTrackByIdx;
         const int LongObjectMinDurationMs = 2000;
 
         // Step2: 전환 공백 — 마지막 성공 스냅샷 (500ms 이내 재사용)
@@ -980,6 +983,12 @@ namespace OsuEnlightenOverlay.Memory
         long fieldSuspectZeroSinceTicks = 0;
         bool fieldSuspectLogged = false;
         static readonly long FieldSuspectTicks = TimeSpan.TicksPerSecond * 10;
+
+        // GC 이동 유예 — 검증 실패가 일시적 GC 이동(1~2프레임이면 안정화)인지
+        // 진짜 오프셋 붕괴인지 구분하기 위해, 실패 연속 프레임을 세어 즉시 리셋하지 않는다.
+        // 이 횟수 안에 재검증 성공하면 오프셋을 유지해 불필요한 재탐지(=판정 끊김)를 막는다.
+        int homGraceStreak = 0;
+        const int HomGraceFrames = 8;
 
         // Phase0: early-return 원인 로그 (태그당 rate-limit)
         string lastHomLogTag = null;
@@ -1001,6 +1010,31 @@ namespace OsuEnlightenOverlay.Memory
                 + (offsetsFromAob ? " aob" : offsetsFromSeed ? " seed" : "")
                 + (hitCount >= 0 ? " hit=" + hitCount : "")
                 + (osuCount >= 0 ? " osu=" + osuCount : ""));
+        }
+
+        // 슬라이더 tracking 진단 — hold가 끊기는 순간을 잡는다.
+
+        void LogTrackingChange(int idx, int startTime, byte tracking, int timeMs)
+        {
+            if (idx < 0) return;
+            if (lastTrackByIdx == null || idx >= lastTrackByIdx.Length)
+            {
+                int n = Math.Max(idx + 8, cachedHoCount);
+                if (n < 16) n = 16;
+                byte[] nbuf = new byte[n];
+                if (lastTrackByIdx != null)
+                    Array.Copy(lastTrackByIdx, nbuf, lastTrackByIdx.Length);
+                lastTrackByIdx = nbuf;
+            }
+            // 미래 창(+500ms)에서 읽은 값은 아직 홀드가 아니다. 여기서 1을 기록하면
+            // StartTime에 0이 되는 순간 가짜 DROP이 난다 (스택된 서클+슬라이더 126758).
+            if (timeMs < startTime)
+                return;
+            byte prev = lastTrackByIdx[idx];
+            lastTrackByIdx[idx] = tracking;
+            if (prev == tracking) return;
+            if (prev == 1 && tracking == 0)
+                Console.WriteLine("[TRACK] DROP st=" + startTime + " t=" + timeMs + " idx=" + idx);
         }
 
         /// <summary>
@@ -1051,19 +1085,63 @@ namespace OsuEnlightenOverlay.Memory
         // reader 자체 파싱(ParseOsuFile)보다 신뢰성 높음 — OverlayForm이 이미 파싱한 결과 재사용.
         List<int> parsedStartTimes = new List<int>();
         List<int> parsedTypes = new List<int>(); // OverlayForm 주입 .osu Type 목록 (type & 0xF)
+        // StartTime → overlay EndTime. 메모리 EndTime(0x14)이 StartTime과 같게 읽히는
+        // 빌드가 있어(실측 longObjs=1), 2초보다 긴 슬라이더가 창에서 빠지고 IsHit를 놓친다.
+        readonly Dictionary<int, int> parsedEndByStart = new Dictionary<int, int>(512);
         string parsedOsuKey = null;
 
         /// <summary>
-        /// OverlayForm이 맵 파싱 후 호출 — .osu 교차검증용 StartTime + Type 목록 주입.
+        /// OverlayForm이 맵 파싱 후 호출 — .osu 교차검증용 StartTime + Type + EndTime 목록 주입.
         /// mapKey 가 바뀌면 검증 데이터만 갱신한다 — HOM 오프셋은 PID 가 같은 한 불변이므로
         /// 여기서 날리지 않는다.
         /// </summary>
-        public void SetParsedStartTimes(List<int> startTimes, List<int> types, string mapKey)
+        public void SetParsedStartTimes(List<int> startTimes, List<int> types, List<int> endTimes, string mapKey)
         {
             parsedStartTimes = startTimes ?? new List<int>();
             parsedTypes = types ?? new List<int>();
+            parsedEndByStart.Clear();
+            int n = parsedStartTimes.Count;
+            int longParsed = 0;
+            if (endTimes != null)
+            {
+                int nEnd = Math.Min(n, endTimes.Count);
+                for (int i = 0; i < nEnd; i++)
+                {
+                    int st = parsedStartTimes[i];
+                    int et = endTimes[i];
+                    if (et < st) et = st;
+                    int prev;
+                    if (!parsedEndByStart.TryGetValue(st, out prev) || et > prev)
+                        parsedEndByStart[st] = et;
+                    if (et - st >= LongObjectMinDurationMs) longParsed++;
+                }
+            }
+            parsedStartTimeSet = null;
             if (mapKey != parsedOsuKey)
                 parsedOsuKey = mapKey;
+            Console.WriteLine("[HOM] parsed_end injected n=" + n
+                + " unique=" + parsedEndByStart.Count
+                + " long>=" + LongObjectMinDurationMs + "ms=" + longParsed);
+        }
+
+        int OverlayEndTime(int startTime, int memoryEndTime)
+        {
+            int et = memoryEndTime;
+            if (et < startTime) et = startTime;
+            int parsedEt;
+            if (!parsedEndByStart.TryGetValue(startTime, out parsedEt))
+                return et;
+            if (parsedEt < startTime) parsedEt = startTime;
+            if (parsedEt > et)
+                return parsedEt;
+            // 메모리 0x14만 비정상적으로 긴 경우(Aspire `B,2048,-58.25` 등 음수 length×다반복).
+            // 예전엔 parsed가 더 길 때만 썼기 때문에, 죽은 더미가 2초 판정 창에 남아
+            // IsHit/IsTracking RPM이 매 프레임 늘고 win이 12~34까지 부풀었다.
+            int memDur = et - startTime;
+            int parsedDur = parsedEt - startTime;
+            if (parsedDur < LongObjectMinDurationMs && memDur > parsedDur + 30000)
+                return parsedEt;
+            return et;
         }
 
         string GetOsuFilePathFromBeatmap(IntPtr beatmapObj)
@@ -1128,6 +1206,7 @@ namespace OsuEnlightenOverlay.Memory
 
                     parsedHitObjects.Add(new OsuHitObject { StartTime = time, Type = ty, RepeatCount = repeatCount });
                 }
+                parsedHitObjects.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
             }
             catch { }
         }
@@ -1189,8 +1268,15 @@ namespace OsuEnlightenOverlay.Memory
             return pm.ReadPointer(baseAddr + off, out val);
         }
 
+        // .osu StartTime 집합 캐시 — VerifyHomItemsPrefix 완화 검증용.
+        // Aspire 맵처럼 슬라이더가 확장되면 메모리의 객체 순서가 .osu 순서와 어긋나
+        // 인덱스 기반 정확 매칭이 깨진다. 집합 포함 검증으로 완화한다.
+        HashSet<int> parsedStartTimeSet;
+
         /// <summary>
-        /// items[0..n) 의 StartTime/Type 이 .osu 앞 n개와 일치하는지.
+        /// items[0..n) 의 StartTime/Type 이 .osu 와 일치하는지.
+        /// Aspire 맵 대응: 슬라이더 확장으로 순서가 어긋나므로, 인덱스 정확 매칭 대신
+        /// 읽은 StartTime이 .osu StartTime 집합에 포함되는지로 검증한다.
         /// </summary>
         bool VerifyHomItemsPrefix(IntPtr items, int count, int prefixLen)
         {
@@ -1199,11 +1285,12 @@ namespace OsuEnlightenOverlay.Memory
             int n = Math.Min(prefixLen, Math.Min(count, osuCount));
             if (n < 1) return false;
 
+            // StartTime 집합 구축 (최초 1회)
+            if (parsedStartTimeSet == null && parsedStartTimes.Count > 0)
+                parsedStartTimeSet = new HashSet<int>(parsedStartTimes);
+
             for (int i = 0; i < n; i++)
             {
-                int osuSt, osuTy;
-                if (!TryGetOsuVerifyAt(i, out osuSt, out osuTy)) return false;
-
                 IntPtr ho;
                 if (!pm.ReadPointer(items + 0x08 + i * 4, out ho)) return false;
                 if (!LooksLikeHeapPtr((uint)ho.ToInt32())) return false;
@@ -1216,8 +1303,13 @@ namespace OsuEnlightenOverlay.Memory
                 if (st < 0 || st > 3600000) return false;
                 if (et < st || et > 3600000) return false;
                 if (ty == 0) return false;
-                if (osuSt >= 0 && st != osuSt) return false;
-                if (osuTy >= 0 && (ty & 0x0B) != (osuTy & 0x0B)) return false;
+
+                // 완화된 검증: StartTime이 .osu 집합에 포함되면 통과 (순서 무관).
+                // 집합이 없으면(파싱 데이터 없음) 구조적 검증만으로 통과.
+                if (parsedStartTimeSet != null && parsedStartTimeSet.Count > 0)
+                {
+                    if (!parsedStartTimeSet.Contains(st)) return false;
+                }
             }
             return true;
         }
@@ -1302,21 +1394,40 @@ namespace OsuEnlightenOverlay.Memory
                 if (TryReadHomAt(playerObj, foundPlayerHomOff, foundHomListOff, out snapshot))
                 {
                     if (!ShouldValidateHomPrefix(beatmapObj, snapshot))
+                    {
+                        // 검증 불필요 프레임 — 읽기 성공이면 유예 카운터 리셋 후 통과.
+                        homGraceStreak = 0;
                         return true;
+                    }
 
                     if (VerifyHomItemsPrefix(snapshot.Items, snapshot.Count, Math.Min(3, snapshot.Count)))
                     {
                         MarkHomPrefixValidated(beatmapObj, snapshot);
+                        homGraceStreak = 0;
                         return true;
                     }
                 }
 
+                // 읽기/검증 실패 — GC 이동(일시적)일 수 있으니 즉시 리셋하지 않고 유예.
+                // 유예 창 안에 다음 프레임에서 재검증 성공하면 오프셋을 유지해 판정 끊김을 막는다.
+                homGraceStreak++;
+                if (homGraceStreak < HomGraceFrames)
+                {
+                    LogHom("grace");
+                    return false; // 이번 프레임만 스킵 — 오프셋은 유지, 다음 프레임 재시도
+                }
+
+                // 유예 초과 — 진짜 오프셋 붕괴로 판단하고 리셋 후 재탐지.
+                // 단, 마지막 성공 오프셋을 preferred(시드)로 유지해 DetectHomOffsets가
+                // 전수 스캔 대신 그 오프셋부터 재검증하게 한다 — GC 이동 후 객체가 안정화되면
+                // 같은 오프셋이 다시 유효해지는 경우가 많아 빠르게 복구된다.
                 Console.WriteLine("[HOM] bad_off clear 0x" + foundPlayerHomOff.ToString("X")
-                    + "/0x" + foundHomListOff.ToString("X"));
-                if (preferredHomListOff == foundHomListOff)
-                    preferredHomListOff = -1;
+                    + "/0x" + foundHomListOff.ToString("X") + " (grace=" + homGraceStreak + ")");
+                preferredPlayerHomOff = foundPlayerHomOff;
+                preferredHomListOff = foundHomListOff;
                 foundHomListOff = -1;
                 offsetsFromAob = false;
+                homGraceStreak = 0;
             }
 
             if (!DetectHomOffsets(playerObj, out snapshot))
@@ -1330,10 +1441,13 @@ namespace OsuEnlightenOverlay.Memory
         bool DetectHomOffsets(IntPtr playerObj, out HomSnapshot snapshot)
         {
             snapshot = new HomSnapshot();
-            if (playerObj == IntPtr.Zero) return false;
+            if (playerObj == IntPtr.Zero) { LogHom("detect_no_player"); return false; }
 
             int osuCount = GetOsuVerifyCount();
             int expectedExpanded = CalcExpectedHomCount();
+
+            // detect_fail 무한 반복 진단 — 어느 단계에서 실패하는지 rate-limit 로그
+            LogHom("detect_enter", -1, osuCount);
 
             // 1) 세션 시드 (이전 detect_ok)
             if (foundHomListOff < 0)
@@ -1349,6 +1463,10 @@ namespace OsuEnlightenOverlay.Memory
                         Console.WriteLine("[HOM] seed_hit off=0x" + foundPlayerHomOff.ToString("X")
                             + "/0x" + foundHomListOff.ToString("X") + " count=" + snapshot.Count);
                         return true;
+                    }
+                    else
+                    {
+                        LogHom("seed_fail", snapshot.Count, osuCount);
                     }
                 }
 
@@ -1367,6 +1485,10 @@ namespace OsuEnlightenOverlay.Memory
                             + "/0x" + foundHomListOff.ToString("X") + " count=" + snapshot.Count);
                         return true;
                     }
+                    else
+                    {
+                        LogHom("measured_fail", snapshot.Count, osuCount);
+                    }
                 }
             }
 
@@ -1375,6 +1497,10 @@ namespace OsuEnlightenOverlay.Memory
             int offEnd = playerHomFixed ? foundPlayerHomOff : 0x1FC;
 
             bool playerBufOk = pm.ReadBytes(playerObj, homPlayerBuf, homPlayerBuf.Length);
+
+            // 전수 스캔 진단 — 후보/실패 통계 (rate-limit)
+            int scanCandidates = 0, scanCountFail = 0, scanPrefixFail = 0;
+            int scanLastCount = -1;
 
             for (int off = offStart; off <= offEnd; off += 4)
             {
@@ -1398,14 +1524,17 @@ namespace OsuEnlightenOverlay.Memory
                     if (!pm.ReadInt32(listCand + 0x10, out count)) continue;
                     if (count < 1) continue;
 
+                    scanCandidates++;
+                    scanLastCount = count;
+
                     bool countOk = osuCount <= 0
                         || Math.Abs(count - osuCount) <= 2
                         || (expectedExpanded > 0 && Math.Abs(count - expectedExpanded) <= 2);
-                    if (!countOk) continue;
+                    if (!countOk) { scanCountFail++; continue; }
 
                     int prefix = Math.Min(3, count);
                     if (!VerifyHomItemsPrefix(items, count, prefix))
-                        continue;
+                    { scanPrefixFail++; continue; }
 
                     IntPtr firstObject;
                     if (!pm.ReadPointer(items + 0x08, out firstObject)
@@ -1427,6 +1556,14 @@ namespace OsuEnlightenOverlay.Memory
 
                 if (playerHomFixed) break;
             }
+
+            // 전수 스캔 실패 — 후보/실패 통계 로그 (어느 단계에서 막혔는지)
+            if (scanCandidates > 0)
+                Console.WriteLine("[HOM] scan_fail cand=" + scanCandidates
+                    + " countFail=" + scanCountFail + " prefixFail=" + scanPrefixFail
+                    + " lastCount=" + scanLastCount + " osu=" + osuCount + " exp=" + expectedExpanded);
+            else
+                LogHom("scan_no_cand", -1, osuCount);
             return false;
         }
 
@@ -1571,7 +1708,9 @@ namespace OsuEnlightenOverlay.Memory
                 cachedHoEndTimes = new int[hitCount];
                 cachedHoCount = 0;
                 longObjectIndices.Clear();
+                lastTrackByIdx = null;
                 int maxDuration = 0;
+                int endCapN = 0;
 
                 for (int i = 0; i < hitCount; i++)
                 {
@@ -1584,6 +1723,10 @@ namespace OsuEnlightenOverlay.Memory
                         cachedHoStartTimes[i] = st;
                         int et;
                         pm.ReadInt32(hoPtr + Offsets.HitObject_EndTime, out et);
+                        int rawEt = et;
+                        et = OverlayEndTime(st, et);
+                        if (et < rawEt)
+                            endCapN++;
                         cachedHoEndTimes[i] = et;
                         int dur = et - st;
                         if (dur > maxDuration) maxDuration = dur;
@@ -1609,69 +1752,47 @@ namespace OsuEnlightenOverlay.Memory
                         LogHom("field_st0_mismatch", hitCount, osuCount);
                     else
                         Console.WriteLine("[HOM] field_sanity ok st0=" + osuSt0
-                            + " longObjs=" + longObjectIndices.Count);
+                            + " longObjs=" + longObjectIndices.Count
+                            + " endCap=" + endCapN);
                 }
             }
 
-            // 시간 창: StartTime 은 [timeMin, timeMax] 만 (duration 확장 없음).
-            // 긴 객체는 longObjectIndices 에서 EndTime 활성인 것만 추가.
-            int idxStart = 0, idxEnd = cachedHoCount;
-            int timeMin = 0, timeMax = int.MaxValue;
+            // 시간 창: StartTime만 보면 2초보다 긴 슬라이더가 창 밖으로 빠져
+            // hold/IsHit 읽기가 중간에 끊긴다 (02:22 구간 3.7s 슬라이더).
+            // StartTime≤timeMax && EndTime≥timeMin 인 객체는 전부 읽는다.
+            reusedReadIndices.Clear();
+            int timeMin = int.MinValue, timeMax = int.MaxValue;
+            int nCache = Math.Min(cachedHoCount, hitCount);
             if (timeRangeMs > 0)
             {
                 timeMin = TimeMs - timeRangeMs;
                 timeMax = TimeMs + 500;
-
-                int lo = 0, hi = cachedHoCount;
-                while (lo < hi)
+                // 진행 중(지금 홀드해야 하는) 객체를 먼저 넣어 maxCount에 안 잘리게 한다.
+                for (int pass = 0; pass < 2; pass++)
                 {
-                    int mid = (lo + hi) >> 1;
-                    if (cachedHoStartTimes[mid] < timeMin)
-                        lo = mid + 1;
-                    else
-                        hi = mid;
+                    for (int i = 0; i < nCache && reusedReadIndices.Count < maxCount; i++)
+                    {
+                        int st = cachedHoStartTimes[i];
+                        if (st < 0) continue;
+                        int et = OverlayEndTime(st, cachedHoEndTimes[i]);
+                        bool active = st <= TimeMs && et >= TimeMs;
+                        if (pass == 0 && !active) continue;
+                        if (pass == 1 && active) continue;
+                        if (et < timeMin || st > timeMax) continue;
+                        reusedReadIndices.Add(i);
+                    }
                 }
-                idxStart = Math.Max(0, lo - 2);
-
-                lo = 0; hi = cachedHoCount;
-                while (lo < hi)
-                {
-                    int mid = (lo + hi) >> 1;
-                    if (cachedHoStartTimes[mid] <= timeMax)
-                        lo = mid + 1;
-                    else
-                        hi = mid;
-                }
-                idxEnd = Math.Min(cachedHoCount, lo + 2);
             }
-
-            byte[] hoBatch = reusedHoBatch;
-            int timeMinFilter = (timeRangeMs > 0) ? timeMin : int.MinValue;
-            int idxLimit = Math.Min(idxEnd, Math.Min(cachedHoCount, hitCount));
-
-            reusedReadIndices.Clear();
-            for (int i = idxStart; i < idxLimit; i++)
+            else
             {
-                if (cachedHoStartTimes[i] < 0) continue;
-                if (cachedHoEndTimes[i] < timeMinFilter) continue;
-                reusedReadIndices.Add(i);
-            }
-            // 긴 객체: StartTime 창 밖이어도 아직 진행 중이면 포함
-            if (timeRangeMs > 0)
-            {
-                for (int li = 0; li < longObjectIndices.Count; li++)
+                for (int i = 0; i < nCache; i++)
                 {
-                    int i = longObjectIndices[li];
-                    if (i < 0 || i >= cachedHoCount || i >= hitCount) continue;
-                    if (i >= idxStart && i < idxLimit) continue; // 이미 창 안
-                    int st = cachedHoStartTimes[i];
-                    int et = cachedHoEndTimes[i];
-                    if (st < 0) continue;
-                    if (et < timeMinFilter) continue; // 이미 끝
-                    if (st > timeMax) continue;       // 아직 시작 전
+                    if (cachedHoStartTimes[i] < 0) continue;
                     reusedReadIndices.Add(i);
                 }
             }
+
+            byte[] hoBatch = reusedHoBatch;
 
             int readCount = 0;
             for (int ri = 0; ri < reusedReadIndices.Count; ri++)
@@ -1692,10 +1813,9 @@ namespace OsuEnlightenOverlay.Memory
 
                 if (!pm.ReadBytes(hoPtr + 0x10, hoBatch, 0x0C)) continue;
 
-                j.EndTime = ProcessMemory.GetInt32(hoBatch, 0x04);
+                j.EndTime = OverlayEndTime(j.StartTime, ProcessMemory.GetInt32(hoBatch, 0x04));
                 j.Type = ProcessMemory.GetInt32(hoBatch, 0x08);
 
-                if (j.EndTime < j.StartTime || j.EndTime > 3600000) continue;
                 if (j.Type == 0) continue;
 
                 bool isSlider = (j.Type & 2) != 0;
@@ -1717,6 +1837,7 @@ namespace OsuEnlightenOverlay.Memory
                 if (isSlider)
                 {
                     j.IsTracking = ProcessMemory.GetByte(hoBatch, 0x110);
+                    LogTrackingChange(i, j.StartTime, j.IsTracking, TimeMs);
                     IntPtr sliderStart = ProcessMemory.GetPointer(hoBatch, 0xC0);
                     if (sliderStart != IntPtr.Zero && LooksLikeHeapPtr((uint)sliderStart.ToInt32()))
                     {
@@ -1725,15 +1846,13 @@ namespace OsuEnlightenOverlay.Memory
                         //   Arm(HitValue > 0). HitValue는 Hit() 안에서 IsHit와 같이 set.
                         // ScoreValue는 IncreaseScore 이후에 쓰이므로 IsHit=1인데 아직 0인
                         // 프레임이 있어, ScoreValue로 Arm하면 hit가 miss로 먼저 잠긴다.
-                        byte startIsHit;
-                        if (pm.ReadByte(sliderStart + Offsets.HitObject_IsHit, out startIsHit))
-                            j.StartIsHit = startIsHit;
-                        int startHitValue;
-                        if (pm.ReadInt32(sliderStart + Offsets.HitObject_HitValue, out startHitValue))
-                            j.StartHitValue = startHitValue;
-                        int startScore;
-                        if (pm.ReadInt32(sliderStart + Offsets.HitObject_ScoreValue, out startScore))
-                            j.StartScoreValue = startScore;
+                        // HitValue 0x5C / ScoreValue 0x80 / IsHit 0x84 를 한 번에 읽는다.
+                        if (pm.ReadBytes(sliderStart + Offsets.HitObject_HitValue, reusedStartBatch, 0x29))
+                        {
+                            j.StartHitValue = ProcessMemory.GetInt32(reusedStartBatch, 0);
+                            j.StartScoreValue = ProcessMemory.GetInt32(reusedStartBatch, Offsets.HitObject_ScoreValue - Offsets.HitObject_HitValue);
+                            j.StartIsHit = ProcessMemory.GetByte(reusedStartBatch, Offsets.HitObject_IsHit - Offsets.HitObject_HitValue);
+                        }
                     }
                 }
 

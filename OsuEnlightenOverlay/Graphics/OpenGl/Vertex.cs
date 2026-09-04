@@ -62,4 +62,19 @@ namespace OsuEnlightenOverlay.Graphics.OpenGl
 
         public static readonly int Stride = Marshal.SizeOf(typeof(TexturedVertex3d));
     }
+
+    /// <summary>
+    /// lazer Path.DrawNode PathVertex — capsule SDF 쿼드.
+    /// Position / StartPos / EndPos / Radius.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct PathVertex
+    {
+        public Vector2 Position;
+        public Vector2 StartPos;
+        public Vector2 EndPos;
+        public float Radius;
+
+        public static readonly int Stride = Marshal.SizeOf(typeof(PathVertex));
+    }
 }

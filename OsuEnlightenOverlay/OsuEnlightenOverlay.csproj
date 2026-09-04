@@ -85,12 +85,12 @@
     <Compile Include="Graphics\Batches\LinearBatch.cs" />
     <Compile Include="Graphics\Renderers\MmSliderRenderer.cs" />
     <Compile Include="Helpers\ColourHelper.cs" />
-    <Compile Include="Helpers\Logger.cs" />
     <Compile Include="Gameplay\Beatmap\BeatmapData.cs" />
     <Compile Include="Gameplay\Beatmap\BeatmapParser.cs" />
     <Compile Include="Gameplay\Difficulty\DifficultyCalculator.cs" />
     <Compile Include="Gameplay\HitObjects\HitCircleOsu.cs" />
     <Compile Include="Gameplay\HitObjects\HitObjectManagerOsu.cs" />
+    <Compile Include="Gameplay\HitObjects\FollowPointRenderer.cs" />
     <Compile Include="Gameplay\HitObjects\SliderCurve.cs" />
     <Compile Include="Gameplay\HitObjects\SliderOsu.cs" />
     <Compile Include="Gameplay\HitObjects\SpinnerOsu.cs" />

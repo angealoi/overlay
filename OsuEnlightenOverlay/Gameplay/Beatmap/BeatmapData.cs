@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using OpenTK;
+using OsuEnlightenOverlay.Gameplay.HitObjects;
 
 namespace OsuEnlightenOverlay.Gameplay.Beatmap
 {
@@ -158,5 +159,19 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
         // 스택 계산용 끝 위치 — osu! stable HitObject.BaseEndPosition
         // Circle: Position, Slider: EndPosition (스택 적용 전)
         public Vector2 BaseEndPosition;
+
+        // ── lazy 생성용 미리 계산된 값 (슬라이더만) ──
+        // LoadBeatmap에서 객체를 생성하지 않고 데이터만 저장할 때, 스택/정렬/FollowPoint가
+        // 필요로 하는 값들을 미리 계산해 둔다. 실제 SliderOsu 생성은 윈도우 진입 시.
+        public int SliderVirtualEndTime;   // VirtualEndTime (슬라이더만, 아니면 EndTime)
+        public Vector2 SliderEndPosition;  // 커브 끝점 (슬라이더만)
+        public Vector2 SliderHitBurstEnd;  // HitBurst 위치 (슬라이더만)
+        public bool SliderComputed;        // 위 값들이 계산됐는지
+
+        // Precompute가 만든 커브. 생성자가 다시 테셀레이트하지 않게 한다.
+        // 좌표는 BasePosition 기준. SliderOsu는 복제한 뒤 UpdateStackedPosition에서만 옮긴다.
+        internal List<Line> CachedSliderPath;
+        internal List<double> CachedSliderCumLen;
+        internal double CachedSliderLength;
     }
 }

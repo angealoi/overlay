@@ -35,6 +35,7 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
         // 배치
         QuadBatch3D quadBatch;
         LinearBatch3D halfCircleBatch;
+        PathBatch pathBatch;
 
         // 캡 메시 인덱스
         int numPrimitives_cap;
@@ -47,15 +48,20 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
         Shader textureShader3D;
         Shader colourShader2D;
         Shader textureShader2D;
+        Shader pathPrepass;
+        Shader pathResolve;
 
         public MmSliderRenderer(ShaderManager shaderManager)
         {
             textureShader3D = shaderManager.TextureShader3D;
             colourShader2D = shaderManager.ColourShader2D;
             textureShader2D = shaderManager.TextureShader2D;
+            pathPrepass = shaderManager.PathPrepass;
+            pathResolve = shaderManager.PathResolve;
 
-            quadBatch = new QuadBatch3D(200 * 6);
-            halfCircleBatch = new LinearBatch3D(MAXRES * 100 * 3);
+            quadBatch = new QuadBatch3D(32768);
+            halfCircleBatch = new LinearBatch3D(32768);
+            pathBatch = new PathBatch(32768);
 
             CalculateCapMesh();
         }
@@ -323,18 +329,26 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             // 여기서 lineList로 계산하면 스네이킹마다 크기가 달라져 FBO를 재사용할 수 없다.
 
             // NPOT 텍스처 — desktop GL 지원, POT 불필요
-            int fboWidth = Math.Max(1, (int)Math.Ceiling(drawWidth));
-            int fboHeight = Math.Max(1, (int)Math.Ceiling(drawHeight));
+            // 거대 Aspire 슬라이더가 수 만 px FBO를 요청하면 드라이버가 멈춘다. 상한 클램프.
+            const int MaxFboDim = 4096;
+            int fboWidth = Math.Max(1, Math.Min(MaxFboDim, (int)Math.Ceiling(drawWidth)));
+            int fboHeight = Math.Max(1, Math.Min(MaxFboDim, (int)Math.Ceiling(drawHeight)));
 
             // FBO 생성 (depth buffer 포함) — osu! stable: new RenderTarget2D(texture, DepthComponent16)
-            // 이미 있으면 재사용 — 크기가 고정이라 내용만 다시 그리면 된다.
+            // 이미 있으면 재사용 — 크기가 바뀌었으면 버리고 다시 만든다.
+            if (fboTarget != null && (fboTarget.Width != fboWidth || fboTarget.Height != fboHeight))
+            {
+                fboTarget.Dispose();
+                fboTarget = null;
+                bodySprite = null;
+            }
             if (fboTarget == null)
                 fboTarget = new RenderTarget2D(fboWidth, fboHeight, true, true);
             RenderTarget2D target = fboTarget;
 
+            GL.ClearColor(0, 0, 0, 0);
             target.Bind();
 
-            GL.ClearColor(0, 0, 0, 0);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
             // FBO용 projection — OpenGL 좌표계 (좌하단 원점, Y가 위로 증가)
@@ -344,7 +358,7 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
                 drawTop, drawTop + drawHeight, -1, 1);
 
             // FBO에 슬라이더 바디 렌더링 — blend OFF, depth test ON
-            DrawOGL(lineList, globalRadius, texId, fboProj);
+            DrawOGL(lineList, globalRadius, texId, fboProj, true, Color.White);
 
             target.Unbind();
 
@@ -360,12 +374,12 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             pTex.IsDisposable = false; // RenderTarget2D가 소유
 
             // pSprite 생성 — Fields.Native, Origins.TopLeft
-            // depth: DrawOrderBwd(EndTime + 10) — 시작원/끝원보다 낮아야 아래에 그려짐
-            // DrawOrderBwd(n) = 0.8 - (n%6000000)/10000000 이므로
-            // EndTime+10 > StartTime → DrawOrderBwd(EndTime+10) < DrawOrderBwd(StartTime) → 아래
+            // depth: DrawOrderBwd(StartTime + 10) — 같은 슬라이더 시작/끝원보다 아래,
+            // 나중에 나온 노트(더 큰 StartTime)보다는 위.
+            // EndTime+10을 쓰면 긴 슬라이더 바디가 그 사이에 나타난 다음 시작원 밑으로 내려간다.
             pSprite sliderBody = new pSprite(pTex, Fields.Native, Origins.TopLeft, Clocks.Audio,
                 new Vector2(drawLeft, drawTop),
-                SpriteManager.DrawOrderBwd(endTime + 10), false, Color.White);
+                SpriteManager.DrawOrderBwd(startTime + 10), false, Color.White);
             sliderBody.Alpha = 0f;
             // FBO 텍스처 — DpiScale 처리 방식 변경 후 FlipVertical 불필요
             // sliderBody.FlipVertical = true;
@@ -402,6 +416,194 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             return sliderBody;
         }
 
+        bool CanDrawSdf()
+        {
+            return pathPrepass != null && pathPrepass.IsValid
+                && pathResolve != null && pathResolve.IsValid
+                && pathBatch != null;
+        }
+
+        int GetGradientTexId(int colourIndex)
+        {
+            Color colour;
+            if (colourIndex < 0 || colourIndex >= m_colours.Count)
+                colour = Color.Gray;
+            else
+                colour = m_colours[colourIndex];
+
+            int texId;
+            Color cacheKey = Color.FromArgb(colour.A, colour.R, colour.G, colour.B);
+            if (!textureCache.TryGetValue(cacheKey, out texId))
+            {
+                texId = CreateTexture(colour, m_border);
+                textureCache[cacheKey] = texId;
+            }
+            return texId;
+        }
+
+        /// <summary>
+        /// lazer Path: 보이는 폴리라인만 capsule SDF로 FBO에 굽는다.
+        /// MAX 블렌드로 이음새를 합치고, 스네이킹이 앞으로만 가면 FBO를 지우지 않고 새 구간만 더한다.
+        /// 합성(그라디언트 룩업)은 SpriteManager가 PathResolve 셰이더로 한다.
+        /// </summary>
+        public pSprite DrawSdf(List<Vector2> path, int firstSegmentVertex, bool clearSdf,
+            float globalRadius, int colourIndex,
+            int startTime, int endTime, int preEmpt, int fadeIn,
+            float drawLeft, float drawTop, float drawWidth, float drawHeight,
+            ref RenderTarget2D fboTarget, pSprite bodySprite)
+        {
+            if (path == null || path.Count == 0) return bodySprite;
+            if (globalRadius <= 0.001f) return bodySprite;
+
+            if (!CanDrawSdf())
+            {
+                List<Line> lines = new List<Line>(Math.Max(0, path.Count - 1));
+                for (int i = 1; i < path.Count; i++)
+                    lines.Add(new Line(path[i - 1], path[i]));
+                if (lines.Count == 0 && path.Count == 1)
+                    lines.Add(new Line(path[0], path[0]));
+                return Draw(lines, globalRadius, colourIndex, Matrix4.Identity,
+                    startTime, endTime, preEmpt, fadeIn,
+                    drawLeft, drawTop, drawWidth, drawHeight, ref fboTarget, bodySprite);
+            }
+
+            int gradientId = GetGradientTexId(colourIndex);
+
+            const int MaxFboDim = 4096;
+            int fboWidth = Math.Max(1, Math.Min(MaxFboDim, (int)Math.Ceiling(drawWidth)));
+            int fboHeight = Math.Max(1, Math.Min(MaxFboDim, (int)Math.Ceiling(drawHeight)));
+
+            if (fboTarget != null && (fboTarget.Width != fboWidth || fboTarget.Height != fboHeight))
+            {
+                fboTarget.Dispose();
+                fboTarget = null;
+                bodySprite = null;
+                clearSdf = true;
+                firstSegmentVertex = 0;
+            }
+            if (fboTarget == null)
+            {
+                fboTarget = new RenderTarget2D(fboWidth, fboHeight, false, true);
+                clearSdf = true;
+                firstSegmentVertex = 0;
+                bodySprite = null;
+            }
+
+            GL.ClearColor(0, 0, 0, 0);
+            fboTarget.Bind(clearSdf);
+
+            Matrix4 fboProj = Matrix4.CreateOrthographicOffCenter(
+                drawLeft, drawLeft + drawWidth,
+                drawTop, drawTop + drawHeight, -1, 1);
+
+            GL.Disable(EnableCap.CullFace);
+            GL.Disable(EnableCap.DepthTest);
+            GL.DepthMask(false);
+            GL.Enable(EnableCap.Blend);
+            GL.BlendEquation(BlendEquationMode.Max);
+            GL.BlendFunc(BlendingFactor.One, BlendingFactor.One);
+
+            pathPrepass.Begin();
+            pathPrepass.SetProjectionMatrix(ref fboProj);
+
+            pathBatch.Initialize();
+            pathBatch.SetAutoFlushShader(pathPrepass);
+
+            if (path.Count == 1)
+            {
+                AddCapsule(path[0], path[0], globalRadius);
+            }
+            else
+            {
+                int first = firstSegmentVertex;
+                if (first < 0) first = 0;
+                if (first > path.Count - 2) first = Math.Max(0, path.Count - 2);
+                for (int i = first; i < path.Count - 1; i++)
+                    AddCapsule(path[i], path[i + 1], globalRadius);
+            }
+
+            pathBatch.Draw(pathPrepass);
+            pathPrepass.End();
+
+            fboTarget.Unbind();
+
+            GL.BlendEquation(BlendEquationMode.FuncAdd);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            GL.Enable(EnableCap.Blend);
+            GL.Disable(EnableCap.DepthTest);
+            GL.DepthMask(false);
+            GL.BindTexture(TextureTarget.Texture2D, 0);
+
+            if (bodySprite != null)
+            {
+                bodySprite.SliderPathGradientTexId = gradientId;
+                return bodySprite;
+            }
+
+            pTexture pTex = new pTexture(fboTarget.TextureId, (int)drawWidth, (int)drawHeight, "sliderBody");
+            pTex.IsDisposable = false;
+
+            pSprite sliderBody = new pSprite(pTex, Fields.Native, Origins.TopLeft, Clocks.Audio,
+                new Vector2(drawLeft, drawTop),
+                SpriteManager.DrawOrderBwd(startTime + 10), false, Color.White);
+            sliderBody.Alpha = 0f;
+            sliderBody.SliderPathGradientTexId = gradientId;
+
+            int fadeInClamped = Math.Min(fadeIn, preEmpt);
+            sliderBody.Transformations.Add(new Transformation(
+                TransformationType.Fade, 0f, 1f,
+                startTime - preEmpt,
+                startTime - preEmpt + fadeInClamped,
+                EasingTypes.None));
+            if (OsuEnlightenOverlay.Gameplay.HitObjects.HitCircleOsu.HiddenActive)
+            {
+                sliderBody.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 1f, 0f,
+                    startTime - preEmpt + fadeInClamped,
+                    endTime,
+                    EasingTypes.Out));
+            }
+            else
+            {
+                sliderBody.Transformations.Add(new Transformation(
+                    TransformationType.Fade, 1f, 0f,
+                    endTime,
+                    endTime + DifficultyCalculator.FadeOut,
+                    EasingTypes.None));
+            }
+
+            return sliderBody;
+        }
+
+        const float PathPrecisionSq = 0.0001f;
+
+        void AddCapsule(Vector2 start, Vector2 end, float radius)
+        {
+            Vector2 dir = end - start;
+            float lengthSquared = dir.X * dir.X + dir.Y * dir.Y;
+            if (lengthSquared < PathPrecisionSq)
+                dir = Vector2.UnitX;
+            else
+                dir *= 1f / (float)Math.Sqrt(lengthSquared);
+
+            Vector2 ortho = new Vector2(-dir.Y, dir.X) * radius;
+            Vector2 cap = dir * radius;
+            Vector2 startExt = start - cap;
+            Vector2 endExt = end + cap;
+
+            Vector2 topLeft = startExt + ortho;
+            Vector2 topRight = endExt + ortho;
+            Vector2 bottomLeft = startExt - ortho;
+            Vector2 bottomRight = endExt - ortho;
+
+            pathBatch.Add(new PathVertex { Position = topLeft, StartPos = start, EndPos = end, Radius = radius });
+            pathBatch.Add(new PathVertex { Position = topRight, StartPos = start, EndPos = end, Radius = radius });
+            pathBatch.Add(new PathVertex { Position = bottomLeft, StartPos = start, EndPos = end, Radius = radius });
+            pathBatch.Add(new PathVertex { Position = topRight, StartPos = start, EndPos = end, Radius = radius });
+            pathBatch.Add(new PathVertex { Position = bottomRight, StartPos = start, EndPos = end, Radius = radius });
+            pathBatch.Add(new PathVertex { Position = bottomLeft, StartPos = start, EndPos = end, Radius = radius });
+        }
+
         static int NextPow2(int n)
         {
             int p = 1;
@@ -409,11 +611,40 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             return p;
         }
 
-        void DrawOGL(List<Line> lineList, float globalRadius, int textureId, Matrix4 projectionMatrix)
+        public void DrawToScreen(List<Line> lineList, float globalRadius, int colourIndex,
+            Matrix4 projectionMatrix, float alpha)
         {
-            // osu! stable: blend OFF, depth test ON — FBO에 렌더링
+            if (lineList == null || lineList.Count == 0) return;
+            if (alpha <= 0.001f) return;
+
+            Color colour;
+            if (colourIndex < 0 || colourIndex >= m_colours.Count)
+                colour = m_colours.Count == 1 ? m_colours[0] : Color.Gray;
+            else
+                colour = m_colours[colourIndex];
+
+            int texId;
+            Color cacheKey = Color.FromArgb(colour.A, colour.R, colour.G, colour.B);
+            if (!textureCache.TryGetValue(cacheKey, out texId))
+            {
+                texId = CreateTexture(colour, m_border);
+                textureCache[cacheKey] = texId;
+            }
+
+            int a = (int)(alpha * 255f);
+            if (a < 0) a = 0;
+            if (a > 255) a = 255;
+            DrawOGL(lineList, globalRadius, texId, projectionMatrix, false, Color.FromArgb(a, 255, 255, 255));
+        }
+
+        void DrawOGL(List<Line> lineList, float globalRadius, int textureId, Matrix4 projectionMatrix,
+            bool toFbo, Color tint)
+        {
             GL.Disable(EnableCap.CullFace);
-            GL.Disable(EnableCap.Blend);
+            if (toFbo)
+                GL.Disable(EnableCap.Blend);
+            else
+                GL.Enable(EnableCap.Blend);
             GL.Enable(EnableCap.DepthTest);
             GL.DepthMask(true);
             GL.DepthFunc(DepthFunction.Lequal);
@@ -424,7 +655,7 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             {
                 textureShader3D.Begin();
                 textureShader3D.SetProjectionMatrix(ref projectionMatrix);
-                textureShader3D.SetColour(Color.White);
+                textureShader3D.SetColour(tint);
             }
 
             GL.BindTexture(TextureTarget.Texture2D, textureId);
@@ -433,6 +664,8 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             quadBatch.Initialize();
             halfCircleBatch.Initialize();
+            quadBatch.SetAutoFlushShader(textureShader3D);
+            halfCircleBatch.SetAutoFlushShader(textureShader3D);
 
             int count = lineList.Count;
             Line prev = null;
@@ -453,7 +686,8 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
 
             GL.Disable(EnableCap.DepthTest);
             GL.DepthMask(false);
-            GL.Enable(EnableCap.Blend);
+            if (toFbo)
+                GL.Enable(EnableCap.Blend);
         }
 
         /// <summary>
@@ -549,6 +783,11 @@ namespace OsuEnlightenOverlay.Graphics.Renderers
             {
                 halfCircleBatch.Dispose();
                 halfCircleBatch = null;
+            }
+            if (pathBatch != null)
+            {
+                pathBatch.Dispose();
+                pathBatch = null;
             }
         }
     }

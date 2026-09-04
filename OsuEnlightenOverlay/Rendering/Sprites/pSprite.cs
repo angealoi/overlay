@@ -83,12 +83,15 @@ namespace OsuEnlightenOverlay.Rendering.Sprites
         public Origins Origin;
         public Clocks Clock;
         public float Depth;
-        // Depth 정렬 시 동점(같은 Depth) 스프라이트의 안정 정렬용 tiebreak (C5/H21).
-        // SpriteManager.Add에서 전역 삽입 순서를 부여한다 — List.Sort는 불안정 정렬이라 동일
-        // Depth의 앞뒤가 재정렬마다 뒤바뀌어 z-플리커가 났다. (Depth, StableOrder)로 전순서를
-        // 만들면 결과가 유일하게 결정돼 깜빡임이 사라진다. stable ListHelper.StableSort와 동치.
+        // Depth 정렬 시 동점 스프라이트의 안정 정렬용 tiebreak (C5/H21).
+        // SpriteManager.Add에서 전역 삽입 순서를 부여한다. 같은 Depth면 먼저 넣은 쪽이 위
+        // (osu-stable SpriteManager.Add BinarySearch+Insert와 동일).
         // long이라 사실상 오버플로 불가(int면 장시간 세션에서 ~2^31 Add 후 wrap 가능).
         public long StableOrder;
+        // SpriteManager.Remove가 O(1)로 마킹만 하고, 실제 리스트 제거는 Update의 압축 패스가
+        // 한 번에 처리한다. List.Remove(O(n))를 수천 번 부르면 O(n²)로 수십 초 멈춘다
+        // (Aspire 2048회 반복 슬라이더 파괴 시 실측 40s). true = 리스트엔 있지만 제거 예약됨.
+        public bool PendingRemove;
         public float Scale = 1f;
         public float Rotation;
         public float Alpha = 1f;
@@ -99,6 +102,15 @@ namespace OsuEnlightenOverlay.Rendering.Sprites
         public Vector2 VectorScale = new Vector2(1, 1);
         public bool AlwaysDraw = true;
         public byte TagNumeric;
+
+        // lazer Path 합성: Texture는 SDF FBO, 이 ID는 1D 그라디언트 (0이면 일반 스프라이트).
+        public int SliderPathGradientTexId;
+
+        // 슬라이더 바디 메시 — FBO 텍스처 쿼드 대신 경로 삼각형을 SpriteManager가 직접 그린다.
+        // AABB 풀스크린 쿼드는 슬라이더가 많을 때 필레이트만으로 수백 프레임을 깎는다.
+        public System.Collections.Generic.List<OsuEnlightenOverlay.Graphics.Primitives.Line> SliderMeshLines;
+        public float SliderMeshRadius;
+        public int SliderMeshColourIndex = -1;
 
         // DrawTop/DrawHeight/DrawWidth — osu-stable pSprite, spinner metre용
         public int DrawTop;

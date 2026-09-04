@@ -126,19 +126,15 @@ namespace OsuEnlightenOverlay.Rendering
             if (HitObjectManager != null)
                 HitObjectManager.Update(timeMs, PendingJudgements);
 
-            // HitObjectManager.Update 후, SpriteManager.Draw 전에 HitBurst 추가
             if (PostHomUpdateCallback != null)
                 PostHomUpdateCallback(timeMs);
 
-            // HUD 렌더링 — SpriteManager.Draw 전에 스프라이트 추가
             if (PreDrawCallback != null)
                 PreDrawCallback(timeMs);
 
-            // SpriteManager Update + Draw (shader pipeline)
             SpriteManager.Update(timeMs);
             SpriteManager.Draw();
 
-            // 게임플레이 스프라이트를 다 그린 뒤 HUD 즉시모드 도형을 위에 얹는다 (I-감사 #18).
             if (PostDrawCallback != null)
                 PostDrawCallback(timeMs);
         }

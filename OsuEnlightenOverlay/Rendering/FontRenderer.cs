@@ -19,7 +19,33 @@ namespace OsuEnlightenOverlay.Rendering
     {
         TextureManager textureManager;
         PrivateFontCollection fontCollection;
-        Dictionary<string, FontFamily> fontFamilies = new Dictionary<string, FontFamily>();
+        Dictionary<string, Font> fontCache = new Dictionary<string, Font>();
+        Bitmap measureBmp;
+        SDGraphics measureG;
+
+        Font GetCachedFont(string fontFamily, float size, FontStyle style)
+        {
+            FontFamily ff = GetFontFamily(fontFamily, style);
+            if (ff == null) return null;
+            string key = fontFamily + "|" + size.ToString("R") + "|" + ((int)style).ToString();
+            Font font;
+            if (fontCache.TryGetValue(key, out font) && font != null)
+                return font;
+            font = new Font(ff, size, style, GraphicsUnit.Pixel);
+            fontCache[key] = font;
+            return font;
+        }
+
+        SDGraphics MeasureGraphics()
+        {
+            if (measureG == null)
+            {
+                measureBmp = new Bitmap(1, 1);
+                measureG = SDGraphics.FromImage(measureBmp);
+                measureG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            }
+            return measureG;
+        }
 
         // 텍스트 캐시 — 같은 텍스트+폰트+크기면 텍스처 재사용
         Dictionary<string, pTexture> textCache = new Dictionary<string, pTexture>();
@@ -156,58 +182,46 @@ namespace OsuEnlightenOverlay.Rendering
                 return textCache[cacheKey];
             }
 
-            FontFamily ff = GetFontFamily(fontFamily, style);
-            if (ff == null) return null;
+            Font font = GetCachedFont(fontFamily, size, style);
+            if (font == null) return null;
 
-            using (Font font = new Font(ff, size, style, GraphicsUnit.Pixel))
+            SizeF textSize = MeasureGraphics().MeasureString(text, font);
+            int textW = (int)Math.Ceiling(textSize.Width);
+            int textH = (int)Math.Ceiling(textSize.Height);
+
+            int totalW = textW + (int)Math.Ceiling(Math.Abs(shadowOffsetX)) + 4;
+            int totalH = textH + (int)Math.Ceiling(Math.Abs(shadowOffsetY)) + 4;
+
+            if (totalW <= 0 || totalH <= 0) return null;
+
+            using (Bitmap bmp = new Bitmap(totalW, totalH, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            using (SDGraphics g = SDGraphics.FromImage(bmp))
             {
-                // 텍스트 크기 측정
-                using (Bitmap measureBmp = new Bitmap(1, 1))
-                using (SDGraphics measureG = SDGraphics.FromImage(measureBmp))
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                g.Clear(Color.Transparent);
+
+                if (shadowColor.A > 0)
                 {
-                    measureG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                    SizeF textSize = measureG.MeasureString(text, font);
-                    int textW = (int)Math.Ceiling(textSize.Width);
-                    int textH = (int)Math.Ceiling(textSize.Height);
-
-                    // 그림자 영역 추가
-                    int totalW = textW + (int)Math.Ceiling(Math.Abs(shadowOffsetX)) + 4;
-                    int totalH = textH + (int)Math.Ceiling(Math.Abs(shadowOffsetY)) + 4;
-
-                    if (totalW <= 0 || totalH <= 0) return null;
-
-                    using (Bitmap bmp = new Bitmap(totalW, totalH, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
-                    using (SDGraphics g = SDGraphics.FromImage(bmp))
+                    using (Brush shadowBrush = new SolidBrush(shadowColor))
                     {
-                        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                        g.Clear(Color.Transparent);
-
-                        // 그림자
-                        if (shadowColor.A > 0)
-                        {
-                            using (Brush shadowBrush = new SolidBrush(shadowColor))
-                            {
-                                g.DrawString(text, font, shadowBrush,
-                                    Math.Max(0, shadowOffsetX), Math.Max(0, shadowOffsetY));
-                            }
-                        }
-
-                        // 본문
-                        using (Brush textBrush = new SolidBrush(color))
-                        {
-                            g.DrawString(text, font, textBrush, 0, 0);
-                        }
-
-                        pTexture tex = textureManager.CreateFromBitmap(bmp, cacheKey);
-                        if (tex != null)
-                        {
-                            tex.Source = SkinSource.Osu;
-                            textCache[cacheKey] = tex;
-                            textCacheLastUse[cacheKey] = ++textCacheAccessCounter;
-                        }
-                        return tex;
+                        g.DrawString(text, font, shadowBrush,
+                            Math.Max(0, shadowOffsetX), Math.Max(0, shadowOffsetY));
                     }
                 }
+
+                using (Brush textBrush = new SolidBrush(color))
+                {
+                    g.DrawString(text, font, textBrush, 0, 0);
+                }
+
+                pTexture tex = textureManager.CreateFromBitmap(bmp, cacheKey);
+                if (tex != null)
+                {
+                    tex.Source = SkinSource.Osu;
+                    textCache[cacheKey] = tex;
+                    textCacheLastUse[cacheKey] = ++textCacheAccessCounter;
+                }
+                return tex;
             }
         }
 
@@ -220,18 +234,12 @@ namespace OsuEnlightenOverlay.Rendering
             width = 0; height = 0;
             if (string.IsNullOrEmpty(text)) return;
 
-            FontFamily ff = GetFontFamily(fontFamily, style);
-            if (ff == null) return;
+            Font font = GetCachedFont(fontFamily, size, style);
+            if (font == null) return;
 
-            using (Font font = new Font(ff, size, style, GraphicsUnit.Pixel))
-            using (Bitmap bmp = new Bitmap(1, 1))
-            using (SDGraphics g = SDGraphics.FromImage(bmp))
-            {
-                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                SizeF sz = g.MeasureString(text, font);
-                width = sz.Width;
-                height = sz.Height;
-            }
+            SizeF sz = MeasureGraphics().MeasureString(text, font);
+            width = sz.Width;
+            height = sz.Height;
         }
 
         /// <summary>
@@ -285,6 +293,13 @@ namespace OsuEnlightenOverlay.Rendering
         public void Dispose()
         {
             ClearCache();
+            if (measureG != null) { measureG.Dispose(); measureG = null; }
+            if (measureBmp != null) { measureBmp.Dispose(); measureBmp = null; }
+            foreach (var kv in fontCache)
+            {
+                if (kv.Value != null) kv.Value.Dispose();
+            }
+            fontCache.Clear();
             fontCollection?.Dispose();
         }
     }

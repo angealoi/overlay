@@ -67,35 +67,48 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         int comboColourIndex;
         Color comboColour;
 
-        // FBO 캐싱 — snaking progress가 변경되었을 때만 내용 재생성
+        // FBO 캐싱 — snaking 중 SDF만 이어 굽고, 완료 후에는 재사용
         float cachedProgress = -1;
         pSprite cachedBodySprite;
         RenderTarget2D cachedFbo;
+        int lastBakedVertexCount;
+        bool bodyBakeFrozen;
 
-        // 바디 FBO 영역 — **전체 커브 기준**이라 스네이킹 중 변하지 않는다.
-        // 진행도마다 크기가 달라지면 FBO를 매번 새로 만들어야 하고, 그러면 VRAM
-        // 할당/해제가 초당 수백 번 일어난다 (D3).
+        readonly List<Vector2> bodyPathVerts = new List<Vector2>();
+        readonly List<Vector2> bodyScreenFullVerts = new List<Vector2>();
+        int cachedBallTime = int.MinValue;
+        Vector2 cachedBallPos;
+        bool snakingFrozen;
+
         bool bodyBoundsValid;
         float bodyDrawLeft, bodyDrawTop, bodyDrawWidth, bodyDrawHeight;
         float bodyBoundsRatio = -1, bodyBoundsRadius = -1;
 
         /// <summary>
-        /// 전체 커브를 감싸는 화면 좌표 박스. 병합된 선분은 커브 점들을 잇는 직선이라
-        /// 언제나 이 박스 안에 들어간다(볼록껍질) — 스네이킹 진행도와 무관하게 안전한 상한.
+        /// 전체 커브를 감싸는 화면 좌표 박스. 스네이킹과 무관하게 FBO 크기를 고정한다.
         /// </summary>
         void ComputeBodyBounds(GameField gameField, float radius)
         {
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
 
+            bodyScreenFullVerts.Clear();
+            if (curvePath.Count > 0)
+            {
+                Vector2 first = gameField.FieldToDisplay(curvePath[0].p1);
+                bodyScreenFullVerts.Add(first);
+                minX = maxX = first.X;
+                minY = maxY = first.Y;
+            }
+
             foreach (Line l in curvePath)
             {
-                Vector2 a = gameField.FieldToDisplay(l.p1);
                 Vector2 b = gameField.FieldToDisplay(l.p2);
-                minX = Math.Min(minX, Math.Min(a.X, b.X));
-                minY = Math.Min(minY, Math.Min(a.Y, b.Y));
-                maxX = Math.Max(maxX, Math.Max(a.X, b.X));
-                maxY = Math.Max(maxY, Math.Max(a.Y, b.Y));
+                bodyScreenFullVerts.Add(b);
+                minX = Math.Min(minX, b.X);
+                minY = Math.Min(minY, b.Y);
+                maxX = Math.Max(maxX, b.X);
+                maxY = Math.Max(maxY, b.Y);
             }
 
             float excess = radius * 1.15f;
@@ -103,6 +116,15 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             bodyDrawTop = minY - excess;
             bodyDrawWidth = (maxX - minX) + radius * 2.3f;
             bodyDrawHeight = (maxY - minY) + radius * 2.3f;
+
+            float clipR = gameField.windowWidth;
+            float clipB = gameField.windowHeight;
+            float right = Math.Min(bodyDrawLeft + bodyDrawWidth, clipR);
+            float bottom = Math.Min(bodyDrawTop + bodyDrawHeight, clipB);
+            bodyDrawLeft = Math.Max(bodyDrawLeft, 0);
+            bodyDrawTop = Math.Max(bodyDrawTop, 0);
+            bodyDrawWidth = Math.Max(1, right - bodyDrawLeft);
+            bodyDrawHeight = Math.Max(1, bottom - bodyDrawTop);
 
             bodyBoundsRatio = gameField.Ratio;
             bodyBoundsRadius = radius;
@@ -140,6 +162,62 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 startCircle.ComboNumber = comboNumber;
         }
 
+        /// <summary>
+        /// 슬라이더의 커브/EndPosition/VirtualEndTime을 데이터 레벨에서 미리 계산.
+        /// lazy 생성 시 LoadBeatmap이 객체를 만들지 않고 스택/정렬/FollowPoint에 필요한
+        /// 값만 먼저 구한다. 실제 SliderOsu 생성은 윈도우 진입 시.
+        /// </summary>
+        public static void PrecomputeSliderData(HitObjectData data, DifficultyValues difficulty, BeatmapData beatmap)
+        {
+            if (data.SliderComputed) return;
+
+            Vector2 headPos = data.BasePosition;
+            List<Vector2> controlPoints = new List<Vector2>();
+            if (data.CurvePoints != null && data.CurvePoints.Count > 0)
+            {
+                controlPoints.AddRange(data.CurvePoints);
+                if (controlPoints[0] != headPos)
+                    controlPoints.Insert(0, headPos);
+            }
+            else
+            {
+                controlPoints.Add(headPos);
+            }
+
+            List<Line> curvePath = SliderCurve.CalculateCurve(controlPoints, data.CurveType, data.Length);
+            List<double> cum = SliderCurve.CalculateCumulativeLengths(curvePath);
+            double pathLen = 0;
+            foreach (Line l in curvePath)
+                pathLen += l.Rho;
+            data.CachedSliderPath = curvePath;
+            data.CachedSliderCumLen = cum;
+            data.CachedSliderLength = pathLen;
+
+            // 끝 위치
+            if (curvePath.Count > 0)
+                data.SliderEndPosition = curvePath[curvePath.Count - 1].p2;
+            else
+                data.SliderEndPosition = headPos;
+
+            // HitBurst 위치
+            if (curvePath.Count > 0)
+            {
+                int segCount = Math.Max(1, data.RepeatCount);
+                bool lastReverse = ((segCount - 1) % 2) == 1;
+                data.SliderHitBurstEnd = lastReverse ? curvePath[0].p1 : curvePath[curvePath.Count - 1].p2;
+            }
+            else
+                data.SliderHitBurstEnd = headPos;
+
+            // VirtualEndTime — osu! stable SliderOsu.VirtualEndTime과 동일.
+            // SpatialLength(.osu pixelLength) * BeatLengthAt(SV 포함) 공식.
+            // 커브 실측 길이/lazer px/ms를 쓰면 게임 위 오버레이와 EndTime이 어긋난다.
+            data.SliderVirtualEndTime = BeatmapParser.SliderVirtualEndTime(data, beatmap);
+            data.EndTime = data.SliderVirtualEndTime;
+
+            data.SliderComputed = true;
+        }
+
         public SliderOsu(HitObjectData data, DifficultyValues difficulty, BeatmapData beatmap, TextureManager texManager, Color comboColour, int comboNumber, int comboColourIndex, bool isFirstObject)
         {
             this.data = data;
@@ -171,13 +249,29 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 controlPoints.Add(headPos);
             }
 
-            curvePath = SliderCurve.CalculateCurve(controlPoints, data.CurveType, data.Length);
-            cumulativeLengths = SliderCurve.CalculateCumulativeLengths(curvePath);
-
-            // 커브 길이 계산
-            curveLength = 0;
-            foreach (Line l in curvePath)
-                curveLength += l.Rho;
+            if (data.CachedSliderPath != null)
+            {
+                curvePath = SliderCurve.ClonePath(data.CachedSliderPath);
+                cumulativeLengths = data.CachedSliderCumLen ?? SliderCurve.CalculateCumulativeLengths(curvePath);
+                curveLength = data.CachedSliderLength;
+                if (curveLength <= 0 && curvePath.Count > 0)
+                {
+                    foreach (Line l in curvePath)
+                        curveLength += l.Rho;
+                }
+            }
+            else
+            {
+                curvePath = SliderCurve.CalculateCurve(controlPoints, data.CurveType, data.Length);
+                cumulativeLengths = SliderCurve.CalculateCumulativeLengths(curvePath);
+                curveLength = 0;
+                foreach (Line l in curvePath)
+                    curveLength += l.Rho;
+                data.CachedSliderPath = curvePath;
+                data.CachedSliderCumLen = cumulativeLengths;
+                data.CachedSliderLength = curveLength;
+                curvePath = SliderCurve.ClonePath(curvePath);
+            }
 
             // 끝 위치 — 곡선 끝점 (repeat arrow / slider end circle용).
             // HitBurst 위치는 별도 계산 (HitBurstEndPosition).
@@ -202,20 +296,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             else
                 HitBurstEndPosition = headPos;
 
-            // VirtualEndTime — osu! stable 공식
-            // SpatialLength * BeatLengthAt(StartTime) * SegmentCount * 0.01 / DifficultySliderMultiplier + StartTime
-            // osu! stable: SpatialLength = sliderLength = .osu 파일의 length 값
-            double beatLength = BeatmapParser.BeatLengthAt(beatmap, startTime);
+            // Velocity — osu! stable HitObjectManager.SliderVelocityAt (픽셀/초).
+            // lazer Velocity는 px/ms(=이 값/1000)인데, 아래 duration/TimeAtLength는
+            // `1000 * distance / Velocity` (px/s 가정)라 lazer 단위를 넣으면 EndTime이 1000배 늘어나고
+            // 볼은 거의 안 움직인다. 오버레이는 stable 위에 그리므로 stable 단위를 쓴다.
             int segmentCount = Math.Max(1, data.RepeatCount);
-            virtualEndTime = (int)Math.Floor(data.Length * beatLength * segmentCount * 0.01 / beatmap.SliderMultiplier + startTime);
-            // AimAssist 등 BeatmapData 소비자용 — 파서는 EndTime=StartTime으로 둔다.
-            data.EndTime = virtualEndTime;
-
-            // Velocity — osu! stable SliderVelocityAt
-            // SliderVelocityAt = SliderScoringPointDistance * SliderTickRate * (1000 / BeatLength)
-            // SliderScoringPointDistance = (100 * SliderMultiplier) / SliderTickRate
-            // → Velocity = 100 * SliderMultiplier * 1000 / BeatLength = 100000 * SliderMultiplier / BeatLength
-            velocity = (100 * beatmap.SliderMultiplier * 1000) / beatLength;
+            velocity = BeatmapParser.SliderVelocityPxPerSecond(beatmap, startTime);
+            // 1E-298 BPM이면 velocity가 Inf가 된다. 예전엔 1px/s로 바꿔서
+            // 04:08 이후 슬라이더가 끝나지 않았다. Inf/0은 duration 0 (즉시 종료)로 둔다.
 
             // 기본 combo 색상 — SkinManager에서 조회 (이미 comboColour로 전달받음)
             // comboColour는 생성자 파라미터로 받음
@@ -253,15 +341,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             double currentTime = startTime;
             bool firstRun = true;
 
-            // 슬라이더 틱 거리 — osu! stable: SliderScoringPointDistance
-            // SliderScoringPointDistance = (100 * SliderMultiplier) / SliderTickRate
-            // osu! stable SliderOsu.cs:673-674 (H7): v<8은 나누지 않고, v>=8만
-            // BpmMultiplierAt(StartTime)로 나눈다. 기본 BeatmapVersion=14는 else 경로 유지.
-            double sliderScoringPointDistance = (100 * beatmap.SliderMultiplier) / beatmap.SliderTickRate;
-            double tickDistance = (beatmap.BeatmapVersion < 8)
-                ? sliderScoringPointDistance
-                : (sliderScoringPointDistance / BeatmapParser.BpmMultiplierAt(beatmap, startTime));
-            if (tickDistance > data.Length) tickDistance = data.Length;
+            // 슬라이더 틱 거리 — osu! stable UpdateCalculations:
+            //   v<8: SliderScoringPointDistance
+            //   v≥8: SliderScoringPointDistance / BpmMultiplierAt
+            // Velocity가 px/s이므로 (velocity * beatLength) / tickRate 를 쓰면 틱 간격이 1000배가 된다.
+            double tickDistance = BeatmapParser.SliderTickDistance(beatmap, startTime, data.Length);
             double scoringDistance = 0;
             double scoringLengthTotal = 0;
             double minTickDistanceFromEnd = 0.01 * velocity;
@@ -280,6 +364,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 Vector2 circlePos = reverse ? headPos : EndPosition;
 
                 // segment 시작 시간
+                double segmentStartTime = currentTime;
                 int reverseStartTime = (int)currentTime;
 
                 // 각 선분마다 볼/팔로워 Movement Transformation 생성 — osu! stable과 동일
@@ -305,7 +390,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                         p2 = l.p2;
                     }
 
-                    double duration = 1000.0 * distance / velocity;
+                    double duration = DurationMs(distance, velocity);
 
                     currentTime += duration;
                     scoringDistance += distance;
@@ -335,12 +420,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                             continue;
                         float thisPointRatio = 1 - (float)(scoringDistance / segDist);
                         Vector2 adjustedPos = p1 + (p2 - p1) * thisPointRatio;
+                        if (!PlayfieldBounds.Contains(adjustedPos))
+                            continue;
 
                         pTexture texScorePoint = texManager.Load("sliderscorepoint");
                         if (texScorePoint != null)
                         {
                             pSprite scoringDot = new pSprite(texScorePoint, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                                adjustedPos, SpriteManager.DrawOrderBwd(startTime - 5), false, Color.White);
+                                adjustedPos, SpriteManager.DrawOrderBwd(startTime + 3), false, Color.White);
                             if (texScorePoint.Source == SkinSource.Osu)
                                 scoringDot.Additive = true;
 
@@ -427,26 +514,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     appearTime = reverseStartTime - (circleStartTime - reverseStartTime);
                 }
 
-                // 리버스 방향 각도 계산 — osu! stable 정확 포팅
-                // osu! stable: angle = Atan2(p1.Y - p2.Y, p1.X - p2.X)
-                // 정방향 (reverse=false): p1=마지막선분.p1, p2=마지막선분.p2 → 끝점에서 시작점 방향
-                // 역방향 (reverse=true):  p1=첫선분.p2, p2=첫선분.p1 → 시작점에서 끝점 방향
-                float angle = 0;
-                if (curvePath.Count > 0)
-                {
-                    if (reverse)
-                    {
-                        // 역방향: 슬라이더 시작점에서 끝점 방향 (p1=첫선분.p2, p2=첫선분.p1)
-                        Line firstLine = curvePath[0];
-                        angle = (float)Math.Atan2(firstLine.p2.Y - firstLine.p1.Y, firstLine.p2.X - firstLine.p1.X);
-                    }
-                    else
-                    {
-                        // 정방향: 슬라이더 끝점에서 시작점 방향 (p1=마지막선분.p1, p2=마지막선분.p2)
-                        Line lastLine = curvePath[curvePath.Count - 1];
-                        angle = (float)Math.Atan2(lastLine.p1.Y - lastLine.p2.Y, lastLine.p1.X - lastLine.p2.X);
-                    }
-                }
+                // 리버스 방향 — lazer DrawableSliderRepeat: 경로에서 현재 위치와 다른
+                // 다음 점을 찾아 Atan2. 마지막 선분만 쓰면 길이 0/지그재그 테셀 선분이
+                // 화살표를 엉뚱한 곳으로 돌린다.
+                float fromLen = reverse ? 0f : (float)curveLength;
+                float angle = AimAngleAt(fromLen, lookTowardStart: !reverse, (float)curveLength);
 
                 // HitCircleSliderEnd 생성
                 HitObjectData endData = new HitObjectData();
@@ -458,32 +530,48 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 endData.Colour = comboColour;
 
                 bool isReverse = (i < segmentCount - 1); // 마지막 세그먼트가 아니면 리버스
-                double segmentDuration = 1000.0 * data.Length / velocity;
+                double segmentDuration = DurationMs(data.Length, velocity);
                 HitCircleSliderEnd endCircle = new HitCircleSliderEnd(endData, difficulty, texManager,
                     appearTime, isReverse, angle, circleStartTime, comboColour,
-                    firstRun, startTime, segmentDuration);
+                    firstRun, !reverse, startTime, segmentDuration);
 
                 endCircles.Add(endCircle);
 
                 firstRun = false;
+
+                // Aspire dummy (The Solace of Oblivion 00:34 `B,2048,-58.25` 등):
+                // 경로 길이가 0이면 이 세그먼트에서 currentTime이 안 늘어난다.
+                // 남은 리핏의 끝원/리버스는 같은 ms에 나타났다가 바로 사라져 화면에 안 나오는데,
+                // 끝원마다 원+오버레이+화살표 3스프라이트라 2048리핏이면 SM에 ~6000개가 올라간다.
+                // preempt에 보이는 첫 리버스만 남기고 이후는 만들지 않는다.
+                if (currentTime <= segmentStartTime)
+                    break;
             }
 
             // virtualEndTime = currentTime — osu! stable: EndTime = (int)currentTime
             // 이렇게 하면 virtualEndTime과 segmentDuration이 정확히 일치함
             virtualEndTime = (int)currentTime;
             data.EndTime = virtualEndTime;
+            data.SliderVirtualEndTime = virtualEndTime;
 
-            // 슬라이더 볼 — osu! stable: pAnimation, LoadAll("sliderb")
-            // usingDefault이면 SliderBall 색상 적용, 아니면 White
+            // 슬라이더 볼 — 같은 슬라이더 시작원 위, 더 이른 슬라이더보다는 아래.
+            // 예전 0.99/1.0 고정은 모든 볼이 모든 원 위라, 나중에 나온 슬라이더 볼이
+            // 앞 슬라이더 원을 뚫고 올라왔다 (lazer는 슬라이더 단위 스택).
+            float ballDepth = SpriteManager.DrawOrderBwd(startTime - 8);
+            float followerDepth = SpriteManager.DrawOrderBwd(startTime - 9);
+            float specDepth = SpriteManager.DrawOrderBwd(startTime - 10);
+            float ndDepth = SpriteManager.DrawOrderBwd(startTime - 7);
+
             if (sliderBallTextures.Length > 0)
             {
                 sliderBall = new pAnimation(sliderBallTextures, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                    headPos, 0.99f, false, usingDefault ? SkinManager.LoadColour("SliderBall") : Color.White);
+                    headPos, ballDepth, false, usingDefault ? SkinManager.LoadColour("SliderBall") : Color.White);
                 sliderBall.SetFramerateFromSkin();
                 sliderBall.TrackRotation = true;
                 // osu! stable: FrameDelay = Math.Max((150 / Velocity) * SIXTY_FRAME_TIME, SIXTY_FRAME_TIME)
                 // SIXTY_FRAME_TIME = 1000/60 ≈ 16.67
-                sliderBall.FrameDelay = Math.Max((150.0 / velocity) * (1000.0 / 60.0), 1000.0 / 60.0);
+                double velForAnim = (velocity > 0 && !double.IsInfinity(velocity)) ? velocity : 1.0;
+                sliderBall.FrameDelay = Math.Max((150.0 / velForAnim) * (1000.0 / 60.0), 1000.0 / 60.0);
                 sliderBall.Alpha = 0f;
                 // osu! stable: sliderBall은 alwaysDraw=false, Fade 변환 없음.
                 // StartTime에 즉시 나타나고 EndTime에 즉시 사라짐.
@@ -500,7 +588,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     if (texSpec != null)
                     {
                         sliderBallSpec = new pSprite(texSpec, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                            headPos, 1.0f, false, Color.White);
+                            headPos, specDepth, false, Color.White);
                         sliderBallSpec.Additive = true;
                         sliderBallSpec.Alpha = 0f;
                         sliderBallSpec.Transformations.Add(new Transformation(
@@ -511,7 +599,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     if (texNd != null)
                     {
                         sliderBallNd = new pSprite(texNd, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                            headPos, 0.98f, false, Color.FromArgb(5, 5, 5));
+                            headPos, ndDepth, false, Color.FromArgb(5, 5, 5));
                         sliderBallNd.Alpha = 0f;
                         sliderBallNd.Transformations.Add(new Transformation(
                             TransformationType.Fade, 0f, 1f, startTime, startTime + 1, EasingTypes.None));
@@ -526,7 +614,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (sliderFollowerTextures.Length > 0)
             {
                 sliderFollower = new pAnimation(sliderFollowerTextures, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                    headPos, 0.99f, true, Color.White);
+                    headPos, followerDepth, true, Color.White);
                 sliderFollower.SetFramerateFromSkin();
                 sliderFollower.Alpha = 0f;
                 // transformation 없음 — AddToSpriteManager에서 tracking 상태에 따라 동적 제어
@@ -537,9 +625,18 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// 커브 위 특정 거리의 시간 — osu! stable timeAtLength.
         /// timeAtLength(length) = StartTime + (length / Velocity) * 1000
         /// </summary>
+        static double DurationMs(double distance, double velocityPxPerSec)
+        {
+            if (!(velocityPxPerSec > 0) || double.IsInfinity(velocityPxPerSec))
+                return 0;
+            double d = 1000.0 * distance / velocityPxPerSec;
+            if (double.IsNaN(d) || double.IsInfinity(d) || d < 0) return 0;
+            return d;
+        }
+
         int TimeAtLength(float length)
         {
-            return (int)(data.StartTime + (length / velocity) * 1000);
+            return data.StartTime + (int)DurationMs(length, velocity);
         }
 
         /// <summary>
@@ -614,6 +711,67 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         }
 
         /// <summary>
+        /// lazer DrawableSliderRepeat: AlmostEquals가 아닌 다음 곡선 점으로 향하는 각.
+        /// 1px 이상 떨어진 점을 찾을 때까지 전 경로를 걸으면 Aspire에서 프레임이 죽는다.
+        /// 첫 번째로 다른 점만 보고, 최대 24 세그먼트만 본다.
+        /// </summary>
+        float AimAngleAt(float fromLength, bool lookTowardStart, float visibleLength)
+        {
+            if (curvePath == null || curvePath.Count == 0)
+                return 0;
+
+            int i = 0;
+            if (cumulativeLengths != null && cumulativeLengths.Count > 0)
+            {
+                int bs = cumulativeLengths.BinarySearch(fromLength);
+                if (bs < 0) bs = Math.Min(~bs, cumulativeLengths.Count - 1);
+                i = bs;
+            }
+            if (i < 0) i = 0;
+            if (i >= curvePath.Count) i = curvePath.Count - 1;
+
+            Vector2 from = fromLength <= 0 ? curvePath[0].p1 : PositionAtLength(fromLength);
+
+            const float epsSq = 0.0001f;
+            const int maxSearch = 24;
+            int steps = 0;
+
+            if (lookTowardStart)
+            {
+                for (int k = i; k >= 0; k--)
+                {
+                    Vector2 p = curvePath[k].p1;
+                    Vector2 diff = p - from;
+                    if (diff.LengthSquared > epsSq)
+                        return (float)Math.Atan2(diff.Y, diff.X);
+                    if (++steps >= maxSearch) break;
+                }
+            }
+            else
+            {
+                for (int k = i; k < curvePath.Count; k++)
+                {
+                    Vector2 p = curvePath[k].p2;
+                    Vector2 diff = p - from;
+                    if (diff.LengthSquared > epsSq)
+                        return (float)Math.Atan2(diff.Y, diff.X);
+                    if (++steps >= maxSearch) break;
+                }
+            }
+            return 0;
+        }
+
+        float SnakingProgress(int timeMs)
+        {
+            int startTime = data.StartTime;
+            if (timeMs >= startTime) return 1f;
+            float progress = (float)(timeMs - (startTime - difficulty.PreEmpt)) / (difficulty.PreEmpt / 3f);
+            if (progress < 0f) return 0f;
+            if (progress > 1f) return 1f;
+            return progress;
+        }
+
+        /// <summary>
         /// 현재 시간에서 보이는지.
         /// IsVisible: StartTime-PreEmpt ≤ Time ≤ EndTime+FadeOut
         /// </summary>
@@ -656,10 +814,13 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             foreach (HitCircleSliderEnd endCircle in endCircles)
                 endCircle.ModifyPosition(change);
 
-            // 바디 FBO는 커브 좌표로 구워져 있다 — 무효화해서 다시 굽게 한다.
-            // 커브가 옮겨졌으니 FBO 영역(bodyDraw*)도 다시 계산해야 한다.
             cachedProgress = -1;
+            lastBakedVertexCount = 0;
+            bodyBakeFrozen = false;
+            snakingFrozen = false;
             bodyBoundsValid = false;
+            bodyPathVerts.Clear();
+            bodyScreenFullVerts.Clear();
         }
 
         /// <summary>
@@ -722,8 +883,14 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             foreach (HitCircleSliderEnd endCircle in endCircles)
                 endCircle.UpdateDifficulty(newDifficulty);
 
-            // 슬라이더 바디 FBO 캐시 무효화 — HitObjectRadius 변경 시 재생성 필요
+            // 슬라이더 바디 캐시 무효화 — HitObjectRadius 변경 시 재생성 필요
             cachedProgress = -1;
+            lastBakedVertexCount = 0;
+            bodyBakeFrozen = false;
+            snakingFrozen = false;
+            bodyBoundsValid = false;
+            bodyPathVerts.Clear();
+            bodyScreenFullVerts.Clear();
         }
 
         /// <summary>
@@ -734,18 +901,22 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             // 시작 원
             if (startCircle != null)
                 startCircle.AddToSpriteManager(sm);
-            // 끝 원들
+            // 끝 원들 — appear == arrival 이면 가시 구간이 0이라 SM에 넣지 않는다.
             foreach (HitCircleSliderEnd endCircle in endCircles)
+            {
+                if (endCircle.AppearTime >= endCircle.ArrivalTime)
+                    continue;
                 endCircle.AddToSpriteManager(sm);
+            }
             // 슬라이더 틱
             foreach (pSprite scorePoint in sliderScorePoints)
                 if (!sm.Contains(scorePoint)) sm.Add(scorePoint);
-            // 슬라이더 볼
-            if (sliderBall != null && !sm.Contains(sliderBall)) sm.Add(sliderBall);
-            if (sliderBallNd != null && !sm.Contains(sliderBallNd)) sm.Add(sliderBallNd);
-            if (sliderBallSpec != null && !sm.Contains(sliderBallSpec)) sm.Add(sliderBallSpec);
-            // 슬라이더 팔로워
+            // osu-stable SliderOsu SpriteCollection: follower → spec → nd → ball.
+            // 같은 Depth(0.99)면 먼저 Add한 쪽이 위이므로 follower를 ball보다 먼저 넣는다.
             if (sliderFollower != null && !sm.Contains(sliderFollower)) sm.Add(sliderFollower);
+            if (sliderBallNd != null && !sm.Contains(sliderBallNd)) sm.Add(sliderBallNd);
+            if (sliderBall != null && !sm.Contains(sliderBall)) sm.Add(sliderBall);
+            if (sliderBallSpec != null && !sm.Contains(sliderBallSpec)) sm.Add(sliderBallSpec);
         }
 
         /// <summary>
@@ -763,7 +934,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             }
             cachedBodySprite = null;
             cachedProgress = -1;
+            lastBakedVertexCount = 0;
+            bodyBakeFrozen = false;
+            snakingFrozen = false;
             bodyBoundsValid = false;
+            bodyPathVerts.Clear();
+            bodyScreenFullVerts.Clear();
         }
 
         /// <summary>
@@ -791,10 +967,19 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// </summary>
         public void UpdateSprites(int timeMs)
         {
+            Vector2 ballPos = Vector2.Zero;
+            bool haveBallPos = false;
+
             // 슬라이더 볼 (StartTime ~ VirtualEndTime)
             if (sliderBall != null && timeMs >= data.StartTime && timeMs <= virtualEndTime)
             {
-                Vector2 ballPos = GetBallPosition(timeMs);
+                if (timeMs != cachedBallTime)
+                {
+                    cachedBallTime = timeMs;
+                    cachedBallPos = GetBallPosition(timeMs);
+                }
+                ballPos = cachedBallPos;
+                haveBallPos = true;
                 sliderBall.Position = ballPos;
 
                 int segmentCount = Math.Max(1, data.RepeatCount);
@@ -837,7 +1022,11 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             {
                 if (timeMs >= data.StartTime && timeMs <= virtualEndTime + 200)
                 {
-                    Vector2 ballPos = GetBallPosition(timeMs);
+                    if (!haveBallPos)
+                    {
+                        ballPos = GetBallPosition(timeMs);
+                        haveBallPos = true;
+                    }
                     sliderFollower.Position = ballPos;
 
                     // tracking 상태 변화 감지
@@ -884,162 +1073,156 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     sliderFollower.Alpha = 0f;
                 }
             }
+
+            // lazer DrawableSliderRepeat.UpdateSnakingPosition
+            // 아직 안 나타난 리버스는 건너뛰고, 각은 방향당 한 번만 계산한다.
+            // Aspire 2048 리버스에서 매 화살표마다 경로를 걷던 것이 FPS를 죽였다.
+            if (curvePath != null && curvePath.Count > 0 && endCircles.Count > 0)
+            {
+                float progress = SnakingProgress(timeMs);
+                if (progress >= 1f && snakingFrozen)
+                {
+                    // already snapped
+                }
+                else
+                {
+                    float visibleLen = (float)(curveLength * progress);
+                    Vector2 snakeStart = PositionAtLength(0);
+                    Vector2 snakeEnd = PositionAtLength(visibleLen);
+                    float aimFar = float.NaN;
+                    float aimNear = float.NaN;
+                    bool any = false;
+                    for (int i = 0; i < endCircles.Count; i++)
+                    {
+                        HitCircleSliderEnd end = endCircles[i];
+                        if (!end.HasReverseArrow) continue;
+                        if (timeMs < end.AppearTime) continue;
+                        if (timeMs >= end.ArrivalTime) continue;
+                        any = true;
+                        Vector2 pos = end.SnakingAtFarEnd ? snakeEnd : snakeStart;
+                        float aim;
+                        if (end.SnakingAtFarEnd)
+                        {
+                            if (float.IsNaN(aimFar))
+                                aimFar = AimAngleAt(visibleLen, true, visibleLen);
+                            aim = aimFar;
+                        }
+                        else
+                        {
+                            if (float.IsNaN(aimNear))
+                                aimNear = AimAngleAt(0, false, visibleLen);
+                            aim = aimNear;
+                        }
+                        end.UpdateSnaking(pos, aim);
+                    }
+                    if (progress >= 1f)
+                        snakingFrozen = true;
+                    else if (any)
+                        snakingFrozen = false;
+                }
+            }
         }
 
         /// <summary>
-        /// 슬라이더 바디 렌더링 — osu! stable SliderOsu.Draw() 포팅.
-        /// MmSliderRenderer 사용, snaking progress 적용.
-        /// SpriteManager보다 먼저 호출되어야 함 (depth buffer).
+        /// 슬라이더 바디 — lazer Path처럼 보이는 폴리라인을 capsule SDF로 FBO에 굽고
+        /// SpriteManager가 그라디언트로 합성한다. 스네이킹이 끝나면 다시 굽지 않는다.
         /// </summary>
         public void DrawBody(MmSliderRenderer renderer, GameField gameField, int timeMs, Matrix4 projectionMatrix, SpriteManager sm)
         {
             if (curvePath == null || curvePath.Count == 0) return;
 
             int startTime = data.StartTime;
-
-            // 가시성 체크
             if (timeMs < startTime - difficulty.PreEmpt) return;
             if (timeMs > virtualEndTime + DifficultyCalculator.FadeOut) return;
 
-            // Snaking progress — osu! stable:
-            // progress = (AudioEngine.Time - (StartTime - PreEmpt)) / (PreEmpt / 3f)
-            float progress;
-            if (timeMs < startTime)
-            {
-                progress = (float)(timeMs - (startTime - difficulty.PreEmpt)) / (difficulty.PreEmpt / 3f);
-                progress = Math.Min(1, Math.Max(0, progress));
-            }
-            else
-            {
-                progress = 1;
-            }
-
-            // lineList 구성 — snaking progress까지의 선분만
-            // FBO 캐싱: progress가 변경되었을 때만 재생성
-            // 스터터링 방지: progress를 1/30 단위로 양자화 — FBO 재생성 빈도 대폭 감소
-            // 반경 — HitObjectRadius * GameField.Ratio (화면 좌표)
+            float progress = SnakingProgress(timeMs);
             float bodyRadius = difficulty.HitObjectRadius * gameField.Ratio;
 
-            // FBO 영역은 전체 커브 기준으로 한 번만 계산한다. 해상도(Ratio)나 CS(radius)가
-            // 바뀌면 크기가 달라지므로 그때만 FBO/스프라이트를 버리고 다시 만든다 (D3).
-            if (!bodyBoundsValid || bodyBoundsRatio != gameField.Ratio || bodyBoundsRadius != bodyRadius)
+            if (!bodyBoundsValid
+                || Math.Abs(bodyBoundsRatio - gameField.Ratio) > 0.0001f
+                || Math.Abs(bodyBoundsRadius - bodyRadius) > 0.05f)
             {
                 if (cachedBodySprite != null) { sm.Remove(cachedBodySprite); cachedBodySprite = null; }
                 if (cachedFbo != null) { cachedFbo.Dispose(); cachedFbo = null; }
                 cachedProgress = -1;
+                lastBakedVertexCount = 0;
+                bodyBakeFrozen = false;
                 ComputeBodyBounds(gameField, bodyRadius);
             }
 
-            float quantizedProgress = (float)Math.Round(progress * 30) / 30f;
-            bool needsRebuild = cachedProgress != quantizedProgress || cachedBodySprite == null;
-
-            if (needsRebuild)
+            if (bodyBakeFrozen && cachedFbo != null && cachedBodySprite != null)
             {
-                // FBO와 스프라이트는 그대로 두고 내용만 다시 그린다 — 예전에는 여기서
-                // 스프라이트를 SpriteManager에서 빼고 FBO를 Dispose한 뒤 새로 만들었다.
-                cachedProgress = quantizedProgress;
-
-                // osu! stable: 선분 병합 최적화 + cumulativeLengths 기반 분할
-                List<Graphics.Primitives.Line> lineList = new List<Graphics.Primitives.Line>();
-                double lengthToDraw = curveLength * progress;
-
-                // cumulativeLengths에서 lengthToDraw에 해당하는 인덱스 찾기
-                int count = curvePath.Count;
-                if (progress < 1 && cumulativeLengths != null && cumulativeLengths.Count > 0)
-                {
-                    int idx = cumulativeLengths.FindIndex(l => l > lengthToDraw);
-                    count = idx + 1;
-                    if (count == 0) count = curvePath.Count;
-                }
-
-                // 마지막 선분의 남은 길이
-                float countRemainder = 0;
-                if (progress < 1 && count > 0)
-                {
-                    float prevCumul = count >= 2 ? (float)cumulativeLengths[count - 2] : 0;
-                    countRemainder = (float)lengthToDraw - prevCumul;
-                }
-
-                // 선분 병합 (osu! stable: min_dist 기반)
-                int storedStart = 0;
-                bool waiting = false;
-
-                for (int i = 0; i < count; i++)
-                {
-                    if (!waiting)
-                        storedStart = i;
-
-                    bool last = i == count - 1;
-                    // osu-stable SliderOsu.cs:1072 — 직선 선분은 min_dist=32, 곡선은 6
-                    float minDist = curvePath[i].straight ? 32 : 6;
-                    float dist = Vector2.Distance(curvePath[storedStart].p1, curvePath[i].p2);
-
-                    // osu-stable:1074 — forceEnd(멀티파트/레드앵커 경계)에서 반드시 선분을 끊는다.
-                    // 이게 없으면 경계를 넘어 병합되어 각진 부분이 뭉개진다.
-                    if (dist > minDist || last || curvePath[i].forceEnd || (i == count - 2))
-                    {
-                        if (last && countRemainder > 0)
-                        {
-                            // 마지막 선분 — 남은 길이만큼 자르기
-                            Graphics.Primitives.Line l = new Graphics.Primitives.Line(
-                                curvePath[storedStart].p1, curvePath[i].p2);
-                            if (l.p2 != l.p1)
-                            {
-                                Vector2 dir = l.p2 - l.p1;
-                                dir.Normalize();
-                                l.p2 = l.p1 + dir * countRemainder;
-                            }
-                            lineList.Add(l);
-                        }
-                        else if (storedStart == i)
-                        {
-                            lineList.Add(new Graphics.Primitives.Line(curvePath[i].p1, curvePath[i].p2));
-                        }
-                        else
-                        {
-                            lineList.Add(new Graphics.Primitives.Line(
-                                curvePath[storedStart].p1, curvePath[i].p2));
-                        }
-                        waiting = false;
-                    }
-                    else
-                        waiting = true;
-                }
-
-            if (lineList.Count == 0) return;
-
-            // 게임필드 좌표 → 화면 좌표 변환
-            List<Graphics.Primitives.Line> screenLines = new List<Graphics.Primitives.Line>();
-            foreach (Graphics.Primitives.Line l in lineList)
-            {
-                Vector2 p1Screen = gameField.FieldToDisplay(l.p1);
-                Vector2 p2Screen = gameField.FieldToDisplay(l.p2);
-                screenLines.Add(new Graphics.Primitives.Line(p1Screen, p2Screen));
+                if (!sm.Contains(cachedBodySprite))
+                    sm.Add(cachedBodySprite);
+                return;
             }
 
-            // 색상 인덱스 — SliderTrackOverride 확인
-            int colourIndex;
+            GetPathToProgress(bodyPathVerts, progress, gameField);
+            if (bodyPathVerts.Count == 0) return;
+
+            bool rewind = progress + 0.0001f < cachedProgress;
+            if (rewind)
+                bodyBakeFrozen = false;
+
+            bool clearSdf = cachedFbo == null || cachedBodySprite == null || rewind;
+            int firstSeg = clearSdf ? 0 : Math.Max(0, lastBakedVertexCount - 2);
+
+            int colourIndex = comboColourIndex;
             Color trackOverride = SkinManager.LoadColour("SliderTrackOverride");
             if (trackOverride.A > 0)
-            {
-                // 단일 색상 — 인덱스 0
                 colourIndex = 0;
-            }
-            else
-            {
-                colourIndex = comboColourIndex;
-            }
 
-            // osu! stable: FBO에 렌더링 → pSprite 반환 → SpriteManager가 합성
-                cachedBodySprite = renderer.Draw(screenLines, bodyRadius, colourIndex, projectionMatrix,
-                    data.StartTime, virtualEndTime, difficulty.PreEmpt, difficulty.FadeIn,
-                    bodyDrawLeft, bodyDrawTop, bodyDrawWidth, bodyDrawHeight,
-                    ref cachedFbo, cachedBodySprite);
-            }
+            cachedBodySprite = renderer.DrawSdf(bodyPathVerts, firstSeg, clearSdf, bodyRadius, colourIndex,
+                data.StartTime, virtualEndTime, difficulty.PreEmpt, difficulty.FadeIn,
+                bodyDrawLeft, bodyDrawTop, bodyDrawWidth, bodyDrawHeight,
+                ref cachedFbo, cachedBodySprite);
 
-            // 캐시된 pSprite를 SpriteManager에 추가
+            lastBakedVertexCount = bodyPathVerts.Count;
+            cachedProgress = progress;
+
+            if (progress >= 1f && cachedFbo != null && cachedBodySprite != null)
+                bodyBakeFrozen = true;
+
             if (cachedBodySprite != null && !sm.Contains(cachedBodySprite))
                 sm.Add(cachedBodySprite);
+        }
+
+        /// <summary>
+        /// lazer SliderPath.GetPathToProgress(0, progress) — 계산된 커브 점을 그대로 쓴다.
+        /// stable DrawOGL의 min_dist 병합은 코드를 건너뛰게 해서 쓰지 않는다.
+        /// </summary>
+        void GetPathToProgress(List<Vector2> path, float progress, GameField gameField)
+        {
+            path.Clear();
+            if (bodyScreenFullVerts.Count == 0) return;
+
+            path.Add(bodyScreenFullVerts[0]);
+            if (progress <= 0f)
+                return;
+
+            double d1 = curveLength * progress;
+            if (cumulativeLengths != null)
+            {
+                int n = Math.Min(curvePath.Count, cumulativeLengths.Count);
+                int maxFull = bodyScreenFullVerts.Count - 1;
+                for (int i = 0; i < n && i < maxFull && cumulativeLengths[i] <= d1; i++)
+                    AddPathPoint(path, bodyScreenFullVerts[i + 1]);
+            }
+
+            AddPathPoint(path, gameField.FieldToDisplay(PositionAtLength((float)d1)));
+        }
+
+        static void AddPathPoint(List<Vector2> path, Vector2 p)
+        {
+            if (path.Count > 0)
+            {
+                Vector2 last = path[path.Count - 1];
+                float dx = p.X - last.X;
+                float dy = p.Y - last.Y;
+                if (dx * dx + dy * dy < 0.0001f)
+                    return;
+            }
+            path.Add(p);
         }
     }
 }

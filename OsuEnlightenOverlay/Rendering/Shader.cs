@@ -26,10 +26,17 @@ namespace OsuEnlightenOverlay.Rendering
         int positionLoc = -1;
         int texCoordLoc = -1;
         int colourAttrLoc = -1;
+        int startPosLoc = -1;
+        int endPosLoc = -1;
+        int radiusLoc = -1;
+        int gradientLoc = -1;
 
         public int PositionLoc { get { return positionLoc; } }
         public int TexCoordLoc { get { return texCoordLoc; } }
         public int ColourAttrLoc { get { return colourAttrLoc; } }
+        public int StartPosLoc { get { return startPosLoc; } }
+        public int EndPosLoc { get { return endPosLoc; } }
+        public int RadiusLoc { get { return radiusLoc; } }
 
         public Shader(string vertexSource, string fragmentSource)
         {
@@ -46,8 +53,6 @@ namespace OsuEnlightenOverlay.Rendering
             if (linkStatus == 0)
             {
                 string log = GL.GetProgramInfoLog(programId);
-                // overlay.log에 남긴다 (F10) — 예전엔 Debug.WriteLine이라 릴리스/로그에 안 남고
-                // 조용히 fixed-function 폴백으로 그려져 셰이더 실패 원인 추적이 불가했다.
                 System.Console.WriteLine("[Shader] Link failed (fixed-function 폴백으로 그려짐): " + log);
                 GL.DeleteProgram(programId);
                 programId = 0;
@@ -58,11 +63,15 @@ namespace OsuEnlightenOverlay.Rendering
                 projMatrixLoc = GL.GetUniformLocation(programId, "g_ProjMatrix");
                 textureLoc = GL.GetUniformLocation(programId, "g_Texture");
                 colourLoc = GL.GetUniformLocation(programId, "g_Colour");
+                gradientLoc = GL.GetUniformLocation(programId, "g_Gradient");
 
                 // attribute location 캐싱
                 positionLoc = GL.GetAttribLocation(programId, "a_Position");
                 texCoordLoc = GL.GetAttribLocation(programId, "a_TexCoord");
                 colourAttrLoc = GL.GetAttribLocation(programId, "a_Colour");
+                startPosLoc = GL.GetAttribLocation(programId, "a_StartPos");
+                endPosLoc = GL.GetAttribLocation(programId, "a_EndPos");
+                radiusLoc = GL.GetAttribLocation(programId, "a_Radius");
             }
         }
 
@@ -77,7 +86,6 @@ namespace OsuEnlightenOverlay.Rendering
             if (compileStatus == 0)
             {
                 string log = GL.GetShaderInfoLog(shaderId);
-                // overlay.log에 남긴다 (F10) — 조용한 실패 방지
                 System.Console.WriteLine("[Shader] Compile failed (" + type + "): " + log);
                 GL.DeleteShader(shaderId);
                 return 0;
@@ -106,6 +114,12 @@ namespace OsuEnlightenOverlay.Rendering
         {
             if (textureLoc >= 0)
                 GL.Uniform1(textureLoc, textureUnit);
+        }
+
+        public void SetGradient(int textureUnit)
+        {
+            if (gradientLoc >= 0)
+                GL.Uniform1(gradientLoc, textureUnit);
         }
 
         public void SetColour(System.Drawing.Color colour)
@@ -217,6 +231,65 @@ namespace OsuEnlightenOverlay.Rendering
                 gl_FragColor = texColor * v_Colour * g_Colour;
             }
         ";
+
+        // lazer Path.DrawNode prepass — capsule SDF (1 - dist/radius) into FBO.r, MAX blend union.
+        public const string PathPrepassVertex = @"
+            attribute vec2 a_Position;
+            attribute vec2 a_StartPos;
+            attribute vec2 a_EndPos;
+            attribute float a_Radius;
+            uniform mat4 g_ProjMatrix;
+            varying vec2 v_Position;
+            varying vec2 v_StartPos;
+            varying vec2 v_EndPos;
+            varying float v_Radius;
+            void main()
+            {
+                v_Position = a_Position;
+                v_StartPos = a_StartPos;
+                v_EndPos = a_EndPos;
+                v_Radius = a_Radius;
+                gl_Position = g_ProjMatrix * vec4(a_Position, 0.0, 1.0);
+            }
+        ";
+
+        public const string PathPrepassFragment = @"
+            varying vec2 v_Position;
+            varying vec2 v_StartPos;
+            varying vec2 v_EndPos;
+            varying float v_Radius;
+            float dstToLine(vec2 start, vec2 end, vec2 pixelPos)
+            {
+                vec2 dir = end - start;
+                float lineLengthSquared = dir.x * dir.x + dir.y * dir.y;
+                if (lineLengthSquared < 0.000001)
+                    return distance(pixelPos, start);
+                vec2 dir2 = pixelPos - start;
+                float t = clamp(dot(dir2, dir), 0.0, lineLengthSquared) / lineLengthSquared;
+                return distance(pixelPos, start + dir * t);
+            }
+            void main()
+            {
+                float cov = clamp(1.0 - dstToLine(v_StartPos, v_EndPos, v_Position) / v_Radius, 0.0, 1.0);
+                gl_FragColor = vec4(cov, cov, cov, 1.0);
+            }
+        ";
+
+        // lazer sh_Path.fs — sample SDF coverage, look up 1D gradient (shadow/border/inner).
+        public const string PathResolveFragment = @"
+            varying vec2 v_TexCoord;
+            varying vec4 v_Colour;
+            uniform sampler2D g_Texture;
+            uniform sampler2D g_Gradient;
+            uniform vec4 g_Colour;
+            void main()
+            {
+                float dstFromEdge = texture2D(g_Texture, v_TexCoord).r;
+                vec4 pathCol = texture2D(g_Gradient, vec2(dstFromEdge, 0.5));
+                float visible = dstFromEdge > 0.0 ? 1.0 : 0.0;
+                gl_FragColor = vec4(pathCol.rgb, pathCol.a * visible) * v_Colour * g_Colour;
+            }
+        ";
     }
 
     /// <summary>
@@ -227,12 +300,16 @@ namespace OsuEnlightenOverlay.Rendering
         public Shader TextureShader2D;
         public Shader ColourShader2D;
         public Shader TextureShader3D;
+        public Shader PathPrepass;
+        public Shader PathResolve;
 
         public void LoadAll()
         {
             TextureShader2D = new Shader(ShaderSources.TextureVertex, ShaderSources.TextureFragment);
             ColourShader2D = new Shader(ShaderSources.ColourVertex, ShaderSources.ColourFragment);
             TextureShader3D = new Shader(ShaderSources.Texture3DVertex, ShaderSources.Texture3DFragment);
+            PathPrepass = new Shader(ShaderSources.PathPrepassVertex, ShaderSources.PathPrepassFragment);
+            PathResolve = new Shader(ShaderSources.TextureVertex, ShaderSources.PathResolveFragment);
         }
 
         public void Dispose()
@@ -240,6 +317,8 @@ namespace OsuEnlightenOverlay.Rendering
             if (TextureShader2D != null) TextureShader2D.Dispose();
             if (ColourShader2D != null) ColourShader2D.Dispose();
             if (TextureShader3D != null) TextureShader3D.Dispose();
+            if (PathPrepass != null) PathPrepass.Dispose();
+            if (PathResolve != null) PathResolve.Dispose();
         }
     }
 }

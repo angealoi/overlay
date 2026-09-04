@@ -83,10 +83,67 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             if (!data.HasApproachRate)
                 data.ApproachRate = data.OverallDifficulty;
 
+            // lazer LegacyBeatmapDecoder.applyDifficultyRestrictions — 난이도 값 클램프.
+            // Aspire 맵은 SliderMultiplier/SliderTickRate에 극단값을 넣는데, 클램프 없이 쓰면
+            // velocity/tickDistance가 발산해 슬라이더가 깨진다.
+            data.HPDrainRate = Math.Max(0, Math.Min(10, data.HPDrainRate));
+            data.CircleSize = Math.Max(0, Math.Min(10, data.CircleSize));
+            data.OverallDifficulty = Math.Max(0, Math.Min(10, data.OverallDifficulty));
+            data.ApproachRate = Math.Max(0, Math.Min(10, data.ApproachRate));
+            data.SliderMultiplier = Math.Max(0.4f, Math.Min(3.6f, data.SliderMultiplier));
+            data.SliderTickRate = Math.Max(0.5f, Math.Min(8f, data.SliderTickRate));
+
             // 콤보 할당의 브레이크 순회가 오름차순을 전제 — stable은 EventManager.Add마다 Sort
             data.Breaks.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
 
+            // lazer LegacyBeatmapDecoder: 랭크 맵 중 HitObjects가 시간순이 아닌 경우가 있다
+            // (이 Aspire 맵 https://osu.ppy.sh/s/594828 이 그 예). 파일 앞쪽에 4:10 슬라이더가
+            // 있으면 콤보/스택/HOM 교차검증이 전부 어긋난다. 같은 StartTime은 파일 순서를 유지.
+            SortHitObjectsStable(data.HitObjects);
+
+            // osu! stable AudioEngine.UpdateActiveTimingPoint → ControlPoints.Sort().
+            // ControlPoint.CompareTo: Offset 오름차순, 같은 Offset이면 uninherited(TimingChange) 먼저.
+            // 이 맵은 타이밍 포인트도 시간순이 아니다. 정렬하지 않으면 파일 뒤쪽의 1E-298/-1638400이
+            // 04:13 이후 BeatLengthAt을 덮어 슬라이더가 실제 osu!보다 훨씬 길어진다.
+            SortTimingPointsStable(data.TimingPoints);
+
             return data;
+        }
+
+        static void SortHitObjectsStable(List<HitObjectData> list)
+        {
+            int n = list.Count;
+            if (n <= 1) return;
+            int[] order = new int[n];
+            for (int i = 0; i < n; i++) order[i] = i;
+            Array.Sort(order, (i, j) =>
+            {
+                int c = list[i].StartTime.CompareTo(list[j].StartTime);
+                return c != 0 ? c : i.CompareTo(j);
+            });
+            HitObjectData[] copy = new HitObjectData[n];
+            for (int i = 0; i < n; i++) copy[i] = list[order[i]];
+            for (int i = 0; i < n; i++) list[i] = copy[i];
+        }
+
+        static void SortTimingPointsStable(List<TimingPoint> list)
+        {
+            int n = list.Count;
+            if (n <= 1) return;
+            int[] order = new int[n];
+            for (int i = 0; i < n; i++) order[i] = i;
+            Array.Sort(order, (i, j) =>
+            {
+                int c = list[i].Offset.CompareTo(list[j].Offset);
+                if (c != 0) return c;
+                // other.TimingChange.CompareTo(this.TimingChange) → uninherited 먼저
+                c = list[j].TimingChange.CompareTo(list[i].TimingChange);
+                if (c != 0) return c;
+                return i.CompareTo(j);
+            });
+            TimingPoint[] copy = new TimingPoint[n];
+            for (int i = 0; i < n; i++) copy[i] = list[order[i]];
+            for (int i = 0; i < n; i++) list[i] = copy[i];
         }
 
         static void ParseGeneral(string line, BeatmapData data)
@@ -364,14 +421,143 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
 
             // 상속 포인트가 타이밍 포인트보다 뒤에 있고 BeatLength < 0이면 multiplier 적용
             if (samplePoint > point && data.TimingPoints[samplePoint].BeatLength < 0)
-            {
-                // osu! stable: ControlPoint.BpmMultiplier
-                // BpmMultiplier = Math.Max(0.1, BeatLength / -100)
-                double beatLength = data.TimingPoints[samplePoint].BeatLength;
-                mult = Math.Max(0.1, beatLength / -100.0);
-            }
+                mult = BpmMultiplierOf(data.TimingPoints[samplePoint].BeatLength);
 
             return data.TimingPoints[point].BeatLength * mult;
+        }
+
+        /// <summary>
+        /// osu! stable ControlPoint.BpmMultiplier 정확 포팅:
+        ///   BeatLength >= 0 → 1;  아니면 Clamp(-BeatLength, 10, 1000) / 100  → [0.1, 10].
+        /// 상한 클램프가 필수다. Aspire 맵은 상속 포인트에 -2147483648 같은 값을 넣는데(SV 트릭),
+        /// 상한 없이 쓰면 배율이 2천만 배가 되어 tickDistance가 0에 수렴해 틱 while이 수백만 번 돌고
+        /// (한 슬라이더에 7.8s, 스프라이트 274만 개, 힙 1.3GB — 실측), virtualEndTime이 수 시간 뒤로
+        /// 밀려 짧은 슬라이더의 볼이 영영 사라지지 않는다. stable/lazer 모두 SV를 [0.1,10]으로 제한한다.
+        /// </summary>
+        static double BpmMultiplierOf(double inheritedBeatLength)
+        {
+            if (inheritedBeatLength >= 0) return 1.0;
+            double v = -inheritedBeatLength;
+            if (v < 10) v = 10;
+            if (v > 1000) v = 1000;
+            return v / 100.0;
+        }
+
+        /// <summary>
+        /// lazer식 SV 배율 — LegacyBeatmapDecoder: speedMultiplier = beatLength &lt; 0 ? 100/-beatLength : 1,
+        /// Slider.SliderVelocityMultiplierBindable [0.1, 10] 클램프.
+        /// stable BpmMultiplierOf와 수학적으로 동치(역수 관계)지만 lazer가 쓰는 정규 형태다.
+        /// </summary>
+        public static double SliderVelocityOf(double inheritedBeatLength)
+        {
+            if (inheritedBeatLength >= 0) return 1.0;
+            if (double.IsNaN(inheritedBeatLength)) return 1.0;
+            double sv = 100.0 / -inheritedBeatLength;
+            if (sv < 0.1) sv = 0.1;
+            if (sv > 10) sv = 10;
+            return sv;
+        }
+
+        /// <summary>
+        /// 해당 시간에 적용되는 lazer식 SV 배율. 활성 상속 포인트가 없으면 1.0.
+        /// </summary>
+        public static double SliderVelocityAt(BeatmapData data, int time)
+        {
+            if (data.TimingPoints == null || data.TimingPoints.Count == 0) return 1.0;
+
+            int point = 0, samplePoint = 0;
+            for (int i = 0; i < data.TimingPoints.Count; i++)
+            {
+                if (data.TimingPoints[i].Offset <= time)
+                {
+                    if (data.TimingPoints[i].TimingChange) point = i;
+                    else samplePoint = i;
+                }
+            }
+
+            if (samplePoint > point && data.TimingPoints[samplePoint].BeatLength < 0)
+                return SliderVelocityOf(data.TimingPoints[samplePoint].BeatLength);
+            return 1.0;
+        }
+
+        /// <summary>
+        /// 타이밍 포인트의 기본 BeatLength (SV 미적용). lazer TimingPointAt.
+        /// </summary>
+        public static double TimingBeatLengthAt(BeatmapData data, int time)
+        {
+            if (data.TimingPoints == null || data.TimingPoints.Count == 0) return 0;
+            int point = 0;
+            for (int i = 0; i < data.TimingPoints.Count; i++)
+                if (data.TimingPoints[i].Offset <= time && data.TimingPoints[i].TimingChange)
+                    point = i;
+            return data.TimingPoints[point].BeatLength;
+        }
+
+        /// <summary>
+        /// osu! stable HitObjectManager.SliderScoringPointDistance:
+        ///   (100 * SliderMultiplier) / SliderTickRate
+        /// </summary>
+        public static double SliderScoringPointDistance(BeatmapData data)
+        {
+            float tickRate = data.SliderTickRate;
+            if (tickRate <= 0) tickRate = 1;
+            return (100.0 * data.SliderMultiplier) / tickRate;
+        }
+
+        /// <summary>
+        /// osu! stable HitObjectManager.SliderVelocityAt — 픽셀/초.
+        /// BeatLengthAt(SV 포함)으로 나눈다. lazer Velocity(px/ms)의 1000배.
+        /// </summary>
+        public static double SliderVelocityPxPerSecond(BeatmapData data, int time)
+        {
+            double beatLength = BeatLengthAt(data, time);
+            double scoringPointDistance = SliderScoringPointDistance(data);
+            float tickRate = data.SliderTickRate;
+            if (tickRate <= 0) tickRate = 1;
+            if (beatLength > 0)
+                return scoringPointDistance * tickRate * (1000.0 / beatLength);
+            return scoringPointDistance * tickRate;
+        }
+
+        /// <summary>
+        /// osu! stable SliderOsu.VirtualEndTime:
+        ///   Floor(SpatialLength * BeatLengthAt * SegmentCount * 0.01 / SliderMultiplier + StartTime)
+        /// </summary>
+        public static int SliderVirtualEndTime(HitObjectData h, BeatmapData beatmap)
+        {
+            int segmentCount = Math.Max(1, h.RepeatCount);
+            double sm = beatmap.SliderMultiplier;
+            if (sm <= 0) sm = 1.4;
+            double beatLength = BeatLengthAt(beatmap, h.StartTime);
+            // Aspire 타이밍 1E-298 → EndTime≈StartTime. 1E+298 → overflow.
+            // Inf/NaN을 1px/s로 바꾸면 슬라이더가 수 시간 동안 남는다.
+            if (!(beatLength > 0) || double.IsInfinity(beatLength) || double.IsNaN(beatLength))
+                return h.StartTime;
+            double raw = h.Length * beatLength * segmentCount * 0.01 / sm + h.StartTime;
+            if (double.IsNaN(raw) || double.IsInfinity(raw) || raw < h.StartTime)
+                return h.StartTime;
+            if (raw > int.MaxValue) return int.MaxValue;
+            return (int)Math.Floor(raw);
+        }
+
+        /// <summary>
+        /// osu! stable SliderOsu.UpdateCalculations tickDistance.
+        /// v≥8: SliderScoringPointDistance / BpmMultiplierAt (시간 상수 틱).
+        /// </summary>
+        public static double SliderTickDistance(BeatmapData beatmap, int startTime, double spatialLength)
+        {
+            double tickDistance = SliderScoringPointDistance(beatmap);
+            if (beatmap.BeatmapVersion >= 8)
+            {
+                double bpmMult = BpmMultiplierAt(beatmap, startTime);
+                if (bpmMult > 0)
+                    tickDistance /= bpmMult;
+            }
+            if (spatialLength > 0 && tickDistance > spatialLength)
+                tickDistance = spatialLength;
+            if (!(tickDistance > 0) || double.IsNaN(tickDistance) || double.IsInfinity(tickDistance))
+                tickDistance = SliderScoringPointDistance(beatmap);
+            return tickDistance;
         }
 
         /// <summary>
@@ -398,10 +584,7 @@ namespace OsuEnlightenOverlay.Gameplay.Beatmap
             }
 
             if (samplePoint > point && data.TimingPoints[samplePoint].BeatLength < 0)
-            {
-                double beatLength = data.TimingPoints[samplePoint].BeatLength;
-                return Math.Max(0.1, beatLength / -100.0);
-            }
+                return BpmMultiplierOf(data.TimingPoints[samplePoint].BeatLength);
 
             return 1.0;
         }

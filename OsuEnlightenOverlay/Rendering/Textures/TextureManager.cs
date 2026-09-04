@@ -400,6 +400,35 @@ namespace OsuEnlightenOverlay.Rendering.Textures
         }
 
         /// <summary>
+        /// 첫 스피너/슬라이더 진입 때 디스크 디코드가 HomSetup을 먹지 않게 맵 로드에서 미리 읽는다.
+        /// </summary>
+        public void WarmupGameplayTextures()
+        {
+            Load("hitcircle");
+            Load("hitcircleoverlay");
+            Load("approachcircle");
+            Load("sliderscorepoint");
+            Load("sliderstartcircle");
+            Load("sliderendcircle");
+            Load("reversearrow");
+            Load("spinner-background", SkinSource.Skin);
+            Load("spinner-top");
+            Load("spinner-bottom");
+            Load("spinner-middle");
+            Load("spinner-middle2");
+            Load("spinner-circle");
+            Load("spinner-metre");
+            Load("spinner-approachcircle");
+            Load("spinner-spin");
+            Load("spinner-clear");
+            Load("spinner-glow");
+            Load("spinner-rpm");
+            LoadAll("followpoint");
+            LoadAll("sliderb", SkinSource.All, false);
+            LoadAll("sliderfollowcircle");
+        }
+
+        /// <summary>
         /// 단색 텍스처 생성 (슬라이더 바디 등).
         /// </summary>
         public pTexture CreateSolidTexture(System.Drawing.Color colour, string name)

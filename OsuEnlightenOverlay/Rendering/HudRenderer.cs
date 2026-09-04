@@ -27,6 +27,23 @@ namespace OsuEnlightenOverlay.Rendering
         // 히트에러바 중앙값 계산용 스크래치 — 매 프레임 할당 방지 (D5)
         readonly List<int> medianScratch = new List<int>(32);
 
+        // HUD 텍스트 슬롯 — 매 프레임 Remove+new pSprite 하면 SpriteManager가
+        // 수천 개 리스트를 다시 정렬하고 gen0가 초당 수천 개가 된다.
+        sealed class HudTextSlot
+        {
+            public pSprite Sprite;
+            public string Text;
+            public string FontFamily;
+            public float Size;
+            public FontStyle Style;
+            public int ColorArgb;
+            public int ShadowArgb;
+            public float ShadowDx, ShadowDy;
+            public float X, Y;
+        }
+        readonly List<HudTextSlot> hudSlots = new List<HudTextSlot>(16);
+        int hudWrite;
+
         // FPS 계산
         long fpsAccumTicks = 0;
         int fpsAccumCount = 0;
@@ -34,12 +51,7 @@ namespace OsuEnlightenOverlay.Rendering
         long lastFrameTicks = 0;
         bool fpsInitialized = false;
 
-        // 텍스트 스프라이트 캐시 — 매 프레임 재생성 방지
-        List<pSprite> hudSprites = new List<pSprite>();
-
-        // HUD 텍스트 스프라이트 depth — 히트오브젝트(~0.8) 위, 커서(0.999) 아래.
-        // 예전엔 0.5라 히트서클/커서보다 뒤에 그려져 게임플레이가 HUD를 가렸다 (I-감사 #18).
-        // stable ScoreDisplay(~0.95)/HpBar(0.96~0.97)와 동일 계층.
+        // HUD 텍스트 depth — 히트오브젝트(~0.8) 위, 커서(0.999) 아래.
         const float kHudDepth = 0.95f;
 
         // 렌더링 영역 (창 크기)
@@ -100,26 +112,21 @@ namespace OsuEnlightenOverlay.Rendering
         {
             if (settings == null) return;
 
-            // 이전 HUD 스프라이트 제거
-            ClearHudSprites();
-
-            // 폰트 텍스트 캐시 LRU 축출 (I-감사 #3/#5) — 반드시 ClearHudSprites 직후, AddText 전에.
-            // 이 시점엔 살아있는 HUD 스프라이트가 0개라 어떤 텍스처를 축출해도 안전하다.
-            fontRenderer.PruneCache();
-
+            hudWrite = 0;
             bool editMode = settings.HudEditMode;
 
-            // FPS
             if (settings.HudEnabled[0] || editMode)
                 RenderFps(editMode);
 
-            // Accuracy
             if (settings.HudEnabled[1] || editMode)
                 RenderAccuracy(editMode);
 
-            // Combo
             if (settings.HudEnabled[2] || editMode)
                 RenderCombo(editMode);
+
+            FinishHudSlots();
+            // 이번 프레임에 쓴 문자열은 RenderText가 LRU를 갱신한 뒤라 축출 대상이 아니다.
+            fontRenderer.PruneCache();
 
             // Hit Error Bar / edit 하이라이트는 즉시모드(GL.Begin/End) 도형이라 여기서 그리면
             // SpriteManager.Draw 이전이 되어 게임플레이 뒤에 깔린다. RenderOverlayShapes로 옮겨
@@ -147,23 +154,91 @@ namespace OsuEnlightenOverlay.Rendering
 
         void ClearHudSprites()
         {
-            foreach (pSprite s in hudSprites)
-                spriteManager.Remove(s);
-            hudSprites.Clear();
+            for (int i = 0; i < hudSlots.Count; i++)
+            {
+                pSprite s = hudSlots[i].Sprite;
+                if (s != null && spriteManager.Contains(s))
+                    spriteManager.Remove(s);
+                hudSlots[i].Text = null;
+            }
+            hudWrite = 0;
         }
 
-        // ── 텍스트 스프라이트 추가 헬퍼 ──
+        void FinishHudSlots()
+        {
+            for (int i = hudWrite; i < hudSlots.Count; i++)
+            {
+                HudTextSlot slot = hudSlots[i];
+                if (slot.Sprite != null && spriteManager.Contains(slot.Sprite))
+                    spriteManager.Remove(slot.Sprite);
+                slot.Text = null;
+            }
+        }
+
+        // 같은 문자열·위치면 스프라이트를 재사용한다. 바뀐 줄만 텍스처를 갈아끼운다.
         void AddText(string text, string fontFamily, float size, FontStyle style,
             float x, float y, Color color, Color shadowColor, float shadowDx, float shadowDy)
         {
             pTexture tex = fontRenderer.RenderText(text, fontFamily, size, style, color, shadowColor, shadowDx, shadowDy);
             if (tex == null) return;
 
-            pSprite sprite = new pSprite(tex, Fields.Native, Origins.TopLeft, Clocks.Game,
-                new Vector2(x, y), kHudDepth, true, Color.White);
-            sprite.Alpha = 1.0f;
-            spriteManager.Add(sprite);
-            hudSprites.Add(sprite);
+            int colorArgb = color.ToArgb();
+            int shadowArgb = shadowColor.ToArgb();
+
+            HudTextSlot slot;
+            if (hudWrite < hudSlots.Count)
+            {
+                slot = hudSlots[hudWrite];
+            }
+            else
+            {
+                slot = new HudTextSlot();
+                hudSlots.Add(slot);
+            }
+            hudWrite++;
+
+            bool same = slot.Sprite != null
+                && slot.Text == text
+                && slot.FontFamily == fontFamily
+                && slot.Size == size
+                && slot.Style == style
+                && slot.ColorArgb == colorArgb
+                && slot.ShadowArgb == shadowArgb
+                && slot.ShadowDx == shadowDx
+                && slot.ShadowDy == shadowDy
+                && slot.Sprite.Texture == tex;
+
+            if (!same)
+            {
+                slot.Text = text;
+                slot.FontFamily = fontFamily;
+                slot.Size = size;
+                slot.Style = style;
+                slot.ColorArgb = colorArgb;
+                slot.ShadowArgb = shadowArgb;
+                slot.ShadowDx = shadowDx;
+                slot.ShadowDy = shadowDy;
+                if (slot.Sprite == null)
+                {
+                    slot.Sprite = new pSprite(tex, Fields.Native, Origins.TopLeft, Clocks.Game,
+                        new Vector2(x, y), kHudDepth, true, Color.White);
+                    slot.Sprite.Alpha = 1.0f;
+                }
+                else
+                {
+                    slot.Sprite.Texture = tex;
+                }
+            }
+
+            if (slot.X != x || slot.Y != y)
+            {
+                slot.X = x;
+                slot.Y = y;
+                slot.Sprite.Position = new Vector2(x, y);
+            }
+
+            if (!spriteManager.Contains(slot.Sprite))
+                spriteManager.Add(slot.Sprite);
         }
 
         // ── 도형 렌더링 헬퍼 (직접 GL 호출) ──

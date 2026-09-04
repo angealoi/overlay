@@ -626,7 +626,7 @@ namespace OsuEnlightenOverlay.Overlay
                             System.Threading.Thread.SpinWait(100);
                         continue;
                     }
-                    renderStopwatch.Restart();
+                renderStopwatch.Restart();
                 }
 
                 try { OnSyncTick(null, EventArgs.Empty); }
@@ -650,8 +650,6 @@ namespace OsuEnlightenOverlay.Overlay
             // G3: osu! 종료/재시작 자동 재접속. osu!가 살아있으면(정상 경로) 1초에 한 번
             // 프로세스 생존만 확인하고 그대로 통과한다 — 연결 중 동작은 그대로다.
             TryReconnectIfDead();
-
-            // 메모리 읽기 — HUD 편집 모드면 Menu에서도 해상도 갱신하도록 리더에 알린다 (G4)
             reader.HudEditActive = settings != null && settings.HudEditMode;
             reader.RefreshLiveValues();
 
@@ -781,12 +779,17 @@ namespace OsuEnlightenOverlay.Overlay
                     // 맵이 바뀌면 reader가 감지된 오프셋을 무효화하여 재감지.
                     var starts = new List<int>(currentBeatmap.HitObjects.Count);
                     var types = new List<int>(currentBeatmap.HitObjects.Count);
+                    var ends = new List<int>(currentBeatmap.HitObjects.Count);
                     foreach (var h in currentBeatmap.HitObjects)
                     {
                         starts.Add(h.StartTime);
                         types.Add((int)h.Type & 0xF);
+                        int et = h.EndTime;
+                        if (h.SliderComputed && h.SliderVirtualEndTime > et)
+                            et = h.SliderVirtualEndTime;
+                        ends.Add(et);
                     }
-                    reader.SetParsedStartTimes(starts, types, reader.BeatmapFolder + "/" + reader.BeatmapOsuFilename);
+                    reader.SetParsedStartTimes(starts, types, ends, reader.BeatmapFolder + "/" + reader.BeatmapOsuFilename);
 
                     Console.WriteLine("[Beatmap] OK (" + currentBeatmap.HitObjects.Count + " objects)");
                 }
@@ -1149,6 +1152,7 @@ namespace OsuEnlightenOverlay.Overlay
                 OpenTK.Graphics.OpenGL.GL.Clear(OpenTK.Graphics.OpenGL.ClearBufferMask.ColorBufferBit);
             }
 
+            // GPU 드라이버 스톨(거대 FBO/드로우콜 폭주)은 여기서 블록된다 — 따로 잰다.
             glControl.SwapBuffers();
 
             // 첫 프레임이 실제로 나온 뒤에야 창을 보이게 한다 — OnHandleCreated에서 알파 0으로

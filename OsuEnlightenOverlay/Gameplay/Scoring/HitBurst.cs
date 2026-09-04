@@ -29,6 +29,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         Dictionary<int, int> startTimeToIndex = new Dictionary<int, int>();
         // judgements StartTime → HitObjectJudgement — 재사용 (GC 방지)
         Dictionary<int, OsuMemoryReader.HitObjectJudgement> judgementsByStartTime = new Dictionary<int, OsuMemoryReader.HitObjectJudgement>(64);
+        HashSet<int> burstSkipLogged = new HashSet<int>();
 
         // 활성 HitBurst 스프라이트 추적 — 별도 SpriteManager 사용 시 만료된 것을 직접 제거.
         List<pSprite> activeBursts = new List<pSprite>();
@@ -55,6 +56,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
         {
             beatmapObjects = objects;
             hitSeen.Clear();
+            burstSkipLogged.Clear();
             lastTimeMs = -1;
             // StartTime → beatmapObjects 인덱스 Dictionary 구축 — O(1) 조회용
             startTimeToIndex = new Dictionary<int, int>(objects.Count);
@@ -80,6 +82,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 spriteManager.Remove(b);
             activeBursts.Clear();
             hitSeen.Clear();
+            burstSkipLogged.Clear();
             lastTimeMs = -1;
         }
 
@@ -96,6 +99,7 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                     spriteManager.Remove(b);
                 activeBursts.Clear();
                 hitSeen.Clear();
+                burstSkipLogged.Clear();
             }
             lastTimeMs = timeMs;
         }
@@ -156,16 +160,17 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 var j = judgements[i];
                 if (j.IsHit == 0) continue;
                 if (hitSeen.ContainsKey(j.StartTime)) continue;
-
-                // 슬라이더 완전 miss: IsHit=1, ScoreValue=0, HitValue=0
-                // osu-stable은 UpdateHitObject에서 강제 Hit(slider) 호출 → Miss 반환.
-                // ScoreValue=0 && HitValue=0이어도 슬라이더면 Miss로 처리.
-                bool isSlider = (j.Type & 2) != 0;
-                if (j.ScoreValue == 0 && j.HitValue == 0 && !isSlider) continue;
-
                 if (j.StartTime > timeMs + 1000) continue;
 
-                // hitSeen에만 기록 — StartTime 기반
+                // Update와 같이 슬라이더 중간 프레임(ScoreValue 미기록)을 잠그지 않는다.
+                int overlayEnd;
+                Vector2 unusedPos;
+                int unusedStart;
+                if (!GetHitObjectInfoByStartTime(j.StartTime, out unusedPos, out unusedStart, out overlayEnd))
+                    overlayEnd = j.EndTime;
+                int displayScore;
+                if (!TryGetDisplayScore(j, timeMs, overlayEnd, out displayScore)) continue;
+
                 hitSeen[j.StartTime] = timeMs;
             }
         }
@@ -205,46 +210,132 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
                 // 스피너는 ScoreValue가 회전 중 intermediate 값(100/1100)이라 circle과 다름.
                 // 판정 완료(IsHit=1)된 스피너는 무조건 300 (clear)로 처리.
                 bool isSpinner = (j.Type & 8) != 0;
-                bool isSlider = (j.Type & 2) != 0;
-
-                // ScoreValue와 HitValue가 모두 0이면 잘못된 데이터 — 건너뛰기
-                // 단, 슬라이더는 완전 miss 시에도 IsHit=1, ScoreValue=0, HitValue=0이 됨.
-                // osu-stable: UpdateHitObject에서 강제 Hit(slider) 호출 → Miss 반환.
-                if (j.ScoreValue == 0 && j.HitValue == 0 && !isSlider && !isSpinner) { skippedData++; continue; }
 
                 // 객체의 StartTime이 현재 시간보다 미래면 아직 판정되지 않아야 함 — 건너뛰기
                 // (메모리에서 IsHit=1로 미리 세팅된 객체일 수 있음)
                 if (j.StartTime > timeMs + 1000) { skippedFuture++; continue; }
 
-                // HitObject 위치 — StartTime으로 beatmapObjects에서 찾기
+                int overlayEnd;
                 Vector2 endPosition;
                 int startTime;
-                int endTime;
-                if (!GetHitObjectInfoByStartTime(j.StartTime, out endPosition, out startTime, out endTime))
+                if (!GetHitObjectInfoByStartTime(j.StartTime, out endPosition, out startTime, out overlayEnd))
                 {
-                    // 조회 실패 — hitSeen에 등록하지 않음 (다음 프레임에 재시도)
                     continue;
                 }
+                if (j.EndTime > overlayEnd) overlayEnd = j.EndTime;
+
+                int displayScore;
+                if (!TryGetDisplayScore(j, timeMs, overlayEnd, out displayScore))
+                {
+                    skippedData++;
+                    if (isSliderLong(j, overlayEnd) && burstSkipLogged.Add(j.StartTime))
+                        Console.WriteLine("[BURST] skip st=" + j.StartTime
+                            + " et=" + overlayEnd
+                            + " t=" + timeMs
+                            + " sv=" + j.ScoreValue
+                            + " hv=" + j.HitValue
+                            + " isHit=" + j.IsHit);
+                    continue;
+                }
+
+                int endTimeForBurst = overlayEnd;
 
                 // ScoreValue → spriteName 결정 — StartTime 기반 콤보 분석으로 Geki/Katu 계산
                 // 스피너는 ScoreValue가 회전 중 intermediate 값이므로, 판정 완료 시 300(hitra)으로 강제.
-                int effectiveScoreValue = isSpinner ? 300 : j.ScoreValue;
+                int effectiveScoreValue = isSpinner ? 300 : displayScore;
                 int effectiveHitValue = isSpinner ? 1024 : ComputeComboAdditionByStartTime(
-                    j.StartTime, j.ScoreValue, j.HitValue, judgementsByStartTime);
+                    j.StartTime, effectiveScoreValue, j.HitValue, judgementsByStartTime);
                 string spriteName = GetSpriteName(effectiveScoreValue, effectiveHitValue);
                 if (string.IsNullOrEmpty(spriteName))
-                {
-                    // spriteName 실패 — hitseen에 등록하지 않음
                     continue;
-                }
 
-                // hitseen 등록 — StartTime 기반
+                // 텍스처 로드 실패 시 hitSeen을 잠그면 02:22 긴 hold의 300이 영영 안 나온다.
+                bool created = CreateHitBurst(spriteName, endPosition, startTime, endTimeForBurst, effectiveScoreValue, timeMs, j.Type);
+                if (!created)
+                    continue;
+
                 hitSeen[j.StartTime] = timeMs;
-
-                // 애니메이션 시작 시간 = 현재 시간 (timeMs)
-                CreateHitBurst(spriteName, endPosition, startTime, endTime, effectiveScoreValue, timeMs, j.Type);
                 createdCount++;
+                if (isSliderLong(j, overlayEnd))
+                    Console.WriteLine("[BURST] st=" + j.StartTime
+                        + " et=" + overlayEnd
+                        + " t=" + timeMs
+                        + " sv=" + j.ScoreValue
+                        + " hv=" + j.HitValue
+                        + " sprite=" + spriteName
+                        + " pos=" + endPosition.X.ToString("F0") + "," + endPosition.Y.ToString("F0"));
             }
+        }
+
+        /// <summary>
+        /// 슬라이더 최종 판정(300/100/50/miss)이 메모리에 기록됐는지.
+        /// osu-stable SliderOsu.Hit()는 IsHit=true만 먼저 켜고 HitValue는 안 쓴다.
+        /// ScoreValue는 ForcedHit→IncreaseScore 이후에 300/100/50/0이 된다.
+        /// 그 사이(그리고 틱이 scoreValue=10을 남긴 프레임)를 miss로 잠그면 최종 burst가 안 나온다.
+        /// </summary>
+        static bool TryGetDisplayScore(OsuMemoryReader.HitObjectJudgement j, int timeMs, int overlayEndTime, out int displayScore)
+        {
+            displayScore = 0;
+            bool isSlider = (j.Type & 2) != 0;
+            bool isSpinner = (j.Type & 8) != 0;
+
+            if (isSpinner)
+            {
+                displayScore = 300;
+                return true;
+            }
+
+            int normalized = NormalizeScoreValue(j.ScoreValue);
+            if (normalized == 50 || normalized == 100 || normalized == 300)
+            {
+                displayScore = normalized;
+                return true;
+            }
+
+            if (!isSlider)
+            {
+                if (normalized < 0) return false;
+                if (normalized == 0 && j.HitValue == 0) return false;
+                displayScore = normalized;
+                return true;
+            }
+
+            // 슬라이더: 오버레이 EndTime(파싱)과 메모리 EndTime 중 늦은 쪽 전에는 최종 Hit()가 없다.
+            // 메모리 0x14 EndTime이 StartTime과 같게 읽히면 2초 창에서 빠지므로 overlay 값을 쓴다.
+            int waitEnd = j.EndTime;
+            if (overlayEndTime > waitEnd) waitEnd = overlayEndTime;
+            if (waitEnd > j.StartTime && timeMs + 16 < waitEnd)
+                return false;
+
+            if (normalized < 0 || normalized == 0)
+            {
+                if (timeMs < waitEnd + 48) return false;
+                displayScore = 0;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// ScoreValue는 보통 300/100/50/0. IncreaseScoreType(1024/512/256)이 들어오면 정규화.
+        /// 틱(10)·리버스(30)는 -1 (아직 최종 판정 아님).
+        /// </summary>
+        static int NormalizeScoreValue(int scoreValue)
+        {
+            switch (scoreValue)
+            {
+                case 300:
+                case 100:
+                case 50:
+                case 0:
+                    return scoreValue;
+            }
+            if (scoreValue < 0) return 0;
+            if ((scoreValue & 1024) != 0) return 300;
+            if ((scoreValue & 512) != 0) return 100;
+            if ((scoreValue & 256) != 0) return 50;
+            return -1;
         }
 
         /// <summary>
@@ -262,7 +353,21 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             // O(1) Dictionary 조회 — 선형 검색 대신
             int index;
             if (!startTimeToIndex.TryGetValue(startTimeVal, out index))
-                return false;
+            {
+                // 메모리/파서 라운딩으로 1~2ms 어긋나면 긴 슬라이더 burst가 영영 안 나왔다.
+                index = -1;
+                int bestAbs = 3;
+                for (int k = 0; k < beatmapObjects.Count; k++)
+                {
+                    int a = Math.Abs(beatmapObjects[k].StartTime - startTimeVal);
+                    if (a < bestAbs)
+                    {
+                        bestAbs = a;
+                        index = k;
+                    }
+                }
+                if (index < 0) return false;
+            }
             if (index < 0 || index >= beatmapObjects.Count) return false;
 
             HitObjectData h = beatmapObjects[index];
@@ -270,7 +375,11 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             int type = (int)h.Type;
             if (type == 0) return false;
             if ((type & (int)HitObjectType.Spinner) != 0) { endPosition = h.Position; endTime = h.EndTime; }
-            else if ((type & (int)HitObjectType.Slider) != 0) { endPosition = h.BaseEndPosition; endTime = h.StartTime; }
+            else if ((type & (int)HitObjectType.Slider) != 0)
+            {
+                endPosition = h.BaseEndPosition;
+                endTime = h.EndTime > h.StartTime ? h.EndTime : h.StartTime;
+            }
             else { endPosition = h.Position; endTime = h.StartTime; }
             return true;
         }
@@ -369,28 +478,58 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             return hitValue;
         }
 
+        static bool isSliderLong(OsuMemoryReader.HitObjectJudgement j, int overlayEnd)
+        {
+            if ((j.Type & 2) == 0) return false;
+            int et = overlayEnd > j.EndTime ? overlayEnd : j.EndTime;
+            return et - j.StartTime >= 1000;
+        }
+
         /// <summary>
-        /// hitburst 스프라이트 생성 + HitTransformationsSuccess/Fail 애니메이션.
+        /// hit300g 없는 스킨은 hit300으로 내린다. LoadAll이 빈 배열을 주면 Load 한 장 폴백.
+        /// </summary>
+        pTexture[] LoadBurstTextures(string spriteName)
+        {
+            string[] names;
+            switch (spriteName)
+            {
+                case "hit300g":
+                    names = new[] { "hit300g", "hit300k", "hit300" };
+                    break;
+                case "hit300k":
+                    names = new[] { "hit300k", "hit300" };
+                    break;
+                case "hit100k":
+                    names = new[] { "hit100k", "hit100" };
+                    break;
+                default:
+                    names = new[] { spriteName };
+                    break;
+            }
+            for (int i = 0; i < names.Length; i++)
+            {
+                pTexture[] textures = textureManager.LoadAll(names[i]);
+                if (textures != null && textures.Length > 0) return textures;
+                pTexture tex = textureManager.Load(names[i]);
+                if (tex != null) return new pTexture[] { tex };
+            }
+            return null;
+        }
+
+        /// <summary>
         /// osu! stable HitObjectManager.Hit() 포팅 (HitObjectManager.cs:999-1010).
         /// </summary>
-        void CreateHitBurst(string spriteName, Vector2 endPosition, int startTime, int endTime, int scoreValue, int timeMs, int type)
+        bool CreateHitBurst(string spriteName, Vector2 endPosition, int startTime, int endTime, int scoreValue, int timeMs, int type)
         {
             // 텍스처 로드 (pAnimation용 — LoadAll로 애니메이션 프레임 로드)
-            pTexture[] textures = textureManager.LoadAll(spriteName);
-            if (textures == null || textures.Length == 0)
-            {
-                // 단일 텍스처 폴백
-                pTexture tex = textureManager.Load(spriteName);
-                if (tex == null) return;
-                textures = new pTexture[] { tex };
-            }
+            pTexture[] textures = LoadBurstTextures(spriteName);
+            if (textures == null) return false;
 
             // depth — osu! stable HitObjectManager.cs:999-1010 그대로.
             // particle 시스템(pParticleBatch)은 이 오버레이에 없으므로 particle == null 경로만 해당.
             //   spinner                         → drawOrderFwdLowPrio(StartTime + 20)
             //   circle/slider (particle == null)→ drawOrderFwdPrio(EndTime - 4)
             bool isSpinner = (type & 8) != 0;
-            bool isSlider = (type & 2) != 0;
 
             // 파티클 텍스처 로드 — osu-stable: particle{scoreAmount}, hitTexture[0].Source
             // hitburst 텍스처와 같은 소스에서 로드 (fallback 안 함)
@@ -404,14 +543,14 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             // particle != null → isBelow = true → drawOrderFwdLowPrio(EndTime)
             // particle == null && circle/slider → drawOrderFwdPrio(EndTime - 4)
             // spinner → drawOrderFwdLowPrio(StartTime + 20)
+            // lazer: 판정 본체는 오브젝트 아래, 레거시 프록시는 오브젝트 위·어프로치 아래.
+            // 볼/팔로워는 이제 슬라이더 StartTime 대역(~0.77)이라 0.81이면 팔로워 위·어프로치 아래.
             bool isBelow = particleTex != null && !isSpinner;
             float depth;
             if (isSpinner)
                 depth = SpriteManager.DrawOrderFwdLowPrio(startTime + 20);
-            else if (isBelow)
-                depth = SpriteManager.DrawOrderFwdLowPrio(endTime);
             else
-                depth = SpriteManager.DrawOrderFwdPrio(endTime - 4);
+                depth = SpriteManager.DrawOrderJudgement(endTime - 4);
 
             // pAnimation 생성 — osu! stable과 동일
             pAnimation p = new pAnimation(textures, Fields.Gamefield, Origins.Centre,
@@ -477,8 +616,8 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             // particle != null && isBelow && hitValue > 0
             if (particleTex != null && isBelow && scoreValue > 0)
             {
-                pAnimation p2 = new pAnimation(textures, Fields.Gamefield, Origins.Centre,
-                    Clocks.AudioOnce, endPosition, 1f, false, Color.White);
+                pAnimation                 p2 = new pAnimation(textures, Fields.Gamefield, Origins.Centre,
+                    Clocks.AudioOnce, endPosition, SpriteManager.DrawOrderJudgement(endTime), false, Color.White);
                 p2.LoopType = LoopTypes.LoopOnce;
                 p2.Additive = true;
                 p2.Scale = 0.9f;
@@ -504,6 +643,8 @@ namespace OsuEnlightenOverlay.Gameplay.Scoring
             {
                 CreateParticles(particleTex, endPosition, timeMs);
             }
+
+            return true;
         }
 
         /// <summary>

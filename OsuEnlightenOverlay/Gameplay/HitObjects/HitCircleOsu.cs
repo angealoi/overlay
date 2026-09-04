@@ -303,7 +303,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (texApproach == null) return;
             // Approach Circle: Fade 0→0.9, Scale 4→1
             spriteApproachCircle = new pSprite(texApproach, Fields.Gamefield, Origins.Centre, Clocks.Audio,
-                data.Position, SpriteManager.DrawOrderFwdPrio(startTime - p), false, comboColour);
+                data.Position, SpriteManager.DrawOrderApproach(startTime - p), false, comboColour);
             int fadeIn2 = Math.Min(difficulty.FadeIn * 2, p);
             spriteApproachCircle.Transformations.Add(new Transformation(
                 TransformationType.Fade, 0f, 0.9f,
@@ -320,7 +320,7 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         /// Disarm — osu! stable HitCircleOsu.Disarm() 포팅.
         /// 기존 ARMED transformation 제거 후 fade out 추가.
         /// </summary>
-        public void Disarm()
+        public virtual void Disarm()
         {
             RemoveArmedTransformations(spriteHitCircle);
             RemoveArmedTransformations(spriteHitCircleOverlay);
@@ -684,6 +684,12 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
 
         int appearTimeRef;
         pSprite spriteReverseArrow; // osu! stable: SpriteHitCircleText = reversearrow
+        bool snakingAtFarEnd;
+
+        internal bool HasReverseArrow { get { return spriteReverseArrow != null; } }
+        internal bool SnakingAtFarEnd { get { return snakingAtFarEnd; } }
+        internal int ArrivalTime { get { return data.StartTime; } }
+        internal int AppearTime { get { return appearTimeRef; } }
 
         /// 리버스 화살표는 spriteHitCircleText 리스트가 아니라 별도 필드라 따로 옮겨야 한다.
         public override void ModifyPosition(Vector2 change)
@@ -692,12 +698,36 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (spriteReverseArrow != null) spriteReverseArrow.Position += change;
         }
 
+        /// <summary>
+        /// lazer DrawableSliderRepeat.UpdateSnakingPosition — 스네이킹 끝/시작을 따라가고
+        /// 화살표는 경로의 다음 점으로 향한다.
+        /// </summary>
+        public void UpdateSnaking(Vector2 pos, float aimAngle)
+        {
+            Vector2 delta = pos - data.Position;
+            if (delta.LengthSquared > 0.0001f)
+                ModifyPosition(delta);
+
+            if (spriteReverseArrow == null) return;
+            if (spriteReverseArrow.Rotation == aimAngle) return;
+            spriteReverseArrow.Rotation = aimAngle;
+            if (SkinManager.UseNewLayout) return;
+            for (int i = 0; i < spriteReverseArrow.Transformations.Count; i++)
+            {
+                Transformation t = spriteReverseArrow.Transformations[i];
+                if (t.Type != TransformationType.Rotation) continue;
+                t.StartFloat = aimAngle + (float)Math.PI / 32f;
+                t.EndFloat = aimAngle - (float)Math.PI / 32f;
+            }
+        }
+
         public HitCircleSliderEnd(HitObjectData data, DifficultyValues difficulty, TextureManager texManager,
             int appearTime, bool reverse, float angle, int startTime, Color comboColour,
-            bool firstRun, int parentStartTime, double segmentDuration)
+            bool firstRun, bool snakingAtFarEnd, int parentStartTime, double segmentDuration)
             : base(data, difficulty, texManager, comboColour)
         {
             this.appearTimeRef = appearTime;
+            this.snakingAtFarEnd = snakingAtFarEnd;
 
             // osu! stable: SpriteCollection.Remove(SpriteApproachCircle)
             spriteApproachCircle = null;
@@ -706,18 +736,25 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             if (spriteHitCircle != null) spriteHitCircle.Alpha = 0f;
             if (spriteHitCircleOverlay != null) spriteHitCircleOverlay.Alpha = 0f;
 
+            // 끝원 depth는 도착 시각이 아니라 부모 슬라이더 StartTime 대역.
+            // DrawOrderBwd(도착시각)이면 긴 슬라이더의 끝원이 그 사이에 나타난 다음
+            // 시작원(DrawOrderBwd(다음 StartTime))보다 아래가 된다. lazer는 슬라이더
+            // 전체가 부모 StartTime으로 정렬되어 앞 슬라이더(끝원 포함)가 위.
+            // +5/+6은 같은 슬라이더 시작원(Bwd(ST))·틱(Bwd(ST+3))보다 아래, 바디(ST+10)보다 위.
+            if (spriteHitCircle != null)
+                spriteHitCircle.Depth = SpriteManager.DrawOrderBwd(parentStartTime + 6);
+            if (spriteHitCircleOverlay != null)
+                spriteHitCircleOverlay.Depth = SpriteManager.DrawOrderBwd(parentStartTime + 5);
+
             // osu! stable: reverse가 true면 SpriteHitCircleText = reversearrow
             if (reverse)
             {
                 pTexture texReverseArrow = texManager.Load("reversearrow");
                 if (texReverseArrow != null)
                 {
-                    // osu! stable: drawOrderBwd(sortTime)
-                    // sortTime = firstRun ? parent.StartTime - 1 : startTime - (int)(1000 * parent.SpatialLength / parent.Velocity) - 1
-                    int sortTime = firstRun
-                        ? parentStartTime - 1
-                        : startTime - (int)segmentDuration - 1;
-                    float arrowDepth = SpriteManager.DrawOrderBwd(sortTime);
+                    // lazer OverlayElementContainer: 리버스 화살표는 같은 슬라이더 헤드 위.
+                    // 도착 시각으로 잡으면 이후 repeat가 나중에 나온 노트 밑으로 내려간다.
+                    float arrowDepth = SpriteManager.DrawOrderBwd(parentStartTime - 1);
 
                     spriteReverseArrow = new pSprite(texReverseArrow, Fields.Gamefield, Origins.Centre, Clocks.Audio,
                         data.Position, arrowDepth, false, Color.White);
@@ -810,9 +847,8 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                 }
             }
 
-            // Disarm — osu! stable HitCircleSliderEnd.Disarm
-            // nomod: Fade 1→0 (StartTime → StartTime) 즉시
-            // HD: 첫 번째 end circle은 HD fade-out, 나머지는 제거
+            // HD: 첫 번째 end circle은 부모 StartTime 기준 fade-out, 나머지는 제거.
+            // nomod Disarm은 아래 override — 볼 도착 시각에 즉시 숨김 (HitWindow까지 남기지 않음).
             if (HitCircleOsu.HiddenActive)
             {
                 if (firstRun)
@@ -834,17 +870,62 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
                     spriteHitCircleOverlay = null;
                 }
             }
-            else
+
+            // base 생성자의 Disarm은 리버스 화살표 생성 전에 호출됨. 여기서 다시 호출해
+            // 원/오버레이/리버스 모두 StartTime에 즉시 숨긴다 (osu-stable HitCircleSliderEnd.ctor).
+            Disarm();
+        }
+
+        /// <summary>
+        /// osu-stable HitCircleSliderEnd.Disarm — Hidden이면 no-op.
+        /// nomod: ARMED(HitWindow fade)를 걷어내고 StartTime→StartTime 즉시 페이드.
+        /// </summary>
+        public override void Disarm()
+        {
+            if (HitCircleOsu.HiddenActive)
+                return;
+
+            base.Disarm();
+            ApplyInstantEndFade(spriteHitCircle);
+            ApplyInstantEndFade(spriteHitCircleOverlay);
+            ApplyInstantEndFade(spriteReverseArrow);
+        }
+
+        void ApplyInstantEndFade(pSprite p)
+        {
+            if (p == null) return;
+            RemoveArmedTransformations(p);
+            Transformation fade = new Transformation(
+                TransformationType.Fade, 1f, 0f, data.StartTime, data.StartTime, EasingTypes.None);
+            fade.TagNumeric = ARMED;
+            p.Transformations.Add(fade);
+        }
+
+        public override void UpdateDifficulty(DifficultyValues newDifficulty)
+        {
+            base.UpdateDifficulty(newDifficulty);
+
+            int startTime = data.StartTime;
+            int appearTime = appearTimeRef;
+            FixAppearFade(spriteHitCircle, appearTime, startTime);
+            FixAppearFade(spriteHitCircleOverlay, appearTime, startTime);
+            Disarm();
+
+            if (spriteHitCircle != null) spriteHitCircle.ComputeTimeRange();
+            if (spriteHitCircleOverlay != null) spriteHitCircleOverlay.ComputeTimeRange();
+            if (spriteReverseArrow != null) spriteReverseArrow.ComputeTimeRange();
+        }
+
+        static void FixAppearFade(pSprite sprite, int appearTime, int startTime)
+        {
+            if (sprite == null) return;
+            foreach (Transformation t in sprite.Transformations)
             {
-                if (spriteHitCircle != null)
+                if (t.Type == TransformationType.Fade && t.StartFloat == 0f)
                 {
-                    spriteHitCircle.Transformations.Add(new Transformation(
-                        TransformationType.Fade, 1f, 0f, startTime, startTime, EasingTypes.None));
-                }
-                if (spriteHitCircleOverlay != null)
-                {
-                    spriteHitCircleOverlay.Transformations.Add(new Transformation(
-                        TransformationType.Fade, 1f, 0f, startTime, startTime, EasingTypes.None));
+                    t.Time1 = appearTime;
+                    t.Time2 = Math.Min(startTime, appearTime + DifficultyCalculator.FadeIn);
+                    return;
                 }
             }
         }

@@ -77,7 +77,7 @@ namespace OsuEnlightenOverlay.Graphics.OpenGl
         /// <summary>
         /// FBO 바인딩 — 렌더링 대상을 이 텍스처로 변경.
         /// </summary>
-        public void Bind()
+        public void Bind(bool clear = true)
         {
             if (bound) return;
 
@@ -89,9 +89,11 @@ namespace OsuEnlightenOverlay.Graphics.OpenGl
                 GL.BindFramebuffer(FramebufferTarget.Framebuffer, frameBuffer);
             }
 
-            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
+            // viewport 먼저 — glClear는 viewport에 클립된다.
             GL.Viewport(0, 0, Width, Height);
+
+            if (clear)
+                GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
             bound = true;
         }
