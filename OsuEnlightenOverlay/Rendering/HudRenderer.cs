@@ -26,6 +26,7 @@ namespace OsuEnlightenOverlay.Rendering
 
         // 히트에러바 중앙값 계산용 스크래치 — 매 프레임 할당 방지 (D5)
         readonly List<int> medianScratch = new List<int>(32);
+        static readonly int[] EditHitErrors = { -22, -14, -8, -3, 0, 2, 5, 11, 18 };
 
         // HUD 텍스트 슬롯 — 매 프레임 Remove+new pSprite 하면 SpriteManager가
         // 수천 개 리스트를 다시 정렬하고 gen0가 초당 수천 개가 된다.
@@ -242,20 +243,33 @@ namespace OsuEnlightenOverlay.Rendering
         }
 
         // ── 도형 렌더링 헬퍼 (직접 GL 호출) ──
-        void FillRect(float x, float y, float w, float h, Color color)
+        void BeginSolidQuads()
         {
             GL.Disable(EnableCap.Texture2D);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-
             GL.Begin(PrimitiveType.Quads);
+        }
+
+        void AddSolidRect(float x, float y, float w, float h, Color color)
+        {
             GL.Color4(color);
             GL.Vertex2(x, y);
             GL.Vertex2(x + w, y);
             GL.Vertex2(x + w, y + h);
             GL.Vertex2(x, y + h);
-            GL.End();
+        }
 
+        void EndSolidQuads()
+        {
+            GL.End();
             GL.Enable(EnableCap.Texture2D);
+        }
+
+        void FillRect(float x, float y, float w, float h, Color color)
+        {
+            BeginSolidQuads();
+            AddSolidRect(x, y, w, h, color);
+            EndSolidQuads();
         }
 
         void FillTriangle(float x0, float y0, float x1, float y1, float x2, float y2, Color color)
@@ -589,33 +603,39 @@ namespace OsuEnlightenOverlay.Rendering
 
             // 윈도우 배경 띠 (선택적 — NEWNEWOVERLAY은 배경 띠 없음, 틱만)
 
-            // 중앙 바
-            FillRect(centerX - barW * 0.5f, posY, barW, barH, barCol);
-
             // 틱 렌더링
-            List<int> errors;
+            IList<int> errors = null;
             if (editMode)
             {
-                errors = new List<int> { -22, -14, -8, -3, 0, 2, 5, 11, 18 };
+                errors = EditHitErrors;
             }
-            else
+            else if (reader != null && reader.ScoreLive && reader.HitErrors.Count > 0)
             {
-                if (reader == null || !reader.ScoreLive || reader.HitErrors.Count == 0) return;
                 errors = reader.HitErrors;
             }
 
-            foreach (int err in errors)
+            // 중앙 바와 모든 tick을 한 번의 immediate-mode batch로 제출한다.
+            BeginSolidQuads();
+            AddSolidRect(centerX - barW * 0.5f, posY, barW, barH, barCol);
+            if (errors != null)
             {
-                float tickX = centerX + err * pxPerMs - tickW * 0.5f;
-                Color tickCol;
-                int absErr = Math.Abs(err);
-                if (absErr <= w300) tickCol = c300Col;
-                else if (absErr <= w100) tickCol = c100Col;
-                else if (absErr <= w50) tickCol = c50Col;
-                else tickCol = missCol;
+                for (int i = 0; i < errors.Count; i++)
+                {
+                    int err = errors[i];
+                    float tickX = centerX + err * pxPerMs - tickW * 0.5f;
+                    Color tickCol;
+                    int absErr = Math.Abs(err);
+                    if (absErr <= w300) tickCol = c300Col;
+                    else if (absErr <= w100) tickCol = c100Col;
+                    else if (absErr <= w50) tickCol = c50Col;
+                    else tickCol = missCol;
 
-                FillRect(tickX, posY + (barH - tickH) * 0.5f, tickW, tickH, tickCol);
+                    AddSolidRect(tickX, posY + (barH - tickH) * 0.5f, tickW, tickH, tickCol);
+                }
             }
+            EndSolidQuads();
+
+            if (errors == null || errors.Count == 0) return;
 
             // 중앙값 화살표
             if (errors.Count > 0)

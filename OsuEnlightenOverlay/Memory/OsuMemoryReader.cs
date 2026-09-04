@@ -215,6 +215,7 @@ namespace OsuEnlightenOverlay.Memory
             countAnomalyStreak = 0;
             cachedHoStartTimes = null;
             cachedHoEndTimes = null;
+            cachedHoIndicesByStart = null;
             cachedHoCount = 0;
             cachedMaxDuration = 0;
             hoCacheReady = false;
@@ -254,6 +255,7 @@ namespace OsuEnlightenOverlay.Memory
             // 서브 리더 — 각자의 slot/인덱스/모니터 캐시 리셋
             score.ResetForReconnect();
             resolution.ResetForReconnect();
+            lastResolutionRefreshTicks = 0;
         }
 
         /// <summary>
@@ -643,6 +645,18 @@ namespace OsuEnlightenOverlay.Memory
             }
         }
 
+        long lastResolutionRefreshTicks;
+        static readonly long ResolutionRefreshIntervalTicks = TimeSpan.TicksPerMillisecond * 100;
+
+        void RefreshResolutionRateLimited()
+        {
+            long now = DateTime.UtcNow.Ticks;
+            if (now - lastResolutionRefreshTicks < ResolutionRefreshIntervalTicks)
+                return;
+            lastResolutionRefreshTicks = now;
+            resolution.Refresh();
+        }
+
         public void RefreshLiveValues()
         {
             if (!IsOpen) return;
@@ -671,12 +685,12 @@ namespace OsuEnlightenOverlay.Memory
             {
                 RefreshCursor();
                 RefreshBeatmap();
-                resolution.Refresh();
+                RefreshResolutionRateLimited();
             }
             // HUD 편집 모드는 Menu(모드 0)에서도 오버레이를 표시하므로 그때도 해상도(지오메트리)를
             // 갱신해야 낡은 지오메트리로 편집하지 않는다 (G4). 커서/비트맵은 편집에 불필요하므로 제외.
             else if (HudEditActive)
-                resolution.Refresh();
+                RefreshResolutionRateLimited();
 
             if (playModeSlot != IntPtr.Zero)
             {
@@ -946,6 +960,7 @@ namespace OsuEnlightenOverlay.Memory
         // HitObject StartTime/EndTime 배열 캐시 (맵 로드 시 1회). StartTime/EndTime은 GC-불변이므로 안전.
         int[] cachedHoStartTimes = null;
         int[] cachedHoEndTimes = null;
+        int[] cachedHoIndicesByStart = null;
         int cachedHoCount = 0;
         int cachedMaxDuration = 0;
         bool hoCacheReady = false;
@@ -973,6 +988,43 @@ namespace OsuEnlightenOverlay.Memory
         readonly List<int> reusedReadIndices = new List<int>(128);
         byte[] lastTrackByIdx;
         const int LongObjectMinDurationMs = 2000;
+
+        int LowerBoundCachedStart(int target)
+        {
+            int lo = 0, hi = cachedHoIndicesByStart != null ? cachedHoIndicesByStart.Length : 0;
+            while (lo < hi)
+            {
+                int mid = (lo + hi) / 2;
+                int index = cachedHoIndicesByStart[mid];
+                if (cachedHoStartTimes[index] < target)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            return lo;
+        }
+
+        int UpperBoundCachedStart(int target)
+        {
+            int lo = 0, hi = cachedHoIndicesByStart != null ? cachedHoIndicesByStart.Length : 0;
+            while (lo < hi)
+            {
+                int mid = (lo + hi) / 2;
+                int index = cachedHoIndicesByStart[mid];
+                if (cachedHoStartTimes[index] <= target)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            return lo;
+        }
+
+        bool IsCachedLongObject(int index)
+        {
+            int startTime = cachedHoStartTimes[index];
+            int endTime = OverlayEndTime(startTime, cachedHoEndTimes[index]);
+            return endTime - startTime >= LongObjectMinDurationMs;
+        }
 
         // Step2: 전환 공백 — 마지막 성공 스냅샷 (500ms 이내 재사용)
         readonly List<HitObjectJudgement> lastGoodJudgements = new List<HitObjectJudgement>(64);
@@ -1119,6 +1171,10 @@ namespace OsuEnlightenOverlay.Memory
             parsedStartTimeSet = null;
             if (mapKey != parsedOsuKey)
                 parsedOsuKey = mapKey;
+            // 파싱 EndTime은 메모리 캐시를 만든 뒤 도착할 수 있다. 정렬/장시간 객체 인덱스를
+            // 다음 판정 프레임에 새 값으로 재구성해 긴 slider가 시간 창에서 빠지지 않게 한다.
+            if (hoCacheReady)
+                InvalidateHoCache();
             Console.WriteLine("[HOM] parsed_end injected n=" + n
                 + " unique=" + parsedEndByStart.Count
                 + " long>=" + LongObjectMinDurationMs + "ms=" + longParsed);
@@ -1626,6 +1682,7 @@ namespace OsuEnlightenOverlay.Memory
                     hoCacheReady = false;
                     cachedHoStartTimes = null;
                     cachedHoEndTimes = null;
+                    cachedHoIndicesByStart = null;
                     cachedHoCount = 0;
                     longObjectIndices.Clear();
                     LogHom("count_reset", hitCount, osuCount);
@@ -1660,6 +1717,7 @@ namespace OsuEnlightenOverlay.Memory
                     hoCacheReady = false;
                     cachedHoStartTimes = null;
                     cachedHoEndTimes = null;
+                    cachedHoIndicesByStart = null;
                     cachedHoCount = 0;
                     longObjectIndices.Clear();
                     fieldSuspectZeroSinceTicks = 0;
@@ -1684,6 +1742,7 @@ namespace OsuEnlightenOverlay.Memory
                         hoCacheReady = false;
                         cachedHoStartTimes = null;
                         cachedHoEndTimes = null;
+                        cachedHoIndicesByStart = null;
                         cachedHoCount = 0;
                         longObjectIndices.Clear();
                     }
@@ -1693,6 +1752,7 @@ namespace OsuEnlightenOverlay.Memory
                     hoCacheReady = false;
                     cachedHoStartTimes = null;
                     cachedHoEndTimes = null;
+                    cachedHoIndicesByStart = null;
                     cachedHoCount = 0;
                     longObjectIndices.Clear();
                 }
@@ -1741,6 +1801,14 @@ namespace OsuEnlightenOverlay.Memory
                     cachedHoCount++;
                 }
                 cachedMaxDuration = maxDuration;
+                cachedHoIndicesByStart = new int[cachedHoCount];
+                for (int i = 0; i < cachedHoCount; i++)
+                    cachedHoIndicesByStart[i] = i;
+                Array.Sort(cachedHoIndicesByStart, delegate(int a, int b)
+                {
+                    int byTime = cachedHoStartTimes[a].CompareTo(cachedHoStartTimes[b]);
+                    return byTime != 0 ? byTime : a.CompareTo(b);
+                });
                 hoCacheReady = true;
 
                 // Step4: 캐시 빌드 직후 첫 객체 StartTime/.osu 교차검증
@@ -1767,20 +1835,54 @@ namespace OsuEnlightenOverlay.Memory
             {
                 timeMin = TimeMs - timeRangeMs;
                 timeMax = TimeMs + 500;
-                // 진행 중(지금 홀드해야 하는) 객체를 먼저 넣어 maxCount에 안 잘리게 한다.
-                for (int pass = 0; pass < 2; pass++)
+
+                // 긴 객체는 StartTime이 시간 창보다 훨씬 앞설 수 있으므로 별도 목록에서 먼저 고른다.
+                // 진행 중 객체를 우선해 maxCount에 잘려 tracking/판정 edge를 놓치지 않게 한다.
+                for (int i = 0; i < longObjectIndices.Count && reusedReadIndices.Count < maxCount; i++)
                 {
-                    for (int i = 0; i < nCache && reusedReadIndices.Count < maxCount; i++)
-                    {
-                        int st = cachedHoStartTimes[i];
-                        if (st < 0) continue;
-                        int et = OverlayEndTime(st, cachedHoEndTimes[i]);
-                        bool active = st <= TimeMs && et >= TimeMs;
-                        if (pass == 0 && !active) continue;
-                        if (pass == 1 && active) continue;
-                        if (et < timeMin || st > timeMax) continue;
-                        reusedReadIndices.Add(i);
-                    }
+                    int index = longObjectIndices[i];
+                    if (index < 0 || index >= nCache) continue;
+                    int st = cachedHoStartTimes[index];
+                    int et = OverlayEndTime(st, cachedHoEndTimes[index]);
+                    if (st <= TimeMs && et >= TimeMs)
+                        reusedReadIndices.Add(index);
+                }
+
+                // 짧은 객체는 StartTime 정렬 인덱스를 이진 탐색해 현재 창 주변만 순회한다.
+                int rangeStart = LowerBoundCachedStart(timeMin - LongObjectMinDurationMs);
+                int rangeEnd = UpperBoundCachedStart(timeMax);
+                for (int pos = rangeStart; pos < rangeEnd && reusedReadIndices.Count < maxCount; pos++)
+                {
+                    int index = cachedHoIndicesByStart[pos];
+                    if (index < 0 || index >= nCache || IsCachedLongObject(index)) continue;
+                    int st = cachedHoStartTimes[index];
+                    if (st < 0) continue;
+                    int et = OverlayEndTime(st, cachedHoEndTimes[index]);
+                    if (st <= TimeMs && et >= TimeMs && et >= timeMin)
+                        reusedReadIndices.Add(index);
+                }
+
+                // 그 다음 현재 창의 비활성 짧은 객체와 긴 객체를 채운다.
+                for (int pos = rangeStart; pos < rangeEnd && reusedReadIndices.Count < maxCount; pos++)
+                {
+                    int index = cachedHoIndicesByStart[pos];
+                    if (index < 0 || index >= nCache || IsCachedLongObject(index)) continue;
+                    int st = cachedHoStartTimes[index];
+                    if (st < 0) continue;
+                    int et = OverlayEndTime(st, cachedHoEndTimes[index]);
+                    bool active = st <= TimeMs && et >= TimeMs;
+                    if (!active && et >= timeMin)
+                        reusedReadIndices.Add(index);
+                }
+                for (int i = 0; i < longObjectIndices.Count && reusedReadIndices.Count < maxCount; i++)
+                {
+                    int index = longObjectIndices[i];
+                    if (index < 0 || index >= nCache) continue;
+                    int st = cachedHoStartTimes[index];
+                    int et = OverlayEndTime(st, cachedHoEndTimes[index]);
+                    bool active = st <= TimeMs && et >= TimeMs;
+                    if (!active && et >= timeMin && st <= timeMax)
+                        reusedReadIndices.Add(index);
                 }
             }
             else
@@ -1937,6 +2039,7 @@ namespace OsuEnlightenOverlay.Memory
             hoCacheReady = false;
             cachedHoStartTimes = null;
             cachedHoEndTimes = null;
+            cachedHoIndicesByStart = null;
             cachedHoCount = 0;
             cachedMaxDuration = 0;
             longObjectIndices.Clear();
