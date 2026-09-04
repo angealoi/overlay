@@ -23,8 +23,8 @@ namespace OsuEnlightenOverlay.ControlPanel
         OverlayForm overlayRef;
 
         // Difficulty 섹션
-        AbSlider slAR, slCS, slDtAR, slHtAR;
-        AbButton btnARAuto, btnCSAuto, btnDtARAuto, btnHtARAuto;
+        AbSlider slAR, slCS, slCsHr, slDtAR, slHtAR;
+        AbButton btnARAuto, btnCSAuto, btnCsHrAuto, btnDtARAuto, btnHtARAuto;
 
         // Cursor 섹션
         AbCheckBox chkCursorAutoSize;
@@ -117,9 +117,8 @@ namespace OsuEnlightenOverlay.ControlPanel
             // Padding 을 빼면 contentPanel 폭 = 858... 이 아니라 890-16=874 가 되고,
             // 우측 열 끝 col2X+cardW = 864 → 우측 여백 10 = marginX (대칭).
             this.Width = 890;
-            // GENERAL 카드 합(~394) + 탭/상태(~98) + 타이틀/외곽(~48) + 하단 여백(~14) ≈ 554.
-            // Aim 탭 카드(280)도 이 높이 안에 들어간다.
-            this.Height = 560;
+            // GENERAL 카드 합(~434) + 탭/상태(~98) + 타이틀/외곽(~48) + 하단 여백(~14) ≈ 594.
+            this.Height = 600;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.None;
             this.BackColor = AbTheme.Gray;            // (28,28,28) 본체색
@@ -210,7 +209,7 @@ namespace OsuEnlightenOverlay.ControlPanel
 
             // 탭 페이지 — 카드는 페이지 상대 좌표. 전환 시 Visible만 토글.
             int cardY0 = tabY + tabH + 12;
-            int pageH = 410;
+            int pageH = 450;
             int pageW = contentW + marginX;
 
             Panel pageGeneral = new Panel();
@@ -294,9 +293,8 @@ namespace OsuEnlightenOverlay.ControlPanel
             yL += grpOverlay.Height + cardGapY;
 
             // ── Difficulty Changer ── [우측 열] 최상단
-            // 행 간격 40, 첫 행 contentTopY(40) → 40/80/120/160. 마지막 끝 182 + bottomPad 12 = 카드높이 194.
-            // 우측 열 시작 y는 상태 라벨과 같은 높이(14)에서 시작해 정렬을 맞춘다.
-            AbCard grpDiff = new AbCard("DIFFICULTY CHANGER", col2X, yR, cardW, 194);
+            // 행 간격 40, 첫 행 contentTopY(40) → 40/80/120/160/200. 마지막 끝 222 + bottomPad 12 = 234.
+            AbCard grpDiff = new AbCard("DIFFICULTY CHANGER", col2X, yR, cardW, 234);
 
             const int diffRowGap = 40;
             AddValueRow(grpDiff, contentTopY + 0 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "AR",
@@ -309,12 +307,17 @@ namespace OsuEnlightenOverlay.ControlPanel
                 (v) => { settings.CsValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetAutoCS() : 4.0f,
                 out slCS, out btnCSAuto);
-            AddValueRow(grpDiff, contentTopY + 2 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "DT",
+            AddValueRow(grpDiff, contentTopY + 2 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "HR",
+                settings.CsHrValue, OverlaySettings.CsMin, OverlaySettings.CsMax, 2,
+                (v) => { settings.CsHrValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
+                () => overlayRef != null ? overlayRef.GetAutoHrCS() : 4.0f,
+                out slCsHr, out btnCsHrAuto);
+            AddValueRow(grpDiff, contentTopY + 3 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "DT",
                 settings.ArDtValue, OverlaySettings.DtArMin, OverlaySettings.DtArMax, 2,
                 (v) => { settings.ArDtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapDtAR() : 10.0f,
                 out slDtAR, out btnDtARAuto);
-            AddValueRow(grpDiff, contentTopY + 3 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "HT",
+            AddValueRow(grpDiff, contentTopY + 4 * diffRowGap, sliderX, sliderW, autoX, autoW, pad, labelW, "HT",
                 settings.ArHtValue, OverlaySettings.HtArMin, OverlaySettings.HtArMax, 2,
                 (v) => { settings.ArHtValue = v; Save(); if (overlayRef != null) overlayRef.RefreshDifficulty(); },
                 () => overlayRef != null ? overlayRef.GetMapHtAR() : 8.0f,
@@ -576,12 +579,18 @@ namespace OsuEnlightenOverlay.ControlPanel
                     if (lblBeatmap.Text != overlayRef.BeatmapText)
                         lblBeatmap.Text = overlayRef.BeatmapText;
 
-                    // CS 하한 강제 — 맵 CS(HR/EZ 반영) 아래로는 못 내려간다.
+                    // CS / HR CS 하한은 슬롯별로. HR이 nomod CS를 덮어쓰지 않는다.
                     if (overlayRef.LiveCS > 0)
                     {
                         float floor = Math.Min(10, (float)Math.Round(overlayRef.LiveCS, 2));
                         if (floor > slCS.Value)
-                            slCS.Value = floor; // ValueChanged → settings.CsValue 반영 + Save
+                            slCS.Value = floor;
+                    }
+                    if (overlayRef.LiveHrCS > 0)
+                    {
+                        float floorHr = Math.Min(10, (float)Math.Round(overlayRef.LiveHrCS, 2));
+                        if (floorHr > slCsHr.Value)
+                            slCsHr.Value = floorHr;
                     }
                 }
             };

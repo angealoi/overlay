@@ -30,6 +30,7 @@ namespace OsuEnlightenOverlay.ControlPanel
         // Difficulty Changer
         public float ArValue = 9.2f;
         public float CsValue = 4.0f;
+        public float CsHrValue = 4.0f;  // HR 전용 CS. nomod CS와 분리해서 HR 하한이 서로 덮어쓰지 않게.
         public float ArDtValue = 10.3f;
         public float ArHtValue = 8.0f;
 
@@ -90,6 +91,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             c.HiddenOverride = HiddenOverride;
             c.ArValue = ArValue;
             c.CsValue = CsValue;
+            c.CsHrValue = CsHrValue;
             c.ArDtValue = ArDtValue;
             c.ArHtValue = ArHtValue;
             c.CursorAutoSize = CursorAutoSize;
@@ -135,6 +137,7 @@ namespace OsuEnlightenOverlay.ControlPanel
             CursorSize = Clamp(CursorSize, CursorSizeMin, CursorSizeMax, 1.0f);
             ArValue = Clamp(ArValue, ArMin, ArMax, 9.2f);
             CsValue = Clamp(CsValue, CsMin, CsMax, 4.0f);
+            CsHrValue = Clamp(CsHrValue, CsMin, CsMax, 4.0f);
             ArDtValue = Clamp(ArDtValue, DtArMin, DtArMax, 10.3f);
             ArHtValue = Clamp(ArHtValue, HtArMin, HtArMax, 8.0f);
             HudHitErrorScale = Clamp(HudHitErrorScale, HudHitErrorScaleMin, HudHitErrorScaleMax, 1.0f);

@@ -33,8 +33,8 @@ namespace OsuEnlightenOverlay.Overlay
         ///   Auto AR: 맵 AR + HR/EZ 적용, PreEmpt 환산 없음 (맵 값은 이미 곡 시간)
         ///   Override AR: HR/EZ 미적용. 사용자 값은 "그 mod로 플레이할 때 보이는 AR"이므로
         ///                실시간 기준 → PreEmpt에 speedMultiplier를 곱해 곡 시간으로 환산
-        ///   Auto CS: 맵 CS + HR/EZ 적용
-        ///   Override CS: 사용자 값, 단 맵 CS(mod 적용)보다 작아질 수 없음 (overdrive)
+        ///   CS: HR이면 CsHrValue, 아니면 CsValue. 각 슬롯은 자기 하한만 본다
+        ///        (nomod: 맵 CS+EZ, HR: 맵 CS×1.3). 슬롯이 하한보다 크면 그 값을 유지.
         ///   FadeIn: 400 * min(1, PreEmpt/450)
         ///
         /// HitWindow에는 DT/HT를 적용하지 않는다 — osu! stable과 동일하며, 곡 시간 단위인
@@ -63,8 +63,9 @@ namespace OsuEnlightenOverlay.Overlay
             double preemptScale = isDT ? 1.5 : isHT ? 0.75 : 1.0;
 
             // ── CS 결정 ──
-            // 맵 CS(mod 적용)가 하한 — 그 아래로는 내려갈 수 없다(overdrive 전용).
-            double cs = Math.Min(10, Math.Max(settings.CsValue, MapCS(beatmap, isEZ, isHR)));
+            // AR의 DT/HT 슬롯과 같이 HR CS는 별도 값. 하한만 맵에 맞추고 위로는 overdrive.
+            double csSlot = isHR ? settings.CsHrValue : settings.CsValue;
+            double cs = Math.Min(10, Math.Max(csSlot, MapCS(beatmap, isEZ, isHR)));
 
             // ── OD 결정 ── (항상 맵 OD + HR/EZ)
             double od = DifficultyCalculator.ApplyModsToDifficulty(
@@ -128,20 +129,33 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// CS 하한 — 맵 CS + 현재 HR/EZ. CS 슬라이더가 이 값 아래로 못 내려가게 하는 기준이자
-        /// CS Auto 버튼 채움값. 맵 미로드 시 0(하한 없음).
+        /// nomod CS 슬라이더 하한 — 맵 CS + EZ. HR 배율은 넣지 않는다.
         /// </summary>
         public float GetLiveCS(BeatmapData beatmap)
         {
             if (reader == null || beatmap == null) return 0f;
-            return (float)MapCS(beatmap, reader.IsEZ, reader.IsHR);
+            return (float)MapCS(beatmap, reader.IsEZ, false);
         }
 
-        /// <summary>CS Auto 버튼 채움값 — 맵 CS + HR/EZ. 맵 미로드 시 4.0.</summary>
+        /// <summary>HR CS 슬라이더 하한 — 맵 CS + EZ + HR(×1.3).</summary>
+        public float GetLiveHrCS(BeatmapData beatmap)
+        {
+            if (reader == null || beatmap == null) return 0f;
+            return (float)MapCS(beatmap, reader.IsEZ, true);
+        }
+
+        /// <summary>CS Auto — 맵 CS + EZ. 맵 미로드 시 4.0.</summary>
         public float GetAutoCS(BeatmapData beatmap)
         {
             if (beatmap == null || reader == null) return 4.0f;
             return GetLiveCS(beatmap);
+        }
+
+        /// <summary>HR CS Auto — 맵 CS × 1.3. 맵 미로드 시 4.0.</summary>
+        public float GetAutoHrCS(BeatmapData beatmap)
+        {
+            if (beatmap == null || reader == null) return 4.0f;
+            return GetLiveHrCS(beatmap);
         }
     }
 }

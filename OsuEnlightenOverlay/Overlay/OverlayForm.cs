@@ -290,12 +290,17 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// Auto 모드에서 실제 적용되는 CS (HR/EZ 반영) 반환.
-        /// ControlPanel CS Auto 버튼 채움값.
+        /// CS Auto — 맵 CS + EZ (HR 제외).
         /// </summary>
         public float GetAutoCS()
         {
             return difficultyController.GetAutoCS(currentBeatmap);
+        }
+
+        /// <summary>HR CS Auto — 맵 CS × 1.3.</summary>
+        public float GetAutoHrCS()
+        {
+            return difficultyController.GetAutoHrCS(currentBeatmap);
         }
 
         /// <summary>
@@ -357,12 +362,17 @@ namespace OsuEnlightenOverlay.Overlay
         }
 
         /// <summary>
-        /// 현재 mod가 적용된 effective CS — ControlPanelForm CS override 기준값.
-        /// HR/EZ mod가 반영된 CS.
+        /// nomod CS 슬라이더 하한 — 맵 CS + EZ.
         /// </summary>
         public float LiveCS
         {
             get { return difficultyController.GetLiveCS(currentBeatmap); }
+        }
+
+        /// <summary>HR CS 슬라이더 하한 — 맵 CS × 1.3.</summary>
+        public float LiveHrCS
+        {
+            get { return difficultyController.GetLiveHrCS(currentBeatmap); }
         }
 
         public OverlayForm(OsuMemoryReader reader, ControlPanel.OverlaySettings settings)

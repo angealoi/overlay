@@ -47,10 +47,13 @@ namespace OsuEnlightenOverlay.ControlPanel
             settings.CaptureBlocked = ReadBool(path, "Overlay", "CaptureBlocked", settings.CaptureBlocked);
             settings.FpsCap = ReadInt(path, "Overlay", "FpsCap", settings.FpsCap);
             settings.HiddenOverride = ReadBool(path, "Overlay", "HiddenOverride", settings.HiddenOverride);
+            settings.InstaFade = ReadBool(path, "Overlay", "InstaFade", settings.InstaFade);
 
             // [Difficulty]
             settings.ArValue = ReadFloat(path, "Difficulty", "AR", settings.ArValue);
             settings.CsValue = ReadFloat(path, "Difficulty", "CS", settings.CsValue);
+            // 구버전 ini에 HrCS가 없으면 현재 CS를 시드로 — 빈 4.0으로 리셋하지 않는다.
+            settings.CsHrValue = ReadFloat(path, "Difficulty", "HrCS", settings.CsValue);
             settings.ArDtValue = ReadFloat(path, "Difficulty", "DtAR", settings.ArDtValue);
             settings.ArHtValue = ReadFloat(path, "Difficulty", "HtAR", settings.ArHtValue);
 
@@ -107,10 +110,12 @@ namespace OsuEnlightenOverlay.ControlPanel
             WriteBool(path, "Overlay", "CaptureBlocked", settings.CaptureBlocked);
             WriteInt(path, "Overlay", "FpsCap", settings.FpsCap);
             WriteBool(path, "Overlay", "HiddenOverride", settings.HiddenOverride);
+            WriteBool(path, "Overlay", "InstaFade", settings.InstaFade);
 
             // [Difficulty]
             WriteFloat(path, "Difficulty", "AR", settings.ArValue);
             WriteFloat(path, "Difficulty", "CS", settings.CsValue);
+            WriteFloat(path, "Difficulty", "HrCS", settings.CsHrValue);
             WriteFloat(path, "Difficulty", "DtAR", settings.ArDtValue);
             WriteFloat(path, "Difficulty", "HtAR", settings.ArHtValue);
 
