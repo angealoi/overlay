@@ -86,16 +86,6 @@ namespace OsuEnlightenOverlay.Rendering.Batches
             float x1 = x0 + w;       // right
             float y1 = y0 + h;       // bottom
 
-            // 회전 적용 — 4개 꼭지점 각각 회전
-            if (sprite.CurrentRotation != 0)
-            {
-                float cos = (float)Math.Cos(sprite.CurrentRotation);
-                float sin = (float)Math.Sin(sprite.CurrentRotation);
-                RotateVertex(ref x0, ref y0, cx, cy, cos, sin);
-                RotateVertex(ref x1, ref y1, cx, cy, cos, sin);
-                // x0,y0는 좌상단, x1,y1은 우하단 — 회전 후에도 이 점들을 사용
-            }
-
             float r = sprite.CurrentColour.R / 255f;
             float g = sprite.CurrentColour.G / 255f;
             float b = sprite.CurrentColour.B / 255f;

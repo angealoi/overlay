@@ -172,6 +172,9 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
         readonly Dictionary<HitObjectData, HitCircleOsu> liveCircles = new Dictionary<HitObjectData, HitCircleOsu>();
         readonly Dictionary<HitObjectData, SliderOsu> liveSliders = new Dictionary<HitObjectData, SliderOsu>();
         readonly Dictionary<HitObjectData, SpinnerOsu> liveSpinners = new Dictionary<HitObjectData, SpinnerOsu>();
+        // 만료 대상 수집용 스크래치 — dictionary 순회 중 제거할 수 없으므로 재사용 목록에 모은다.
+        readonly List<HitObjectData> expiredCircleData = new List<HitObjectData>(64);
+        readonly List<HitObjectData> expiredSliderData = new List<HitObjectData>(16);
 
         void BuildSortedLists()
         {
@@ -282,6 +285,31 @@ namespace OsuEnlightenOverlay.Gameplay.HitObjects
             int maxTime = timeMs + SpriteWindowFuture;
 
             if (sortedCircleData == null) BuildSortedLists();
+
+            // binary-search 진입점보다 과거로 밀린 객체는 아래 생성 루프에서 다시 방문되지 않는다.
+            // live dictionary를 먼저 정리해 circle 객체와 장시간 slider의 FBO가 맵 끝까지 남지 않게 한다.
+            expiredCircleData.Clear();
+            foreach (var kv in liveCircles)
+            {
+                HitObjectData d = kv.Key;
+                int endTime = d.StartTime + difficulty.HitWindow50 + DifficultyCalculator.FadeOut;
+                if (endTime < minTime)
+                    expiredCircleData.Add(d);
+            }
+            for (int i = 0; i < expiredCircleData.Count; i++)
+                DestroyCircle(expiredCircleData[i]);
+
+            expiredSliderData.Clear();
+            foreach (var kv in liveSliders)
+            {
+                HitObjectData d = kv.Key;
+                int endTime = (d.SliderComputed ? d.SliderVirtualEndTime : d.EndTime)
+                    + DifficultyCalculator.FadeOut;
+                if (endTime < minTime)
+                    expiredSliderData.Add(d);
+            }
+            for (int i = 0; i < expiredSliderData.Count; i++)
+                DestroySlider(expiredSliderData[i]);
 
             // HitCircles — binary search로 윈도우 내 데이터만 순회, 진입 시 lazy 생성
             int cStart = LowerBound(sortedCircleData, c => c.StartTime, minTime - DifficultyCalculator.FadeOut - 100);
